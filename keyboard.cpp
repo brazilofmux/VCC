@@ -96,12 +96,31 @@ bool CtrlPaste = false;
 
 /* track all keyboard scan codes state (up/down) */
 static int ScanTable[256];
+static bool ShiftLatchTable[256];
 
 /* run-time 'rollover' table to pass to the MC6821 when a key is pressed */
 static unsigned char RolloverTable[8];	// CoCo 'keys' for emulator
 
 // run-time keyboard layout table (key(s) to keys(s) translation)
 static keytranslationentry_t KeyTransTable[KBTABLE_ENTRY_COUNT];
+
+static void LogKeyboardMatrixState(const char* reason, unsigned char scanCode)
+{
+	DLOG_F(
+		"[kbd] %s scan=0x%02X shift=%d rollover=%02X %02X %02X %02X %02X %02X %02X %02X\n",
+		reason,
+		scanCode,
+		IsShift ? 1 : 0,
+		RolloverTable[0],
+		RolloverTable[1],
+		RolloverTable[2],
+		RolloverTable[3],
+		RolloverTable[4],
+		RolloverTable[5],
+		RolloverTable[6],
+		RolloverTable[7]
+	);
+}
 
 /*****************************************************************************/
 //	Get CoCo 'scan' code called from MC6821.c to read the keyboard/joystick state
@@ -209,9 +228,16 @@ void _vccKeyboardUpdateRolloverTable()
 				&& (KeyTransTable[Index].ScanCode2 != 0)
 				)
 			{
+				const bool shiftComboActive =
+					KeyTransTable[Index].ScanCode1 == DIK_LSHIFT
+					&& ScanTable[KeyTransTable[Index].ScanCode2] == KEY_DOWN
+					&& (ScanTable[DIK_LSHIFT] == KEY_DOWN
+						|| ShiftLatchTable[KeyTransTable[Index].ScanCode2]);
+
 				// check if both keys pressed
-				if (   (ScanTable[KeyTransTable[Index].ScanCode1] == KEY_DOWN)
-					&& (ScanTable[KeyTransTable[Index].ScanCode2] == KEY_DOWN)
+				if (   shiftComboActive
+					|| ((ScanTable[KeyTransTable[Index].ScanCode1] == KEY_DOWN)
+						&& (ScanTable[KeyTransTable[Index].ScanCode2] == KEY_DOWN))
 					)
 				{
 					int col;
@@ -284,10 +310,14 @@ void vccKeyboardHandleKey(unsigned char ScanCode, keyevent_e keyState)
 
 			// track key is down
 			ScanTable[ScanCode] = KEY_DOWN;
+			if (ScanCode != DIK_LSHIFT && ScanTable[DIK_LSHIFT] == KEY_DOWN) {
+				ShiftLatchTable[ScanCode] = true;
+			}
 			if (ScanCode == DIK_LSHIFT) {
 				IsShift = true;
 			}
 			_vccKeyboardUpdateRolloverTable();
+			LogKeyboardMatrixState("down", ScanCode);
 
 			if ( GimeGetKeyboardInteruptState() ) {
 				GimeAssertKeyboardInterupt();
@@ -300,16 +330,13 @@ void vccKeyboardHandleKey(unsigned char ScanCode, keyevent_e keyState)
 
 			// reset key (released)
 			ScanTable[ScanCode] = KEY_UP;
+			ShiftLatchTable[ScanCode] = false;
 
-			// TODO: verify this is accurate emulation
-			// Clean out rollover table on shift release
 			if ( ScanCode == DIK_LSHIFT ) {
 				IsShift = false; 
-				for (int Index = 0; Index < KBTABLE_ENTRY_COUNT; Index++) {
-					ScanTable[Index] = KEY_UP;
-				}
 			}
 			_vccKeyboardUpdateRolloverTable();
+			LogKeyboardMatrixState("up", ScanCode);
 		break;
 	}
 }

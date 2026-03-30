@@ -216,7 +216,7 @@ void LoadRom()
 	if (*RomPath == '\0') {
 		GetModuleFileName(nullptr, RomPath, MAX_PATH);
 		PathRemoveFileSpec(RomPath);
-		strncat(RomPath, "coco3.rom", MAX_PATH);
+		strncat(RomPath, "\\coco3.rom", MAX_PATH - strlen(RomPath) - 1);
 	}
 
 	if ((hFile = fopen(RomPath,"rb")) != nullptr) {

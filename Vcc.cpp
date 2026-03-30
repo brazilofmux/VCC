@@ -504,6 +504,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	        OEMscan = (unsigned char) ((lParam >> 16) & 0xFF);
             Extended=(lParam >> 24) & 1;
 		    if (Extended && (OEMscan!=DIK_NUMLOCK)) OEMscan += 0x80;
+			DLOG_F("[win-kbd] up scan=0x%02X extended=%d running=%d\n",
+				OEMscan, Extended ? 1 : 0, EmuState.EmulationRunning ? 1 : 0);
 			vccKeyboardHandleKey(OEMscan,kEventKeyUp);
 			
 			return 0;
@@ -532,17 +534,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			if (lParam>>30) return 0;
 
 		case WM_KEYDOWN:
-
+		{
 			// Let Windows handle right ALT key
 			{
 				bool isRightAlt = (wParam == VK_MENU && (lParam & (1 << 24)));
 				if (isRightAlt) return DefWindowProc(hWnd, message, wParam, lParam);
 			}
 
+			const bool isRepeat = (lParam & (1u << 30)) != 0;
+
 			// get key scan code for emulator control keys
 			OEMscan = (unsigned char) ((lParam >> 16) & 0xFF);
 			Extended=(lParam >> 24) & 1;
 			if (Extended && (OEMscan!=DIK_NUMLOCK)) OEMscan += 0x80;
+			DLOG_F("[win-kbd] down scan=0x%02X extended=%d repeat=%d running=%d\n",
+				OEMscan, Extended ? 1 : 0, isRepeat ? 1 : 0, EmuState.EmulationRunning ? 1 : 0);
 
 			// kb_char = Windows virtual key code
 
@@ -631,18 +637,23 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				break;
 
 				default:
-					// send shift and other keystrokes to the emulator if it is active
-					if ( EmuState.EmulationRunning )
+					// Ignore Windows key autorepeat for emulated keyboard input.
+					if ( EmuState.EmulationRunning && !isRepeat )
 					{
 						vccKeyboardHandleKey(OEMscan, kEventKeyDown);
 						// Save key down in case focus is lost
 						save_key_down(kb_char,OEMscan);
+					}
+					else if (EmuState.EmulationRunning && isRepeat)
+					{
+						DLOG_F("[win-kbd] suppressed repeat scan=0x%02X\n", OEMscan);
 					}
 					break;
 			}
 
 			return 0;
 			break;
+		}
 
 		// Don't send click that activates window to emulation
 		case WM_MOUSEACTIVATE:
