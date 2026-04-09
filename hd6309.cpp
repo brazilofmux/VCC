@@ -2585,16 +2585,16 @@ void Stbt(const DecodedInst* inst)
 
 void Tfm1(const DecodedInst* inst)
 { //1138 TFM R+,R+ 6309
+	postbyte = OPERAND_8(inst);
+
 	if (W_REG == 0)
 	{
 		CycleCounter += 6;
-		PC_REG++;
 		DoingTFM = false;
 		return;
 	}
 	DoingTFM = true;
 
-	postbyte=MemRead8(PC_REG);
 	Source=postbyte>>4;
 	Dest=postbyte&15;
 
@@ -2610,21 +2610,21 @@ void Tfm1(const DecodedInst* inst)
   (*xfreg16[Dest])++;
   W_REG--;
 	CycleCounter += 3;
-	PC_REG -= 2;
+	PC_REG -= (inst ? inst->length : 3);
 }
 
 void Tfm2(const DecodedInst* inst)
 { //1139 TFM R-,R- Phase 3 6309
+	postbyte = OPERAND_8(inst);
+
 	if (W_REG == 0)
 	{
 		CycleCounter+=6;
-		PC_REG++;
 		DoingTFM = false;
 		return;
 	}			
 	DoingTFM = true;
 
-	postbyte=MemRead8(PC_REG);
 	Source=postbyte>>4;
 	Dest=postbyte&15;
 
@@ -2641,21 +2641,21 @@ void Tfm2(const DecodedInst* inst)
 
   W_REG--;
 	CycleCounter+=3;
-	PC_REG-=2;
+	PC_REG -= (inst ? inst->length : 3);
 }
 
 void Tfm3(const DecodedInst* inst)
 { //113A 6309 TFM R+,R 6309
+	postbyte = OPERAND_8(inst);
+
 	if (W_REG == 0)
 	{
 		CycleCounter+=6;
-		PC_REG++;
 		DoingTFM = false;
 		return;
 	}			
 	DoingTFM = true;
 
-	postbyte = MemRead8(PC_REG);
 	Source = postbyte >> 4;
 	Dest = postbyte & 15;
 
@@ -2670,22 +2670,22 @@ void Tfm3(const DecodedInst* inst)
   MemWrite8(temp8, *xfreg16[Dest]);
 
   W_REG--;
-	PC_REG -= 2; //Hit the same instruction on the next loop if not done copying
+	PC_REG -= (inst ? inst->length : 3); // Hit the same instruction on the next loop if not done copying
 	CycleCounter += 3;
 }
 
 void Tfm4(const DecodedInst* inst)
 { //113B TFM R,R+ 6309 
+	postbyte = OPERAND_8(inst);
+
 	if (W_REG == 0)
 	{
 		CycleCounter+=6;
-		PC_REG++;
 		DoingTFM = false;
 		return;
 	}			
 	DoingTFM = true;
 
-	postbyte=MemRead8(PC_REG);
 	Source=postbyte>>4;
 	Dest=postbyte&15;
 
@@ -2699,7 +2699,7 @@ void Tfm4(const DecodedInst* inst)
   MemWrite8(temp8, *xfreg16[Dest]);
   (*xfreg16[Dest])++;
   W_REG--;
-	PC_REG-=2; //Hit the same instruction on the next loop if not done copying
+	PC_REG -= (inst ? inst->length : 3); // Hit the same instruction on the next loop if not done copying
 	CycleCounter+=3;
 }
 
