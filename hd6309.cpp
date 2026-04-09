@@ -3773,7 +3773,7 @@ void Sex_I(const DecodedInst* inst)
 
 void Exg_M(const DecodedInst* inst)
 { //1E
-	postbyte = MemRead8(PC_REG++);
+	postbyte = OPERAND_8(inst);
 	Source = postbyte >> 4;
 	Dest = postbyte & 15;
 
@@ -3838,7 +3838,7 @@ void Exg_M(const DecodedInst* inst)
 
 void Tfr_M(const DecodedInst* inst)
 { //1F
-	postbyte=MemRead8(PC_REG++);
+	postbyte=OPERAND_8(inst);
 	Source= postbyte>>4;
 	Dest=postbyte & 15;
 
@@ -4082,7 +4082,7 @@ void Pshs_M(const DecodedInst* inst)
 
 void Puls_M(const DecodedInst* inst)
 { //35
-	postbyte=MemRead8(PC_REG++);
+	postbyte=OPERAND_8(inst);
 	if (postbyte & 0x01)
 	{
 		setcc(MemRead8(S_REG++));
@@ -4182,7 +4182,7 @@ void Pshu_M(const DecodedInst* inst)
 
 void Pulu_M(const DecodedInst* inst)
 { //37
-	postbyte=MemRead8(PC_REG++);
+	postbyte=OPERAND_8(inst);
 	if (postbyte & 0x01)
 	{
 		setcc(MemRead8(U_REG++));
@@ -4272,7 +4272,7 @@ void Rti_I(const DecodedInst* inst)
 
 void Cwai_I(const DecodedInst* inst)
 { //3C
-	postbyte=MemRead8(PC_REG++);
+	postbyte=OPERAND_8(inst);
 	ccbits=getcc();
 	ccbits = ccbits & postbyte;
 	setcc(ccbits);
