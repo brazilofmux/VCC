@@ -39,8 +39,10 @@ struct DecodedInst
     InstHandler handler;        // handler function pointer (4 bytes on x86)
     uint16_t    operand;        // pre-extracted operand: immediate value,
                                 // direct-page offset, extended address,
-                                // or signed branch offset
-    uint8_t     postbyte;       // indexed mode postbyte (0 if N/A)
+                                // signed branch offset, indexed offset,
+                                // or pre-computed PC-relative address
+    uint8_t     ea_info;        // indexed mode: bits 0-5 = EAMode index,
+                                // bits 6-7 = register index (0 if N/A)
     uint8_t     length;         // total instruction length in bytes
 };
 // sizeof(DecodedInst) = 8 bytes on x86 (4+2+1+1)
