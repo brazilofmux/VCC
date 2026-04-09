@@ -213,12 +213,13 @@ static const bool IsTerminator[256] = {
 // 0x00-0x0F: direct page ops. 0x0E = JMP direct
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
 // 0x10-0x1F: 0x10=Page2(term), 0x11=Page3(term), 0x13=SYNC, 0x15=HALT,
-//            0x16=LBRA, 0x17=LBSR
-   1,1,0,1,0,1,1,1, 0,0,0,0,0,0,0,0,
+//            0x16=LBRA, 0x17=LBSR, 0x1E=EXG(can target PC), 0x1F=TFR(can target PC)
+   1,1,0,1,0,1,1,1, 0,0,0,0,0,0,1,1,
 // 0x20-0x2F: all branches are terminators
    1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,
-// 0x30-0x3F: 0x39=RTS, 0x3B=RTI, 0x3C=CWAI, 0x3F=SWI
-   0,0,0,0,0,0,0,0, 0,1,0,1,1,0,0,1,
+// 0x30-0x3F: 0x35=PULS(term, can pull PC), 0x37=PULU(term, can pull PC),
+//            0x39=RTS, 0x3B=RTI, 0x3C=CWAI, 0x3F=SWI
+   0,0,0,0,0,1,0,1, 0,1,0,1,1,0,0,1,
 // 0x40-0x4F: inherent A ops
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
 // 0x50-0x5F: inherent B ops
@@ -265,7 +266,7 @@ unsigned int MemRead32(unsigned short);
 
 #include "CpuCommon.h"
 
-void HD6309Reset(const DecodedInst* inst)
+void HD6309Reset()
 {
 	char index;
 	for(index=0;index<=6;index++)		//Set all register to 0 except V
@@ -289,7 +290,7 @@ void HD6309Reset(const DecodedInst* inst)
 	return;
 }
 
-void HD6309Init(const DecodedInst* inst)
+void HD6309Init()
 {	//Call this first or RESET will core!
 	// reg pointers for TFR and EXG and LEA ops
 	xfreg16[0] = &D_REG;
@@ -7099,9 +7100,13 @@ int HD6309Exec(int CycleFor)
 			if (block && block->total_cycles <= remaining)
 			{
 				// Cached block fits within budget. Execute all instructions
-				// in a tight loop with no interrupt checks.
+				// in a tight loop using pre-decoded handlers.
+				const DecodedInst* insns = block->insns;
 				for (int i = 0; i < block->num_insns; i++)
-					JmpVec1[MemRead8(PC_REG++)](nullptr);
+				{
+					PC_REG++;  // skip opcode byte (handler reads operands from PC)
+					insns[i].handler(&insns[i]);
+				}
 
 				if (JS_Ramp_Clock < 0xFFFF)
 					JS_Ramp_Clock += CycleCounter - PrevCycleCount;

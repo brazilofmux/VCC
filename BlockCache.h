@@ -38,6 +38,8 @@ This file is part of VCC (Virtual Color Computer).
 
 #include <cstdint>
 #include <cstring>
+#include "DecodedInst.h"
+#include "BlockDecoder.h"
 
 struct CachedBlock
 {
@@ -46,6 +48,12 @@ struct CachedBlock
     uint8_t  num_insns;     // number of instructions in the block
     uint8_t  total_cycles;  // total cycle cost of the block
     uint32_t generation;    // generation when this block was cached
+
+    // Pre-decoded instructions for this block. Filled by DecodeBlock()
+    // when the block is first cached. Handlers are called with a pointer
+    // to the corresponding DecodedInst, allowing incremental conversion
+    // from memory-reading to pre-decoded operand access.
+    DecodedInst insns[12];  // MAX_BLOCK_INSNS — can't forward-ref constexpr
 };
 
 class BlockCache
@@ -255,6 +263,9 @@ private:
             old.num_insns = (uint8_t)rec_insn_count_;
             old.total_cycles = (uint8_t)total_cycles;
             old.generation = generation_;
+
+            // Pre-decode instructions for the block execution path
+            DecodeBlock(rec_start_pc_, rec_insn_count_, old.insns);
 
             SetReverseMap(rec_start_pc_, end_pc);
 
