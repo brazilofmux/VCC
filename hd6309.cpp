@@ -2312,8 +2312,9 @@ void Sts_E(const DecodedInst* inst)
 
 void Band(const DecodedInst* inst)
 { //1130 6309 untested
-	postbyte = MemRead8(PC_REG++);
-	temp8 = MemRead8(DPADDRESS(PC_REG++));
+	postword = OPERAND_16(inst);
+	postbyte = (unsigned char)(postword >> 8);
+	temp8 = MemRead8(dp.Reg | (postword & 0xFF));
 	Source = (postbyte >> 3) & 7;
 	Dest = postbyte & 7;
 	postbyte >>= 6;
@@ -2343,8 +2344,9 @@ void Band(const DecodedInst* inst)
 
 void Biand(const DecodedInst* inst)
 { //1131 6309
-	postbyte = MemRead8(PC_REG++);
-	temp8 = MemRead8(DPADDRESS(PC_REG++));
+	postword = OPERAND_16(inst);
+	postbyte = (unsigned char)(postword >> 8);
+	temp8 = MemRead8(dp.Reg | (postword & 0xFF));
 	Source = (postbyte >> 3) & 7;
 	Dest = postbyte & 7;
 	postbyte >>= 6;
@@ -2374,8 +2376,9 @@ void Biand(const DecodedInst* inst)
 
 void Bor(const DecodedInst* inst)
 { //1132 6309
-	postbyte = MemRead8(PC_REG++);
-	temp8 = MemRead8(DPADDRESS(PC_REG++));
+	postword = OPERAND_16(inst);
+	postbyte = (unsigned char)(postword >> 8);
+	temp8 = MemRead8(dp.Reg | (postword & 0xFF));
 	Source = (postbyte >> 3) & 7;
 	Dest = postbyte & 7;
 	postbyte >>= 6;
@@ -2405,8 +2408,9 @@ void Bor(const DecodedInst* inst)
 
 void Bior(const DecodedInst* inst)
 { //1133 6309
-	postbyte = MemRead8(PC_REG++);
-	temp8 = MemRead8(DPADDRESS(PC_REG++));
+	postword = OPERAND_16(inst);
+	postbyte = (unsigned char)(postword >> 8);
+	temp8 = MemRead8(dp.Reg | (postword & 0xFF));
 	Source = (postbyte >> 3) & 7;
 	Dest = postbyte & 7;
 	postbyte >>= 6;
@@ -2436,8 +2440,9 @@ void Bior(const DecodedInst* inst)
 
 void Beor(const DecodedInst* inst)
 { //1134 6309
-	postbyte = MemRead8(PC_REG++);
-	temp8 = MemRead8(DPADDRESS(PC_REG++));
+	postword = OPERAND_16(inst);
+	postbyte = (unsigned char)(postword >> 8);
+	temp8 = MemRead8(dp.Reg | (postword & 0xFF));
 	Source = (postbyte >> 3) & 7;
 	Dest = postbyte & 7;
 	postbyte >>= 6;
@@ -2466,8 +2471,9 @@ void Beor(const DecodedInst* inst)
 
 void Bieor(const DecodedInst* inst)
 { //1135 6309
-	postbyte = MemRead8(PC_REG++);
-	temp8 = MemRead8(DPADDRESS(PC_REG++));
+	postword = OPERAND_16(inst);
+	postbyte = (unsigned char)(postword >> 8);
+	temp8 = MemRead8(dp.Reg | (postword & 0xFF));
 	Source = (postbyte >> 3) & 7;
 	Dest = postbyte & 7;
 	postbyte >>= 6;
@@ -2496,8 +2502,9 @@ void Bieor(const DecodedInst* inst)
 
 void Ldbt(const DecodedInst* inst)
 { //1136 6309
-	postbyte = MemRead8(PC_REG++);
-	temp8 = MemRead8(DPADDRESS(PC_REG++));
+	postword = OPERAND_16(inst);
+	postbyte = (unsigned char)(postword >> 8);
+	temp8 = MemRead8(dp.Reg | (postword & 0xFF));
 	Source = (postbyte >> 3) & 7;
 	Dest = postbyte & 7;
 	postbyte >>= 6;
@@ -2539,8 +2546,9 @@ void Ldbt(const DecodedInst* inst)
 
 void Stbt(const DecodedInst* inst)
 { //1137 6309
-	postbyte = MemRead8(PC_REG++);
-	temp16 = DPADDRESS(PC_REG++);
+	postword = OPERAND_16(inst);
+	postbyte = (unsigned char)(postword >> 8);
+	temp16 = dp.Reg | (postword & 0xFF);
 	temp8 = MemRead8(temp16);
 	Source = (postbyte >> 3) & 7;
 	Dest = postbyte & 7;
@@ -2697,7 +2705,7 @@ void Tfm4(const DecodedInst* inst)
 
 void Bitmd_M(const DecodedInst* inst)
 { //113C  6309
-	postbyte = MemRead8(PC_REG++) & 0xC0;
+	postbyte = OPERAND_8(inst) & 0xC0;
 	temp8 = getmd() & postbyte;
 	cc[Z] = ZTEST(temp8);
 	if (temp8 & 0x80) md[7] = 0;
@@ -2707,7 +2715,7 @@ void Bitmd_M(const DecodedInst* inst)
 
 void Ldmd_M(const DecodedInst* inst)
 { //113D DONE 6309
-	mdbits= MemRead8(PC_REG++)&0x03;
+	mdbits= OPERAND_8(inst)&0x03;
 	setmd(mdbits);
 	CycleCounter+=5;
 }

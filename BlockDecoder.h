@@ -189,8 +189,8 @@ static const uint8_t Page3InsLen[256] = {
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
-// 0x30-0x3F: 3F=SWI3(1), rest illegal
-   1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
+// 0x30-0x3F: 30-37 bit ops(3), 38-3B TFM(2), 3C=BITMD(2), 3D=LDMD(2), 3F=SWI3(1)
+   3, 3, 3, 3, 3, 3, 3, 3,  2, 2, 2, 2, 2, 2, 1, 1,
 // 0x40-0x7F: all illegal
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
@@ -437,6 +437,9 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
 
             switch (op3)
             {
+            case 0x30: case 0x31: case 0x32: case 0x33:
+            case 0x34: case 0x35: case 0x36: case 0x37:
+            case 0x3C: case 0x3D:
             case 0x43: case 0x4A: case 0x4C: case 0x4D: case 0x4F:
             case 0x53: case 0x5A: case 0x5C: case 0x5D: case 0x5F:
             case 0x80: case 0x81: case 0x83: case 0x86: case 0x8B: case 0x8C:
