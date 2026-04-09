@@ -25,6 +25,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "hd6309defs.h"
 #include "tcc1014mmu.h"
 #include "BlockCache.h"
+#include "DecodedInst.h"
 #include <vcc/util/logger.h>
 #include "string.h"
 #include "OpDecoder.h"
@@ -245,9 +246,9 @@ static const bool IsTerminator[256] = {
 
 //Fuction Prototypes---------------------------------------
 static unsigned short CalculateEA(unsigned char);
-void InvalidInsHandler();
-void DivbyZero();
-void ErrorVector();
+void InvalidInsHandler(const DecodedInst* inst);
+void DivbyZero(const DecodedInst* inst);
+void ErrorVector(const DecodedInst* inst);
 void setcc (unsigned char);
 unsigned char getcc();
 void setmd (unsigned char);
@@ -256,15 +257,15 @@ static void cpu_firq();
 static void cpu_irq();
 static void cpu_nmi();
 unsigned char GetSorceReg(unsigned char);
-void Page_2();
-void Page_3();
+void Page_2(const DecodedInst* inst);
+void Page_3(const DecodedInst* inst);
 void MemWrite32(unsigned int, unsigned short);
 unsigned int MemRead32(unsigned short);
 //END Fuction Prototypes-----------------------------------
 
 #include "CpuCommon.h"
 
-void HD6309Reset()
+void HD6309Reset(const DecodedInst* inst)
 {
 	char index;
 	for(index=0;index<=6;index++)		//Set all register to 0 except V
@@ -288,7 +289,7 @@ void HD6309Reset()
 	return;
 }
 
-void HD6309Init()
+void HD6309Init(const DecodedInst* inst)
 {	//Call this first or RESET will core!
 	// reg pointers for TFR and EXG and LEA ops
 	xfreg16[0] = &D_REG;
@@ -398,7 +399,7 @@ void HD6309SetTraceTriggers(const std::vector<unsigned short>& triggers)
 	CPUTraceTriggers = triggers;
 }
 
-void Neg_D()
+void Neg_D(const DecodedInst* inst)
 { //0
 	temp16 = DPADDRESS(PC_REG++);
 	postbyte = MemRead8(temp16);
@@ -411,7 +412,7 @@ void Neg_D()
 	CycleCounter += NatEmuCycles65;
 }
 
-void Oim_D()
+void Oim_D(const DecodedInst* inst)
 {//1 6309
 	postbyte=MemRead8(PC_REG++);
 	temp16 = DPADDRESS(PC_REG++);
@@ -423,7 +424,7 @@ void Oim_D()
 	CycleCounter+=6;
 }
 
-void Aim_D()
+void Aim_D(const DecodedInst* inst)
 {//2 Phase 2 6309
 	postbyte=MemRead8(PC_REG++);
 	temp16 = DPADDRESS(PC_REG++);
@@ -435,7 +436,7 @@ void Aim_D()
 	CycleCounter+=6;
 }
 
-void Com_D()
+void Com_D(const DecodedInst* inst)
 { //03
 	temp16 = DPADDRESS(PC_REG++);
 	temp8=MemRead8(temp16);
@@ -448,7 +449,7 @@ void Com_D()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Lsr_D()
+void Lsr_D(const DecodedInst* inst)
 { //04 S2
 	temp16 = DPADDRESS(PC_REG++);
 	temp8 = MemRead8(temp16);
@@ -460,7 +461,7 @@ void Lsr_D()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Eim_D()
+void Eim_D(const DecodedInst* inst)
 { //05 6309 Untested
 	postbyte=MemRead8(PC_REG++);
 	temp16 = DPADDRESS(PC_REG++);
@@ -472,7 +473,7 @@ void Eim_D()
 	CycleCounter+=6;
 }
 
-void Ror_D()
+void Ror_D(const DecodedInst* inst)
 { //06 S2
 	temp16 = DPADDRESS(PC_REG++);
 	temp8=MemRead8(temp16);
@@ -485,7 +486,7 @@ void Ror_D()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Asr_D()
+void Asr_D(const DecodedInst* inst)
 { //7
 	temp16 = DPADDRESS(PC_REG++);
 	temp8=MemRead8(temp16);
@@ -497,7 +498,7 @@ void Asr_D()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Asl_D()
+void Asl_D(const DecodedInst* inst)
 { //8 
 	temp16 = DPADDRESS(PC_REG++);
 	temp8=MemRead8(temp16);
@@ -510,7 +511,7 @@ void Asl_D()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Rol_D()
+void Rol_D(const DecodedInst* inst)
 {	//9
 	temp16 = DPADDRESS(PC_REG++);
 	temp8 = MemRead8(temp16);
@@ -524,7 +525,7 @@ void Rol_D()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Dec_D()
+void Dec_D(const DecodedInst* inst)
 { //A
 	temp16 = DPADDRESS(PC_REG++);
 	temp8 = MemRead8(temp16)-1;
@@ -535,7 +536,7 @@ void Dec_D()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Tim_D()
+void Tim_D(const DecodedInst* inst)
 {	//B 6309 Untested wcreate
 	postbyte=MemRead8(PC_REG++);
 	temp8=MemRead8(DPADDRESS(PC_REG++));
@@ -546,7 +547,7 @@ void Tim_D()
 	CycleCounter+=6;
 }
 
-void Inc_D()
+void Inc_D(const DecodedInst* inst)
 { //C
 	temp16=(DPADDRESS(PC_REG++));
 	temp8 = MemRead8(temp16)+1;
@@ -557,7 +558,7 @@ void Inc_D()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Tst_D()
+void Tst_D(const DecodedInst* inst)
 { //D
 	temp8 = MemRead8(DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(temp8);
@@ -566,13 +567,13 @@ void Tst_D()
 	CycleCounter+=NatEmuCycles64;
 }
 
-void Jmp_D()
+void Jmp_D(const DecodedInst* inst)
 {	//E
 	PC_REG = dp.Reg | MemRead8(PC_REG);
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Clr_D()
+void Clr_D(const DecodedInst* inst)
 {	//F
 	MemWrite8(0,DPADDRESS(PC_REG++));
 	cc[Z] = 1;
@@ -582,7 +583,7 @@ void Clr_D()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void LBeq_R()
+void LBeq_R(const DecodedInst* inst)
 { //1027
 	if (cc[Z])
 	{
@@ -594,13 +595,13 @@ void LBeq_R()
 	CycleCounter+=5;
 }
 
-void LBrn_R()
+void LBrn_R(const DecodedInst* inst)
 { //1021
 	PC_REG+=2;
 	CycleCounter+=5;
 }
 
-void LBhi_R()
+void LBhi_R(const DecodedInst* inst)
 { //1022
 	if  (!(cc[C] | cc[Z]))
 	{
@@ -612,7 +613,7 @@ void LBhi_R()
 	CycleCounter+=5;
 }
 
-void LBls_R()
+void LBls_R(const DecodedInst* inst)
 { //1023
 	if (cc[C] | cc[Z])
 	{
@@ -624,7 +625,7 @@ void LBls_R()
 	CycleCounter+=5;
 }
 
-void LBhs_R()
+void LBhs_R(const DecodedInst* inst)
 { //1024
 	if (!cc[C])
 	{
@@ -636,7 +637,7 @@ void LBhs_R()
 	CycleCounter+=6;
 }
 
-void LBcs_R()
+void LBcs_R(const DecodedInst* inst)
 { //1025
 	if (cc[C])
 	{
@@ -648,7 +649,7 @@ void LBcs_R()
 	CycleCounter+=5;
 }
 
-void LBne_R()
+void LBne_R(const DecodedInst* inst)
 { //1026
 	if (!cc[Z])
 	{
@@ -660,7 +661,7 @@ void LBne_R()
 	CycleCounter+=5;
 }
 
-void LBvc_R()
+void LBvc_R(const DecodedInst* inst)
 { //1028
 	if ( !cc[V])
 	{
@@ -672,7 +673,7 @@ void LBvc_R()
 	CycleCounter+=5;
 }
 
-void LBvs_R()
+void LBvs_R(const DecodedInst* inst)
 { //1029
 	if ( cc[V])
 	{
@@ -684,7 +685,7 @@ void LBvs_R()
 	CycleCounter+=5;
 }
 
-void LBpl_R()
+void LBpl_R(const DecodedInst* inst)
 { //102A
 if (!cc[N])
 	{
@@ -696,7 +697,7 @@ if (!cc[N])
 	CycleCounter+=5;
 }
 
-void LBmi_R()
+void LBmi_R(const DecodedInst* inst)
 { //102B
 if ( cc[N])
 	{
@@ -708,7 +709,7 @@ if ( cc[N])
 	CycleCounter+=5;
 }
 
-void LBge_R()
+void LBge_R(const DecodedInst* inst)
 { //102C
 	if (! (cc[N] ^ cc[V]))
 	{
@@ -720,7 +721,7 @@ void LBge_R()
 	CycleCounter+=5;
 }
 
-void LBlt_R()
+void LBlt_R(const DecodedInst* inst)
 { //102D
 	if ( cc[V] ^ cc[N])
 	{
@@ -732,7 +733,7 @@ void LBlt_R()
 	CycleCounter+=5;
 }
 
-void LBgt_R()
+void LBgt_R(const DecodedInst* inst)
 { //102E
 	if ( !( cc[Z] | (cc[N]^cc[V] ) ))
 	{
@@ -744,7 +745,7 @@ void LBgt_R()
 	CycleCounter+=5;
 }
 
-void LBle_R()
+void LBle_R(const DecodedInst* inst)
 {	//102F
 	if ( cc[Z] | (cc[N]^cc[V]) )
 	{
@@ -756,7 +757,7 @@ void LBle_R()
 	CycleCounter+=5;
 }
 
-void Addr()
+void Addr(const DecodedInst* inst)
 { //1030 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
@@ -827,7 +828,7 @@ void Addr()
 	CycleCounter += 4;
 }
 
-void Adcr()
+void Adcr(const DecodedInst* inst)
 { //1031 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
@@ -895,7 +896,7 @@ void Adcr()
 	CycleCounter += 4;
 }
 
-void Subr()
+void Subr(const DecodedInst* inst)
 { //1032 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
@@ -964,7 +965,7 @@ void Subr()
 	CycleCounter += 4;
 }
 
-void Sbcr()
+void Sbcr(const DecodedInst* inst)
 { //1033 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
@@ -1033,7 +1034,7 @@ void Sbcr()
 	CycleCounter += 4;
 }
 
-void Andr()
+void Andr(const DecodedInst* inst)
 { //1034 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
@@ -1099,7 +1100,7 @@ void Andr()
 	CycleCounter += 4;
 }
 
-void Orr()
+void Orr(const DecodedInst* inst)
 { //1035 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
@@ -1165,7 +1166,7 @@ void Orr()
 	CycleCounter += 4;
 }
 
-void Eorr()
+void Eorr(const DecodedInst* inst)
 { //1036 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
@@ -1231,7 +1232,7 @@ void Eorr()
 	CycleCounter += 4;
 }
 
-void Cmpr()
+void Cmpr(const DecodedInst* inst)
 { //1037 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
@@ -1294,35 +1295,35 @@ void Cmpr()
 	CycleCounter += 4;
 }
 
-void Pshsw()
+void Pshsw(const DecodedInst* inst)
 { //1038 DONE 6309
 	MemWrite8((F_REG),--S_REG);
 	MemWrite8((E_REG),--S_REG);
 	CycleCounter+=6;
 }
 
-void Pulsw()
+void Pulsw(const DecodedInst* inst)
 {	//1039 6309 Untested wcreate
 	E_REG=MemRead8( S_REG++);
 	F_REG=MemRead8( S_REG++);
 	CycleCounter+=6;
 }
 
-void Pshuw()
+void Pshuw(const DecodedInst* inst)
 { //103A 6309 Untested
 	MemWrite8((F_REG),--U_REG);
 	MemWrite8((E_REG),--U_REG);
 	CycleCounter+=6;
 }
 
-void Puluw()
+void Puluw(const DecodedInst* inst)
 { //103B 6309 Untested
 	E_REG=MemRead8( U_REG++);
 	F_REG=MemRead8( U_REG++);
 	CycleCounter+=6;
 }
 
-void Swi2_I()
+void Swi2_I(const DecodedInst* inst)
 { //103F
 	cc[E]=1;
 	MemWrite8( pc.B.lsb,--S_REG);
@@ -1347,7 +1348,7 @@ void Swi2_I()
 	CycleCounter+=20;
 }
 
-void Negd_I()
+void Negd_I(const DecodedInst* inst)
 { //1040 Phase 5 6309
 	D_REG = 0-D_REG;
 	cc[C] = temp16>0;
@@ -1357,7 +1358,7 @@ void Negd_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Comd_I()
+void Comd_I(const DecodedInst* inst)
 { //1043 6309
 	D_REG = 0xFFFF- D_REG;
 	cc[Z] = ZTEST(D_REG);
@@ -1367,7 +1368,7 @@ void Comd_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Lsrd_I()
+void Lsrd_I(const DecodedInst* inst)
 { //1044 6309
 	cc[C] = D_REG & 1;
 	D_REG = D_REG>>1;
@@ -1376,7 +1377,7 @@ void Lsrd_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Rord_I()
+void Rord_I(const DecodedInst* inst)
 { //1046 6309 Untested
 	postword=cc[C]<<15;
 	cc[C] = D_REG & 1;
@@ -1386,7 +1387,7 @@ void Rord_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Asrd_I()
+void Asrd_I(const DecodedInst* inst)
 { //1047 6309 Untested TESTED NITRO MULTIVUE
 	cc[C] = D_REG & 1;
 	D_REG = (D_REG & 0x8000) | (D_REG >> 1);
@@ -1395,7 +1396,7 @@ void Asrd_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Asld_I()
+void Asld_I(const DecodedInst* inst)
 { //1048 6309
 	cc[C] = D_REG >>15;
 	cc[V] =  cc[C] ^((D_REG & 0x4000)>>14);
@@ -1405,7 +1406,7 @@ void Asld_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Rold_I()
+void Rold_I(const DecodedInst* inst)
 { //1049 6309 Untested
 	postword=cc[C];
 	cc[C] = D_REG >>15;
@@ -1416,7 +1417,7 @@ void Rold_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Decd_I()
+void Decd_I(const DecodedInst* inst)
 { //104A 6309
 	D_REG--;
 	cc[Z] = ZTEST(D_REG);
@@ -1425,7 +1426,7 @@ void Decd_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Incd_I()
+void Incd_I(const DecodedInst* inst)
 { //104C 6309
 	D_REG++;
 	cc[Z] = ZTEST(D_REG);
@@ -1434,7 +1435,7 @@ void Incd_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Tstd_I()
+void Tstd_I(const DecodedInst* inst)
 { //104D 6309
 	cc[Z] = ZTEST(D_REG);
 	cc[N] = NTEST16(D_REG);
@@ -1442,7 +1443,7 @@ void Tstd_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Clrd_I()
+void Clrd_I(const DecodedInst* inst)
 { //104F 6309
 	D_REG= 0;
 	cc[C] = 0;
@@ -1452,7 +1453,7 @@ void Clrd_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Comw_I()
+void Comw_I(const DecodedInst* inst)
 { //1053 6309 Untested
 	W_REG= 0xFFFF- W_REG;
 	cc[Z] = ZTEST(W_REG);
@@ -1462,7 +1463,7 @@ void Comw_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Lsrw_I()
+void Lsrw_I(const DecodedInst* inst)
 { //1054 6309 Untested
 	cc[C] = W_REG & 1;
 	W_REG= W_REG>>1;
@@ -1471,7 +1472,7 @@ void Lsrw_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Rorw_I()
+void Rorw_I(const DecodedInst* inst)
 { //1056 6309 Untested
 	postword=cc[C]<<15;
 	cc[C] = W_REG & 1;
@@ -1481,7 +1482,7 @@ void Rorw_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Rolw_I()
+void Rolw_I(const DecodedInst* inst)
 { //1059 6309
 	postword=cc[C];
 	cc[C] = W_REG >>15;
@@ -1492,7 +1493,7 @@ void Rolw_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Decw_I()
+void Decw_I(const DecodedInst* inst)
 { //105A 6309
 	W_REG--;
 	cc[Z] = ZTEST(W_REG);
@@ -1501,7 +1502,7 @@ void Decw_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Incw_I()
+void Incw_I(const DecodedInst* inst)
 { //105C 6309
 	W_REG++;
 	cc[Z] = ZTEST(W_REG);
@@ -1510,7 +1511,7 @@ void Incw_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Tstw_I()
+void Tstw_I(const DecodedInst* inst)
 { //105D Untested 6309 wcreate
 	cc[Z] = ZTEST(W_REG);
 	cc[N] = NTEST16(W_REG);
@@ -1518,7 +1519,7 @@ void Tstw_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Clrw_I()
+void Clrw_I(const DecodedInst* inst)
 { //105F 6309
 	W_REG = 0;
 	cc[C] = 0;
@@ -1528,7 +1529,7 @@ void Clrw_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Subw_M()
+void Subw_M(const DecodedInst* inst)
 { //1080 6309 CHECK
 	postword=IMMADDRESS(PC_REG);
 	temp16= W_REG-postword;
@@ -1541,7 +1542,7 @@ void Subw_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Cmpw_M()
+void Cmpw_M(const DecodedInst* inst)
 { //1081 6309 CHECK
 	postword=IMMADDRESS(PC_REG);
 	temp16= W_REG-postword;
@@ -1553,7 +1554,7 @@ void Cmpw_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Sbcd_M()
+void Sbcd_M(const DecodedInst* inst)
 { //1082 6309
 	postword=IMMADDRESS(PC_REG);
 	temp32=D_REG-postword-cc[C];
@@ -1566,7 +1567,7 @@ void Sbcd_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Cmpd_M()
+void Cmpd_M(const DecodedInst* inst)
 { //1083
 	postword=IMMADDRESS(PC_REG);
 	temp16 = D_REG-postword;
@@ -1578,7 +1579,7 @@ void Cmpd_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Andd_M()
+void Andd_M(const DecodedInst* inst)
 { //1084 6309
 	D_REG &= IMMADDRESS(PC_REG);
 	cc[N] = NTEST16(D_REG);
@@ -1588,7 +1589,7 @@ void Andd_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Bitd_M()
+void Bitd_M(const DecodedInst* inst)
 { //1085 6309 Untested
 	temp16= D_REG & IMMADDRESS(PC_REG);
 	cc[N] = NTEST16(temp16);
@@ -1598,7 +1599,7 @@ void Bitd_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Ldw_M()
+void Ldw_M(const DecodedInst* inst)
 { //1086 6309
 	W_REG=IMMADDRESS(PC_REG);
 	cc[Z] = ZTEST(W_REG);
@@ -1608,7 +1609,7 @@ void Ldw_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Eord_M()
+void Eord_M(const DecodedInst* inst)
 { //1088 6309 Untested
 	D_REG ^= IMMADDRESS(PC_REG);
 	cc[N] = NTEST16(D_REG);
@@ -1618,7 +1619,7 @@ void Eord_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Adcd_M()
+void Adcd_M(const DecodedInst* inst)
 { //1089 6309
 	postword=IMMADDRESS(PC_REG);
 	temp32= D_REG + postword + cc[C];
@@ -1632,7 +1633,7 @@ void Adcd_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Ord_M()
+void Ord_M(const DecodedInst* inst)
 { //108A 6309 Untested
 	D_REG |= IMMADDRESS(PC_REG);
 	cc[N] = NTEST16(D_REG);
@@ -1642,7 +1643,7 @@ void Ord_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Addw_M()
+void Addw_M(const DecodedInst* inst)
 { //108B Phase 5 6309
 	temp16=IMMADDRESS(PC_REG);
 	temp32= W_REG+ temp16;
@@ -1655,7 +1656,7 @@ void Addw_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Cmpy_M()
+void Cmpy_M(const DecodedInst* inst)
 { //108C
 	postword=IMMADDRESS(PC_REG);
 	temp16 = Y_REG-postword;
@@ -1667,7 +1668,7 @@ void Cmpy_M()
 	CycleCounter+=NatEmuCycles54;
 }
 	
-void Ldy_M()
+void Ldy_M(const DecodedInst* inst)
 { //108E
 	Y_REG = IMMADDRESS(PC_REG);
 	cc[Z] = ZTEST(Y_REG);
@@ -1677,7 +1678,7 @@ void Ldy_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Subw_D()
+void Subw_D(const DecodedInst* inst)
 { //1090 Untested 6309
 	temp16= MemRead16(DPADDRESS(PC_REG++));
 	temp32= W_REG-temp16;
@@ -1689,7 +1690,7 @@ void Subw_D()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Cmpw_D()
+void Cmpw_D(const DecodedInst* inst)
 { //1091 6309 Untested
 	postword=MemRead16(DPADDRESS(PC_REG++));
 	temp16= W_REG - postword ;
@@ -1700,7 +1701,7 @@ void Cmpw_D()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Sbcd_D()
+void Sbcd_D(const DecodedInst* inst)
 { //1092 6309
 	postword= MemRead16(DPADDRESS(PC_REG++));
 	temp32=D_REG-postword-cc[C];
@@ -1712,7 +1713,7 @@ void Sbcd_D()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Cmpd_D()
+void Cmpd_D(const DecodedInst* inst)
 { //1093
 	postword=MemRead16(DPADDRESS(PC_REG++));
 	temp16= D_REG - postword ;
@@ -1723,7 +1724,7 @@ void Cmpd_D()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Andd_D()
+void Andd_D(const DecodedInst* inst)
 { //1094 6309 Untested
 	postword=MemRead16(DPADDRESS(PC_REG++));
 	D_REG&=postword;
@@ -1733,7 +1734,7 @@ void Andd_D()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Bitd_D()
+void Bitd_D(const DecodedInst* inst)
 { //1095 6309 Untested
 	temp16= D_REG & MemRead16(DPADDRESS(PC_REG++));
 	cc[N] = NTEST16(temp16);
@@ -1742,7 +1743,7 @@ void Bitd_D()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Ldw_D()
+void Ldw_D(const DecodedInst* inst)
 { //1096 6309
 	W_REG = MemRead16(DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(W_REG);
@@ -1751,7 +1752,7 @@ void Ldw_D()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Stw_D()
+void Stw_D(const DecodedInst* inst)
 { //1097 6309
 	MemWrite16(W_REG,DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(W_REG);
@@ -1760,7 +1761,7 @@ void Stw_D()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Eord_D()
+void Eord_D(const DecodedInst* inst)
 { //1098 6309 Untested
 	D_REG^=MemRead16(DPADDRESS(PC_REG++));
 	cc[N] = NTEST16(D_REG);
@@ -1769,7 +1770,7 @@ void Eord_D()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Adcd_D()
+void Adcd_D(const DecodedInst* inst)
 { //1099 6309
 	postword=MemRead16(DPADDRESS(PC_REG++));
 	temp32= D_REG + postword + cc[C];
@@ -1782,7 +1783,7 @@ void Adcd_D()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Ord_D()
+void Ord_D(const DecodedInst* inst)
 { //109A 6309 Untested
 	D_REG|=MemRead16(DPADDRESS(PC_REG++));
 	cc[N] = NTEST16(D_REG);
@@ -1791,7 +1792,7 @@ void Ord_D()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Addw_D()
+void Addw_D(const DecodedInst* inst)
 { //109B 6309
 	temp16=MemRead16( DPADDRESS(PC_REG++));
 	temp32= W_REG+ temp16;
@@ -1803,7 +1804,7 @@ void Addw_D()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Cmpy_D()
+void Cmpy_D(const DecodedInst* inst)
 {	//109C
 	postword=MemRead16(DPADDRESS(PC_REG++));
 	temp16= Y_REG - postword ;
@@ -1814,7 +1815,7 @@ void Cmpy_D()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Ldy_D()
+void Ldy_D(const DecodedInst* inst)
 { //109E
 	Y_REG=MemRead16(DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(Y_REG);	
@@ -1823,7 +1824,7 @@ void Ldy_D()
 	CycleCounter+=NatEmuCycles65;
 }
 	
-void Sty_D()
+void Sty_D(const DecodedInst* inst)
 { //109F
 	MemWrite16(Y_REG,DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(Y_REG);
@@ -1832,7 +1833,7 @@ void Sty_D()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Subw_X()
+void Subw_X(const DecodedInst* inst)
 { //10A0 6309 MODDED
 	temp16=MemRead16(INDADDRESS(PC_REG++));
 	temp32=W_REG-temp16;
@@ -1844,7 +1845,7 @@ void Subw_X()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Cmpw_X()
+void Cmpw_X(const DecodedInst* inst)
 { //10A1 6309
 	postword=MemRead16(INDADDRESS(PC_REG++));
 	temp16= W_REG - postword ;
@@ -1855,7 +1856,7 @@ void Cmpw_X()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Sbcd_X()
+void Sbcd_X(const DecodedInst* inst)
 { //10A2 6309
 	postword=MemRead16(INDADDRESS(PC_REG++));
 	temp32=D_REG-postword-cc[C];
@@ -1867,7 +1868,7 @@ void Sbcd_X()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Cmpd_X()
+void Cmpd_X(const DecodedInst* inst)
 { //10A3
 	postword=MemRead16(INDADDRESS(PC_REG++));
 	temp16= D_REG - postword ;
@@ -1878,7 +1879,7 @@ void Cmpd_X()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Andd_X()
+void Andd_X(const DecodedInst* inst)
 { //10A4 6309
 	D_REG&=MemRead16(INDADDRESS(PC_REG++));
 	cc[N] = NTEST16(D_REG);
@@ -1887,7 +1888,7 @@ void Andd_X()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Bitd_X()
+void Bitd_X(const DecodedInst* inst)
 { //10A5 6309 Untested
 	temp16= D_REG & MemRead16(INDADDRESS(PC_REG++));
 	cc[N] = NTEST16(temp16);
@@ -1896,7 +1897,7 @@ void Bitd_X()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Ldw_X()
+void Ldw_X(const DecodedInst* inst)
 { //10A6 6309
 	W_REG=MemRead16(INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(W_REG);
@@ -1905,7 +1906,7 @@ void Ldw_X()
 	CycleCounter+=6;
 }
 
-void Stw_X()
+void Stw_X(const DecodedInst* inst)
 { //10A7 6309
 	MemWrite16(W_REG,INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(W_REG);
@@ -1914,7 +1915,7 @@ void Stw_X()
 	CycleCounter+=6;
 }
 
-void Eord_X()
+void Eord_X(const DecodedInst* inst)
 { //10A8 6309 Untested TESTED NITRO 
 	D_REG ^= MemRead16(INDADDRESS(PC_REG++));
 	cc[N] = NTEST16(D_REG);
@@ -1923,7 +1924,7 @@ void Eord_X()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Adcd_X()
+void Adcd_X(const DecodedInst* inst)
 { //10A9 6309 untested
 	postword=MemRead16(INDADDRESS(PC_REG++));
 	temp32 = D_REG + postword + cc[C];
@@ -1936,7 +1937,7 @@ void Adcd_X()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Ord_X()
+void Ord_X(const DecodedInst* inst)
 { //10AA 6309 Untested wcreate
 	D_REG |= MemRead16(INDADDRESS(PC_REG++));
 	cc[N] = NTEST16(D_REG);
@@ -1945,7 +1946,7 @@ void Ord_X()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Addw_X()
+void Addw_X(const DecodedInst* inst)
 { //10AB 6309 Untested TESTED NITRO CHECK no Half carry?
 	temp16=MemRead16(INDADDRESS(PC_REG++));
 	temp32= W_REG+ temp16;
@@ -1957,7 +1958,7 @@ void Addw_X()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Cmpy_X()
+void Cmpy_X(const DecodedInst* inst)
 { //10AC
 	postword=MemRead16(INDADDRESS(PC_REG++));
 	temp16= Y_REG - postword ;
@@ -1968,7 +1969,7 @@ void Cmpy_X()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Ldy_X()
+void Ldy_X(const DecodedInst* inst)
 { //10AE
 	Y_REG=MemRead16(INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(Y_REG);
@@ -1977,7 +1978,7 @@ void Ldy_X()
 	CycleCounter+=6;
 	}
 
-void Sty_X()
+void Sty_X(const DecodedInst* inst)
 { //10AF
 	MemWrite16(Y_REG,INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(Y_REG);
@@ -1986,7 +1987,7 @@ void Sty_X()
 	CycleCounter+=6;
 }
 
-void Subw_E()
+void Subw_E(const DecodedInst* inst)
 { //10B0 6309 Untested
 	temp16=MemRead16(IMMADDRESS(PC_REG));
 	temp32=W_REG-temp16;
@@ -1999,7 +2000,7 @@ void Subw_E()
 	CycleCounter+=NatEmuCycles86;
 }
 
-void Cmpw_E()
+void Cmpw_E(const DecodedInst* inst)
 { //10B1 6309 Untested
 	postword=MemRead16(IMMADDRESS(PC_REG));
 	temp16 = W_REG-postword;
@@ -2011,7 +2012,7 @@ void Cmpw_E()
 	CycleCounter+=NatEmuCycles86;
 }
 
-void Sbcd_E()
+void Sbcd_E(const DecodedInst* inst)
 { //10B2 6309 Untested
 	temp16=MemRead16(IMMADDRESS(PC_REG));
 	temp32=D_REG-temp16-cc[C];
@@ -2024,7 +2025,7 @@ void Sbcd_E()
 	CycleCounter+=NatEmuCycles86;
 }
 
-void Cmpd_E()
+void Cmpd_E(const DecodedInst* inst)
 { //10B3
 	postword=MemRead16(IMMADDRESS(PC_REG));
 	temp16 = D_REG-postword;
@@ -2036,7 +2037,7 @@ void Cmpd_E()
 	CycleCounter+=NatEmuCycles86;
 }
 
-void Andd_E()
+void Andd_E(const DecodedInst* inst)
 { //10B4 6309 Untested
 	D_REG &= MemRead16(IMMADDRESS(PC_REG));
 	cc[N] = NTEST16(D_REG);
@@ -2046,7 +2047,7 @@ void Andd_E()
 	CycleCounter+=NatEmuCycles86;
 }
 
-void Bitd_E()
+void Bitd_E(const DecodedInst* inst)
 { //10B5 6309 Untested CHECK NITRO
 	temp16= D_REG & MemRead16(IMMADDRESS(PC_REG));
 	cc[N] = NTEST16(temp16);
@@ -2056,7 +2057,7 @@ void Bitd_E()
 	CycleCounter+=NatEmuCycles86;
 }
 
-void Ldw_E()
+void Ldw_E(const DecodedInst* inst)
 { //10B6 6309
 	W_REG=MemRead16(IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(W_REG);
@@ -2066,7 +2067,7 @@ void Ldw_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Stw_E()
+void Stw_E(const DecodedInst* inst)
 { //10B7 6309
 	MemWrite16(W_REG,IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(W_REG);
@@ -2076,7 +2077,7 @@ void Stw_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Eord_E()
+void Eord_E(const DecodedInst* inst)
 { //10B8 6309 Untested
 	D_REG ^= MemRead16(IMMADDRESS(PC_REG));
 	cc[N] = NTEST16(D_REG);
@@ -2086,7 +2087,7 @@ void Eord_E()
 	CycleCounter+=NatEmuCycles86;
 }
 
-void Adcd_E()
+void Adcd_E(const DecodedInst* inst)
 { //10B9 6309 untested
 	postword = MemRead16(IMMADDRESS(PC_REG));
 	temp32 = D_REG + postword + cc[C];
@@ -2100,7 +2101,7 @@ void Adcd_E()
 	CycleCounter+=NatEmuCycles86;
 }
 
-void Ord_E()
+void Ord_E(const DecodedInst* inst)
 { //10BA 6309 Untested
 	D_REG |= MemRead16(IMMADDRESS(PC_REG));
 	cc[N] = NTEST16(D_REG);
@@ -2110,7 +2111,7 @@ void Ord_E()
 	CycleCounter+=NatEmuCycles86;
 }
 
-void Addw_E()
+void Addw_E(const DecodedInst* inst)
 { //10BB 6309 Untested
 	temp16=MemRead16(IMMADDRESS(PC_REG));
 	temp32= W_REG+ temp16;
@@ -2123,7 +2124,7 @@ void Addw_E()
 	CycleCounter+=NatEmuCycles86;
 }
 
-void Cmpy_E()
+void Cmpy_E(const DecodedInst* inst)
 { //10BC
 	postword=MemRead16(IMMADDRESS(PC_REG));
 	temp16 = Y_REG-postword;
@@ -2135,7 +2136,7 @@ void Cmpy_E()
 	CycleCounter+=NatEmuCycles86;
 }
 
-void Ldy_E()
+void Ldy_E(const DecodedInst* inst)
 { //10BE
 	Y_REG=MemRead16(IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(Y_REG);
@@ -2145,7 +2146,7 @@ void Ldy_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Sty_E()
+void Sty_E(const DecodedInst* inst)
 { //10BF
 	MemWrite16(Y_REG,IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(Y_REG);
@@ -2155,7 +2156,7 @@ void Sty_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Lds_I()
+void Lds_I(const DecodedInst* inst)
 {  //10CE
 	S_REG=IMMADDRESS(PC_REG);
 	cc[Z] = ZTEST(S_REG);
@@ -2165,7 +2166,7 @@ void Lds_I()
 	CycleCounter+=4;
 }
 
-void Ldq_D()
+void Ldq_D(const DecodedInst* inst)
 { //10DC 6309
 	Q_REG=MemRead32(DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(Q_REG);
@@ -2174,7 +2175,7 @@ void Ldq_D()
 	CycleCounter+=NatEmuCycles87;
 }
 
-void Stq_D()
+void Stq_D(const DecodedInst* inst)
 { //10DD 6309
 	MemWrite32(Q_REG,DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(Q_REG);
@@ -2183,7 +2184,7 @@ void Stq_D()
 	CycleCounter+=NatEmuCycles87;
 }
 
-void Lds_D()
+void Lds_D(const DecodedInst* inst)
 { //10DE
 	S_REG=MemRead16(DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(S_REG);
@@ -2192,7 +2193,7 @@ void Lds_D()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Sts_D()
+void Sts_D(const DecodedInst* inst)
 { //10DF 6309
 	MemWrite16(S_REG,DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(S_REG);
@@ -2201,7 +2202,7 @@ void Sts_D()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Ldq_X()
+void Ldq_X(const DecodedInst* inst)
 { //10EC 6309
 	Q_REG=MemRead32(INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(Q_REG);
@@ -2210,7 +2211,7 @@ void Ldq_X()
 	CycleCounter+=8;
 }
 
-void Stq_X()
+void Stq_X(const DecodedInst* inst)
 { //10ED 6309 DONE
 	MemWrite32(Q_REG,INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(Q_REG);
@@ -2220,7 +2221,7 @@ void Stq_X()
 }
 
 
-void Lds_X()
+void Lds_X(const DecodedInst* inst)
 { //10EE
 	S_REG=MemRead16(INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(S_REG);
@@ -2229,7 +2230,7 @@ void Lds_X()
 	CycleCounter+=6;
 }
 
-void Sts_X()
+void Sts_X(const DecodedInst* inst)
 { //10EF 6309
 	MemWrite16(S_REG,INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(S_REG);
@@ -2238,7 +2239,7 @@ void Sts_X()
 	CycleCounter+=6;
 }
 
-void Ldq_E()
+void Ldq_E(const DecodedInst* inst)
 { //10FC 6309
 	Q_REG=MemRead32(IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(Q_REG);
@@ -2248,7 +2249,7 @@ void Ldq_E()
 	CycleCounter+=NatEmuCycles98;
 }
 
-void Stq_E()
+void Stq_E(const DecodedInst* inst)
 { //10FD 6309
 	MemWrite32(Q_REG,IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(Q_REG);
@@ -2258,7 +2259,7 @@ void Stq_E()
 	CycleCounter+=NatEmuCycles98;
 }
 
-void Lds_E()
+void Lds_E(const DecodedInst* inst)
 { //10FE
 	S_REG=MemRead16(IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(S_REG);
@@ -2268,7 +2269,7 @@ void Lds_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Sts_E()
+void Sts_E(const DecodedInst* inst)
 { //10FF 6309
 	MemWrite16(S_REG,IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(S_REG);
@@ -2278,7 +2279,7 @@ void Sts_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Band()
+void Band(const DecodedInst* inst)
 { //1130 6309 untested
 	postbyte = MemRead8(PC_REG++);
 	temp8 = MemRead8(DPADDRESS(PC_REG++));
@@ -2288,7 +2289,7 @@ void Band()
 	
 	if (postbyte == 3)
 	{
-		InvalidInsHandler();
+		InvalidInsHandler(nullptr);
 		return;
 	}
 
@@ -2309,7 +2310,7 @@ void Band()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Biand()
+void Biand(const DecodedInst* inst)
 { //1131 6309
 	postbyte = MemRead8(PC_REG++);
 	temp8 = MemRead8(DPADDRESS(PC_REG++));
@@ -2319,7 +2320,7 @@ void Biand()
 
 	if (postbyte == 3)
 	{
-		InvalidInsHandler();
+		InvalidInsHandler(nullptr);
 		return;
 	}
 
@@ -2340,7 +2341,7 @@ void Biand()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Bor()
+void Bor(const DecodedInst* inst)
 { //1132 6309
 	postbyte = MemRead8(PC_REG++);
 	temp8 = MemRead8(DPADDRESS(PC_REG++));
@@ -2350,7 +2351,7 @@ void Bor()
 
 	if (postbyte == 3)
 	{
-		InvalidInsHandler();
+		InvalidInsHandler(nullptr);
 		return;
 	}
 
@@ -2371,7 +2372,7 @@ void Bor()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Bior()
+void Bior(const DecodedInst* inst)
 { //1133 6309
 	postbyte = MemRead8(PC_REG++);
 	temp8 = MemRead8(DPADDRESS(PC_REG++));
@@ -2381,7 +2382,7 @@ void Bior()
 
 	if (postbyte == 3)
 	{
-		InvalidInsHandler();
+		InvalidInsHandler(nullptr);
 		return;
 	}
 
@@ -2402,7 +2403,7 @@ void Bior()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Beor()
+void Beor(const DecodedInst* inst)
 { //1134 6309
 	postbyte = MemRead8(PC_REG++);
 	temp8 = MemRead8(DPADDRESS(PC_REG++));
@@ -2412,7 +2413,7 @@ void Beor()
 
 	if (postbyte == 3)
 	{
-		InvalidInsHandler();
+		InvalidInsHandler(nullptr);
 		return;
 	}
 
@@ -2432,7 +2433,7 @@ void Beor()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Bieor()
+void Bieor(const DecodedInst* inst)
 { //1135 6309
 	postbyte = MemRead8(PC_REG++);
 	temp8 = MemRead8(DPADDRESS(PC_REG++));
@@ -2442,7 +2443,7 @@ void Bieor()
 
 	if (postbyte == 3)
 	{
-		InvalidInsHandler();
+		InvalidInsHandler(nullptr);
 		return;
 	}
 
@@ -2462,7 +2463,7 @@ void Bieor()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Ldbt()
+void Ldbt(const DecodedInst* inst)
 { //1136 6309
 	postbyte = MemRead8(PC_REG++);
 	temp8 = MemRead8(DPADDRESS(PC_REG++));
@@ -2472,7 +2473,7 @@ void Ldbt()
 
 	if (postbyte == 3)
 	{
-		InvalidInsHandler();
+		InvalidInsHandler(nullptr);
 		return;
 	}
 
@@ -2505,7 +2506,7 @@ void Ldbt()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Stbt()
+void Stbt(const DecodedInst* inst)
 { //1137 6309
 	postbyte = MemRead8(PC_REG++);
 	temp16 = DPADDRESS(PC_REG++);
@@ -2516,7 +2517,7 @@ void Stbt()
 
 	if (postbyte == 3)
 	{
-		InvalidInsHandler();
+		InvalidInsHandler(nullptr);
 		return;
 	}
 
@@ -2543,7 +2544,7 @@ void Stbt()
 	CycleCounter+=NatEmuCycles87;
 }
 
-void Tfm1()
+void Tfm1(const DecodedInst* inst)
 { //1138 TFM R+,R+ 6309
 	if (W_REG == 0)
 	{
@@ -2560,7 +2561,7 @@ void Tfm1()
 
 	if (Source > 4 || Dest > 4)
 	{
-		InvalidInsHandler();
+		InvalidInsHandler(nullptr);
 		return;
 	}
   
@@ -2573,7 +2574,7 @@ void Tfm1()
 	PC_REG -= 2;
 }
 
-void Tfm2()
+void Tfm2(const DecodedInst* inst)
 { //1139 TFM R-,R- Phase 3 6309
 	if (W_REG == 0)
 	{
@@ -2590,7 +2591,7 @@ void Tfm2()
 
 	if (Source > 4 || Dest > 4)
 	{
-		InvalidInsHandler();
+		InvalidInsHandler(nullptr);
 		return;
 	}
 
@@ -2604,7 +2605,7 @@ void Tfm2()
 	PC_REG-=2;
 }
 
-void Tfm3()
+void Tfm3(const DecodedInst* inst)
 { //113A 6309 TFM R+,R 6309
 	if (W_REG == 0)
 	{
@@ -2621,7 +2622,7 @@ void Tfm3()
 
 	if (Source > 4 || Dest > 4)
 	{
-		InvalidInsHandler();
+		InvalidInsHandler(nullptr);
 		return;
 	}
 
@@ -2634,7 +2635,7 @@ void Tfm3()
 	CycleCounter += 3;
 }
 
-void Tfm4()
+void Tfm4(const DecodedInst* inst)
 { //113B TFM R,R+ 6309 
 	if (W_REG == 0)
 	{
@@ -2651,7 +2652,7 @@ void Tfm4()
 
 	if (Source > 4 || Dest > 4)
 	{
-		InvalidInsHandler();
+		InvalidInsHandler(nullptr);
 		return;
 	}
 
@@ -2663,7 +2664,7 @@ void Tfm4()
 	CycleCounter+=3;
 }
 
-void Bitmd_M()
+void Bitmd_M(const DecodedInst* inst)
 { //113C  6309
 	postbyte = MemRead8(PC_REG++) & 0xC0;
 	temp8 = getmd() & postbyte;
@@ -2673,14 +2674,14 @@ void Bitmd_M()
 	CycleCounter+=4;
 }
 
-void Ldmd_M()
+void Ldmd_M(const DecodedInst* inst)
 { //113D DONE 6309
 	mdbits= MemRead8(PC_REG++)&0x03;
 	setmd(mdbits);
 	CycleCounter+=5;
 }
 
-void Swi3_I()
+void Swi3_I(const DecodedInst* inst)
 { //113F
 	cc[E]=1;
 	MemWrite8( pc.B.lsb,--S_REG);
@@ -2705,7 +2706,7 @@ void Swi3_I()
 	CycleCounter+=20;
 }
 
-void Come_I()
+void Come_I(const DecodedInst* inst)
 { //1143 6309 Untested
 	E_REG = 0xFF- E_REG;
 	cc[Z] = ZTEST(E_REG);
@@ -2715,7 +2716,7 @@ void Come_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Dece_I()
+void Dece_I(const DecodedInst* inst)
 { //114A 6309
 	E_REG--;
 	cc[Z] = ZTEST(E_REG);
@@ -2724,7 +2725,7 @@ void Dece_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Ince_I()
+void Ince_I(const DecodedInst* inst)
 { //114C 6309
 	E_REG++;
 	cc[Z] = ZTEST(E_REG);
@@ -2733,7 +2734,7 @@ void Ince_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Tste_I()
+void Tste_I(const DecodedInst* inst)
 { //114D 6309 Untested TESTED NITRO
 	cc[Z] = ZTEST(E_REG);
 	cc[N] = NTEST8(E_REG);
@@ -2741,7 +2742,7 @@ void Tste_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Clre_I()
+void Clre_I(const DecodedInst* inst)
 { //114F 6309
 	E_REG= 0;
 	cc[C] = 0;
@@ -2751,7 +2752,7 @@ void Clre_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Comf_I()
+void Comf_I(const DecodedInst* inst)
 { //1153 6309 Untested
 	F_REG= 0xFF- F_REG;
 	cc[Z] = ZTEST(F_REG);
@@ -2761,7 +2762,7 @@ void Comf_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Decf_I()
+void Decf_I(const DecodedInst* inst)
 { //115A 6309
 	F_REG--;
 	cc[Z] = ZTEST(F_REG);
@@ -2770,7 +2771,7 @@ void Decf_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Incf_I()
+void Incf_I(const DecodedInst* inst)
 { //115C 6309 Untested
 	F_REG++;
 	cc[Z] = ZTEST(F_REG);
@@ -2779,7 +2780,7 @@ void Incf_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Tstf_I()
+void Tstf_I(const DecodedInst* inst)
 { //115D 6309
 	cc[Z] = ZTEST(F_REG);
 	cc[N] = NTEST8(F_REG);
@@ -2787,7 +2788,7 @@ void Tstf_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Clrf_I()
+void Clrf_I(const DecodedInst* inst)
 { //115F 6309 Untested wcreate
 	F_REG= 0;
 	cc[C] = 0;
@@ -2797,7 +2798,7 @@ void Clrf_I()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Sube_M()
+void Sube_M(const DecodedInst* inst)
 { //1180 6309 Untested
 	postbyte=MemRead8(PC_REG++);
 	temp16 = E_REG - postbyte;
@@ -2809,7 +2810,7 @@ void Sube_M()
 	CycleCounter+=3;
 }
 
-void Cmpe_M()
+void Cmpe_M(const DecodedInst* inst)
 { //1181 6309
 	postbyte=MemRead8(PC_REG++);
 	temp8= E_REG-postbyte;
@@ -2820,7 +2821,7 @@ void Cmpe_M()
 	CycleCounter+=3;
 }
 
-void Cmpu_M()
+void Cmpu_M(const DecodedInst* inst)
 { //1183
 	postword=IMMADDRESS(PC_REG);
 	temp16 = U_REG-postword;
@@ -2832,7 +2833,7 @@ void Cmpu_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Lde_M()
+void Lde_M(const DecodedInst* inst)
 { //1186 6309
 	E_REG= MemRead8(PC_REG++);
 	cc[Z] = ZTEST(E_REG);
@@ -2841,7 +2842,7 @@ void Lde_M()
 	CycleCounter+=3;
 }
 
-void Adde_M()
+void Adde_M(const DecodedInst* inst)
 { //118B 6309
 	postbyte=MemRead8(PC_REG++);
 	temp16=E_REG+postbyte;
@@ -2854,7 +2855,7 @@ void Adde_M()
 	CycleCounter+=3;
 }
 
-void Cmps_M()
+void Cmps_M(const DecodedInst* inst)
 { //118C
 	postword=IMMADDRESS(PC_REG);
 	temp16 = S_REG-postword;
@@ -2866,14 +2867,14 @@ void Cmps_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Divd_M()
+void Divd_M(const DecodedInst* inst)
 { //118D 6309
 	postbyte = MemRead8(PC_REG++);
 
 	if (postbyte == 0)
 	{
 		CycleCounter+=3;
-		DivbyZero();
+		DivbyZero(nullptr);
 		return;			
 	}
 
@@ -2908,7 +2909,7 @@ void Divd_M()
 	CycleCounter+=25;
 }
 
-void Divq_M()
+void Divq_M(const DecodedInst* inst)
 { //118E 6309
 	postword = MemRead16(PC_REG);
 	PC_REG+=2;
@@ -2916,7 +2917,7 @@ void Divq_M()
 	if(postword == 0)
 	{
 		CycleCounter+=4;
-		DivbyZero();
+		DivbyZero(nullptr);
 		return;			
 	}
 
@@ -2950,7 +2951,7 @@ void Divq_M()
 	CycleCounter+=34;
 }
 
-void Muld_M()
+void Muld_M(const DecodedInst* inst)
 { //118F Phase 5 6309
 	Q_REG =  (signed short)D_REG * (signed short)IMMADDRESS(PC_REG);
 	cc[C] = 0; 
@@ -2961,7 +2962,7 @@ void Muld_M()
 	CycleCounter+=28;
 }
 
-void Sube_D()
+void Sube_D(const DecodedInst* inst)
 { //1190 6309 Untested HERE
 	postbyte=MemRead8( DPADDRESS(PC_REG++));
 	temp16 = E_REG - postbyte;
@@ -2973,7 +2974,7 @@ void Sube_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Cmpe_D()
+void Cmpe_D(const DecodedInst* inst)
 { //1191 6309 Untested
 	postbyte=MemRead8(DPADDRESS(PC_REG++));
 	temp8= E_REG-postbyte;
@@ -2984,7 +2985,7 @@ void Cmpe_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Cmpu_D()
+void Cmpu_D(const DecodedInst* inst)
 { //1193
 	postword=MemRead16(DPADDRESS(PC_REG++));
 	temp16= U_REG - postword ;
@@ -2995,7 +2996,7 @@ void Cmpu_D()
 	CycleCounter+=NatEmuCycles75;
 	}
 
-void Lde_D()
+void Lde_D(const DecodedInst* inst)
 { //1196 6309
 	E_REG= MemRead8(DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(E_REG);
@@ -3004,7 +3005,7 @@ void Lde_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Ste_D()
+void Ste_D(const DecodedInst* inst)
 { //1197 Phase 5 6309
 	MemWrite8( E_REG,DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(E_REG);
@@ -3013,7 +3014,7 @@ void Ste_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Adde_D()
+void Adde_D(const DecodedInst* inst)
 { //119B 6309 Untested
 	postbyte=MemRead8(DPADDRESS(PC_REG++));
 	temp16=E_REG+postbyte;
@@ -3026,7 +3027,7 @@ void Adde_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Cmps_D()
+void Cmps_D(const DecodedInst* inst)
 { //119C
 	postword=MemRead16(DPADDRESS(PC_REG++));
 	temp16= S_REG - postword ;
@@ -3037,14 +3038,14 @@ void Cmps_D()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Divd_D()
+void Divd_D(const DecodedInst* inst)
 { //119D 6309 02292008
 	postbyte = MemRead8(DPADDRESS(PC_REG++));
 
 	if (postbyte == 0)
 	{
 		CycleCounter+=3;
-		DivbyZero();
+		DivbyZero(nullptr);
 		return;			
 	}
 
@@ -3079,14 +3080,14 @@ void Divd_D()
 	CycleCounter+=27;
 }
 
-void Divq_D()
+void Divq_D(const DecodedInst* inst)
 { //119E 6309
 	postword = MemRead16(DPADDRESS(PC_REG++));
 
 	if(postword == 0)
 	{
 		CycleCounter+=4;
-		DivbyZero();
+		DivbyZero(nullptr);
 		return;			
 	}
 
@@ -3120,7 +3121,7 @@ void Divq_D()
   CycleCounter+=NatEmuCycles3635;
 }
 
-void Muld_D()
+void Muld_D(const DecodedInst* inst)
 { //119F 6309 02292008
 	Q_REG = (signed short)D_REG * (signed short)MemRead16(DPADDRESS(PC_REG++));
 	cc[C] = 0;
@@ -3130,7 +3131,7 @@ void Muld_D()
 	CycleCounter+=NatEmuCycles3029;
 }
 
-void Sube_X()
+void Sube_X(const DecodedInst* inst)
 { //11A0 6309 Untested
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp16 = E_REG - postbyte;
@@ -3142,7 +3143,7 @@ void Sube_X()
 	CycleCounter+=5;
 }
 
-void Cmpe_X()
+void Cmpe_X(const DecodedInst* inst)
 { //11A1 6309
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp8= E_REG-postbyte;
@@ -3153,7 +3154,7 @@ void Cmpe_X()
 	CycleCounter+=5;
 }
 
-void Cmpu_X()
+void Cmpu_X(const DecodedInst* inst)
 { //11A3
 	postword=MemRead16(INDADDRESS(PC_REG++));
 	temp16= U_REG - postword ;
@@ -3164,7 +3165,7 @@ void Cmpu_X()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Lde_X()
+void Lde_X(const DecodedInst* inst)
 { //11A6 6309
 	E_REG= MemRead8(INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(E_REG);
@@ -3173,7 +3174,7 @@ void Lde_X()
 	CycleCounter+=5;
 }
 
-void Ste_X()
+void Ste_X(const DecodedInst* inst)
 { //11A7 6309
 	MemWrite8(E_REG,INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(E_REG);
@@ -3182,7 +3183,7 @@ void Ste_X()
 	CycleCounter+=5;
 }
 
-void Adde_X()
+void Adde_X(const DecodedInst* inst)
 { //11AB 6309 Untested
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp16=E_REG+postbyte;
@@ -3195,7 +3196,7 @@ void Adde_X()
 	CycleCounter+=5;
 }
 
-void Cmps_X()
+void Cmps_X(const DecodedInst* inst)
 {  //11AC
 	postword=MemRead16(INDADDRESS(PC_REG++));
 	temp16= S_REG - postword ;
@@ -3206,14 +3207,14 @@ void Cmps_X()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Divd_X()
+void Divd_X(const DecodedInst* inst)
 { //11AD wcreate  6309
 	postbyte = MemRead8(INDADDRESS(PC_REG++));
 
   if (postbyte == 0)
   {
     CycleCounter += 3;
-    DivbyZero();
+    DivbyZero(nullptr);
     return;
   }
 
@@ -3248,14 +3249,14 @@ void Divd_X()
   CycleCounter += 27;
 }
 
-void Divq_X()
+void Divq_X(const DecodedInst* inst)
 { //11AE Phase 5 6309 CHECK
 	postword = MemRead16(INDADDRESS(PC_REG++));
 
   if (postword == 0)
   {
     CycleCounter += 4;
-    DivbyZero();
+    DivbyZero(nullptr);
     return;
   }
 
@@ -3289,7 +3290,7 @@ void Divq_X()
   CycleCounter += NatEmuCycles3635;
 }
 
-void Muld_X()
+void Muld_X(const DecodedInst* inst)
 { //11AF 6309 CHECK
 	Q_REG=  (signed short)D_REG * (signed short)MemRead16(INDADDRESS(PC_REG++));
 	cc[C] = 0;
@@ -3299,7 +3300,7 @@ void Muld_X()
 	CycleCounter+=30;
 }
 
-void Sube_E()
+void Sube_E(const DecodedInst* inst)
 { //11B0 6309 Untested
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp16 = E_REG - postbyte;
@@ -3312,7 +3313,7 @@ void Sube_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Cmpe_E()
+void Cmpe_E(const DecodedInst* inst)
 { //11B1 6309 Untested
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp8= E_REG-postbyte;
@@ -3324,7 +3325,7 @@ void Cmpe_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Cmpu_E()
+void Cmpu_E(const DecodedInst* inst)
 { //11B3
 	postword=MemRead16(IMMADDRESS(PC_REG));
 	temp16 = U_REG-postword;
@@ -3336,7 +3337,7 @@ void Cmpu_E()
 	CycleCounter+=NatEmuCycles86;
 }
 
-void Lde_E()
+void Lde_E(const DecodedInst* inst)
 { //11B6 6309
 	E_REG= MemRead8(IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(E_REG);
@@ -3346,7 +3347,7 @@ void Lde_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Ste_E()
+void Ste_E(const DecodedInst* inst)
 { //11B7 6309
 	MemWrite8(E_REG,IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(E_REG);
@@ -3356,7 +3357,7 @@ void Ste_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Adde_E()
+void Adde_E(const DecodedInst* inst)
 { //11BB 6309 Untested
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp16=E_REG+postbyte;
@@ -3370,7 +3371,7 @@ void Adde_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Cmps_E()
+void Cmps_E(const DecodedInst* inst)
 { //11BC
 	postword=MemRead16(IMMADDRESS(PC_REG));
 	temp16 = S_REG-postword;
@@ -3382,7 +3383,7 @@ void Cmps_E()
 	CycleCounter+=NatEmuCycles86;
 }
 
-void Divd_E()
+void Divd_E(const DecodedInst* inst)
 { //11BD 6309 02292008 Untested
 	postbyte = MemRead8(IMMADDRESS(PC_REG));
 	PC_REG+=2;
@@ -3390,7 +3391,7 @@ void Divd_E()
   if (postbyte == 0)
   {
     CycleCounter += 3;
-    DivbyZero();
+    DivbyZero(nullptr);
     return;
   }
 
@@ -3425,7 +3426,7 @@ void Divd_E()
   CycleCounter += 25;
 }
 
-void Divq_E()
+void Divq_E(const DecodedInst* inst)
 { //11BE Phase 5 6309 CHECK
 	postword = MemRead16(IMMADDRESS(PC_REG));
 	PC_REG+=2;
@@ -3433,7 +3434,7 @@ void Divq_E()
   if (postword == 0)
   {
     CycleCounter += 4;
-    DivbyZero();
+    DivbyZero(nullptr);
     return;
   }
 
@@ -3467,7 +3468,7 @@ void Divq_E()
   CycleCounter += NatEmuCycles3635;
 }
 
-void Muld_E()
+void Muld_E(const DecodedInst* inst)
 { //11BF 6309
 	Q_REG=  (signed short)D_REG * (signed short)MemRead16(IMMADDRESS(PC_REG));
 	PC_REG+=2;
@@ -3478,7 +3479,7 @@ void Muld_E()
 	CycleCounter+=NatEmuCycles3130;
 }
 
-void Subf_M()
+void Subf_M(const DecodedInst* inst)
 { //11C0 6309 Untested
 	postbyte=MemRead8(PC_REG++);
 	temp16 = F_REG - postbyte;
@@ -3490,7 +3491,7 @@ void Subf_M()
 	CycleCounter+=3;
 }
 
-void Cmpf_M()
+void Cmpf_M(const DecodedInst* inst)
 { //11C1 6309
 	postbyte=MemRead8(PC_REG++);
 	temp8= F_REG-postbyte;
@@ -3501,7 +3502,7 @@ void Cmpf_M()
 	CycleCounter+=3;
 }
 
-void Ldf_M()
+void Ldf_M(const DecodedInst* inst)
 { //11C6 6309
 	F_REG= MemRead8(PC_REG++);
 	cc[Z] = ZTEST(F_REG);
@@ -3510,7 +3511,7 @@ void Ldf_M()
 	CycleCounter+=3;
 }
 
-void Addf_M()
+void Addf_M(const DecodedInst* inst)
 { //11CB 6309 Untested
 	postbyte=MemRead8(PC_REG++);
 	temp16=F_REG+postbyte;
@@ -3523,7 +3524,7 @@ void Addf_M()
 	CycleCounter+=3;
 }
 
-void Subf_D()
+void Subf_D(const DecodedInst* inst)
 { //11D0 6309 Untested
 	postbyte=MemRead8( DPADDRESS(PC_REG++));
 	temp16 = F_REG - postbyte;
@@ -3535,7 +3536,7 @@ void Subf_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Cmpf_D()
+void Cmpf_D(const DecodedInst* inst)
 { //11D1 6309 Untested
 	postbyte=MemRead8(DPADDRESS(PC_REG++));
 	temp8= F_REG-postbyte;
@@ -3546,7 +3547,7 @@ void Cmpf_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Ldf_D()
+void Ldf_D(const DecodedInst* inst)
 { //11D6 6309 Untested wcreate
 	F_REG= MemRead8(DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(F_REG);
@@ -3555,7 +3556,7 @@ void Ldf_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Stf_D()
+void Stf_D(const DecodedInst* inst)
 { //11D7 Phase 5 6309
 	MemWrite8(F_REG,DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(F_REG);
@@ -3564,7 +3565,7 @@ void Stf_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Addf_D()
+void Addf_D(const DecodedInst* inst)
 { //11DB 6309 Untested
 	postbyte=MemRead8(DPADDRESS(PC_REG++));
 	temp16=F_REG+postbyte;
@@ -3577,7 +3578,7 @@ void Addf_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Subf_X()
+void Subf_X(const DecodedInst* inst)
 { //11E0 6309 Untested
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp16 = F_REG - postbyte;
@@ -3589,7 +3590,7 @@ void Subf_X()
 	CycleCounter+=5;
 }
 
-void Cmpf_X()
+void Cmpf_X(const DecodedInst* inst)
 { //11E1 6309 Untested
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp8= F_REG-postbyte;
@@ -3600,7 +3601,7 @@ void Cmpf_X()
 	CycleCounter+=5;
 }
 
-void Ldf_X()
+void Ldf_X(const DecodedInst* inst)
 { //11E6 6309
 	F_REG=MemRead8(INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(F_REG);
@@ -3609,7 +3610,7 @@ void Ldf_X()
 	CycleCounter+=5;
 }
 
-void Stf_X()
+void Stf_X(const DecodedInst* inst)
 { //11E7 Phase 5 6309
 	MemWrite8(F_REG,INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(F_REG);
@@ -3618,7 +3619,7 @@ void Stf_X()
 	CycleCounter+=5;
 }
 
-void Addf_X()
+void Addf_X(const DecodedInst* inst)
 { //11EB 6309 Untested
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp16=F_REG+postbyte;
@@ -3631,7 +3632,7 @@ void Addf_X()
 	CycleCounter+=5;
 }
 
-void Subf_E()
+void Subf_E(const DecodedInst* inst)
 { //11F0 6309 Untested
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp16 = F_REG - postbyte;
@@ -3644,7 +3645,7 @@ void Subf_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Cmpf_E()
+void Cmpf_E(const DecodedInst* inst)
 { //11F1 6309 Untested
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp8= F_REG-postbyte;
@@ -3656,7 +3657,7 @@ void Cmpf_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Ldf_E()
+void Ldf_E(const DecodedInst* inst)
 { //11F6 6309
 	F_REG= MemRead8(IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(F_REG);
@@ -3666,7 +3667,7 @@ void Ldf_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Stf_E()
+void Stf_E(const DecodedInst* inst)
 { //11F7 Phase 5 6309
 	MemWrite8(F_REG,IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(F_REG);
@@ -3676,7 +3677,7 @@ void Stf_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Addf_E()
+void Addf_E(const DecodedInst* inst)
 { //11FB 6309 Untested
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp16=F_REG+postbyte;
@@ -3690,18 +3691,18 @@ void Addf_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Nop_I()
+void Nop_I(const DecodedInst* inst)
 {	//12
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Sync_I()
+void Sync_I(const DecodedInst* inst)
 { //13
 	CycleCounter=gCycleFor;
 	SyncWaiting=1;
 }
 
-void Sexw_I()
+void Sexw_I(const DecodedInst* inst)
 { //14 6309 CHECK
 	if (W_REG & 32768)
 		D_REG=0xFFFF;
@@ -3712,7 +3713,7 @@ void Sexw_I()
 	CycleCounter+=4;
 }
 
-void Lbra_R()
+void Lbra_R(const DecodedInst* inst)
 { //16
 	*spostword=IMMADDRESS(PC_REG);
 	PC_REG+=2;
@@ -3720,7 +3721,7 @@ void Lbra_R()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Lbsr_R()
+void Lbsr_R(const DecodedInst* inst)
 { //17
 	*spostword=IMMADDRESS(PC_REG);
 	PC_REG+=2;
@@ -3731,7 +3732,7 @@ void Lbsr_R()
 	CycleCounter+=NatEmuCycles97;
 }
 
-void Daa_I()
+void Daa_I(const DecodedInst* inst)
 { //19
 	static unsigned char msn, lsn;
 
@@ -3755,7 +3756,7 @@ void Daa_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Orcc_M()
+void Orcc_M(const DecodedInst* inst)
 { //1A
 	postbyte=MemRead8(PC_REG++);
 	temp8=getcc();
@@ -3764,7 +3765,7 @@ void Orcc_M()
 	CycleCounter+=NatEmuCycles32;
 }
 
-void Andcc_M()
+void Andcc_M(const DecodedInst* inst)
 { //1C
 	postbyte=MemRead8(PC_REG++);
 	temp8=getcc();
@@ -3773,7 +3774,7 @@ void Andcc_M()
 	CycleCounter+=3;
 }
 
-void Sex_I()
+void Sex_I(const DecodedInst* inst)
 { //1D
 	A_REG= 0-(B_REG>>7);
 	cc[Z] = ZTEST(D_REG);
@@ -3781,7 +3782,7 @@ void Sex_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Exg_M()
+void Exg_M(const DecodedInst* inst)
 { //1E
 	postbyte = MemRead8(PC_REG++);
 	Source = postbyte >> 4;
@@ -3846,7 +3847,7 @@ void Exg_M()
 	CycleCounter += NatEmuCycles85;
 }
 
-void Tfr_M()
+void Tfr_M(const DecodedInst* inst)
 { //1F
 	postbyte=MemRead8(PC_REG++);
 	Source= postbyte>>4;
@@ -3888,20 +3889,20 @@ void Tfr_M()
 	CycleCounter+=NatEmuCycles64;
 }
 
-void Bra_R()
+void Bra_R(const DecodedInst* inst)
 { //20
 	*spostbyte=MemRead8(PC_REG++);
 	PC_REG+=*spostbyte;
 	CycleCounter+=3;
 }
 
-void Brn_R()
+void Brn_R(const DecodedInst* inst)
 { //21
 	CycleCounter+=3;
 	PC_REG++;
 }
 
-void Bhi_R()
+void Bhi_R(const DecodedInst* inst)
 { //22
 	if  (!(cc[C] | cc[Z]))
 		PC_REG+=(signed char)MemRead8(PC_REG);
@@ -3909,7 +3910,7 @@ void Bhi_R()
 	CycleCounter+=3;
 }
 
-void Bls_R()
+void Bls_R(const DecodedInst* inst)
 { //23
 	if (cc[C] | cc[Z])
 		PC_REG+=(signed char)MemRead8(PC_REG);
@@ -3917,7 +3918,7 @@ void Bls_R()
 	CycleCounter+=3;
 }
 
-void Bhs_R()
+void Bhs_R(const DecodedInst* inst)
 { //24
 	if (!cc[C])
 		PC_REG+=(signed char)MemRead8(PC_REG);
@@ -3925,7 +3926,7 @@ void Bhs_R()
 	CycleCounter+=3;
 }
 
-void Blo_R()
+void Blo_R(const DecodedInst* inst)
 { //25
 	if (cc[C])
 		PC_REG+=(signed char)MemRead8(PC_REG);
@@ -3933,7 +3934,7 @@ void Blo_R()
 	CycleCounter+=3;
 }
 
-void Bne_R()
+void Bne_R(const DecodedInst* inst)
 { //26
 	if (!cc[Z])
 		PC_REG+=(signed char)MemRead8(PC_REG);
@@ -3941,7 +3942,7 @@ void Bne_R()
 	CycleCounter+=3;
 }
 
-void Beq_R()
+void Beq_R(const DecodedInst* inst)
 { //27
 	if (cc[Z])
 		PC_REG+=(signed char)MemRead8(PC_REG);
@@ -3949,7 +3950,7 @@ void Beq_R()
 	CycleCounter+=3;
 }
 
-void Bvc_R()
+void Bvc_R(const DecodedInst* inst)
 { //28
 	if (!cc[V])
 		PC_REG+=(signed char)MemRead8(PC_REG);
@@ -3957,7 +3958,7 @@ void Bvc_R()
 	CycleCounter+=3;
 }
 
-void Bvs_R()
+void Bvs_R(const DecodedInst* inst)
 { //29
 	if ( cc[V])
 		PC_REG+=(signed char)MemRead8(PC_REG);
@@ -3965,7 +3966,7 @@ void Bvs_R()
 	CycleCounter+=3;
 }
 
-void Bpl_R()
+void Bpl_R(const DecodedInst* inst)
 { //2A
 	if (!cc[N])
 		PC_REG+=(signed char)MemRead8(PC_REG);
@@ -3973,7 +3974,7 @@ void Bpl_R()
 	CycleCounter+=3;
 }
 
-void Bmi_R()
+void Bmi_R(const DecodedInst* inst)
 { //2B
 	if ( cc[N])
 		PC_REG+=(signed char)MemRead8(PC_REG);
@@ -3981,7 +3982,7 @@ void Bmi_R()
 	CycleCounter+=3;
 }
 
-void Bge_R()
+void Bge_R(const DecodedInst* inst)
 { //2C
 	if (! (cc[N] ^ cc[V]))
 		PC_REG+=(signed char)MemRead8(PC_REG);
@@ -3989,7 +3990,7 @@ void Bge_R()
 	CycleCounter+=3;
 }
 
-void Blt_R()
+void Blt_R(const DecodedInst* inst)
 { //2D
 	if ( cc[V] ^ cc[N])
 		PC_REG+=(signed char)MemRead8(PC_REG);
@@ -3997,7 +3998,7 @@ void Blt_R()
 	CycleCounter+=3;
 }
 
-void Bgt_R()
+void Bgt_R(const DecodedInst* inst)
 { //2E
 	if ( !( cc[Z] | (cc[N]^cc[V] ) ))
 		PC_REG+=(signed char)MemRead8(PC_REG);
@@ -4005,7 +4006,7 @@ void Bgt_R()
 	CycleCounter+=3;
 }
 
-void Ble_R()
+void Ble_R(const DecodedInst* inst)
 { //2F
 	if ( cc[Z] | (cc[N]^cc[V]) )
 		PC_REG+=(signed char)MemRead8(PC_REG);
@@ -4013,33 +4014,33 @@ void Ble_R()
 	CycleCounter+=3;
 }
 
-void Leax_X()
+void Leax_X(const DecodedInst* inst)
 { //30
 	X_REG=INDADDRESS(PC_REG++);
 	cc[Z] = ZTEST(X_REG);
 	CycleCounter+=4;
 }
 
-void Leay_X()
+void Leay_X(const DecodedInst* inst)
 { //31
 	Y_REG=INDADDRESS(PC_REG++);
 	cc[Z] = ZTEST(Y_REG);
 	CycleCounter+=4;
 }
 
-void Leas_X()
+void Leas_X(const DecodedInst* inst)
 { //32
 	S_REG=INDADDRESS(PC_REG++);
 	CycleCounter+=4;
 }
 
-void Leau_X()
+void Leau_X(const DecodedInst* inst)
 { //33
 	U_REG=INDADDRESS(PC_REG++);
 	CycleCounter+=4;
 }
 
-void Pshs_M()
+void Pshs_M(const DecodedInst* inst)
 { //34
 	postbyte=MemRead8(PC_REG++);
 	if (postbyte & 0x80)
@@ -4090,7 +4091,7 @@ void Pshs_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Puls_M()
+void Puls_M(const DecodedInst* inst)
 { //35
 	postbyte=MemRead8(PC_REG++);
 	if (postbyte & 0x01)
@@ -4140,7 +4141,7 @@ void Puls_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Pshu_M()
+void Pshu_M(const DecodedInst* inst)
 { //36
 	postbyte=MemRead8(PC_REG++);
 	if (postbyte & 0x80)
@@ -4190,7 +4191,7 @@ void Pshu_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Pulu_M()
+void Pulu_M(const DecodedInst* inst)
 { //37
 	postbyte=MemRead8(PC_REG++);
 	if (postbyte & 0x01)
@@ -4240,20 +4241,20 @@ void Pulu_M()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Rts_I()
+void Rts_I(const DecodedInst* inst)
 { //39
 	pc.B.msb=MemRead8(S_REG++);
 	pc.B.lsb=MemRead8(S_REG++);
 	CycleCounter+=NatEmuCycles51;
 }
 
-void Abx_I()
+void Abx_I(const DecodedInst* inst)
 { //3A
 	X_REG=X_REG+B_REG;
 	CycleCounter+=NatEmuCycles31;
 }
 
-void Rti_I()
+void Rti_I(const DecodedInst* inst)
 { //3B
 	setcc(MemRead8(S_REG++));
 	CycleCounter+=6;
@@ -4280,7 +4281,7 @@ void Rti_I()
 	pc.B.lsb=MemRead8(S_REG++);
 }
 
-void Cwai_I()
+void Cwai_I(const DecodedInst* inst)
 { //3C
 	postbyte=MemRead8(PC_REG++);
 	ccbits=getcc();
@@ -4290,7 +4291,7 @@ void Cwai_I()
 	SyncWaiting=1;
 }
 
-void Mul_I()
+void Mul_I(const DecodedInst* inst)
 { //3D
 	D_REG = A_REG * B_REG;
 	cc[C] = B_REG >0x7F;
@@ -4298,12 +4299,12 @@ void Mul_I()
 	CycleCounter+=NatEmuCycles1110;
 }
 
-void Reset() // 3E
+void Reset(const DecodedInst* inst) // 3E
 {	//Undocumented
 	HD6309Reset();
 }
 
-void Swi1_I()
+void Swi1_I(const DecodedInst* inst)
 { //3F
 	cc[E]=1;
 	MemWrite8( pc.B.lsb,--S_REG);
@@ -4330,7 +4331,7 @@ void Swi1_I()
 	cc[F]=1;
 }
 
-void Nega_I()
+void Nega_I(const DecodedInst* inst)
 { //40
 	temp8= 0-A_REG;
 	cc[C] = temp8>0;
@@ -4341,7 +4342,7 @@ void Nega_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Coma_I()
+void Coma_I(const DecodedInst* inst)
 { //43
 	A_REG= 0xFF- A_REG;
 	cc[Z] = ZTEST(A_REG);
@@ -4351,7 +4352,7 @@ void Coma_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Lsra_I()
+void Lsra_I(const DecodedInst* inst)
 { //44
 	cc[C] = A_REG & 1;
 	A_REG= A_REG>>1;
@@ -4360,7 +4361,7 @@ void Lsra_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Rora_I()
+void Rora_I(const DecodedInst* inst)
 { //46
 	postbyte=cc[C]<<7;
 	cc[C] = A_REG & 1;
@@ -4370,7 +4371,7 @@ void Rora_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Asra_I()
+void Asra_I(const DecodedInst* inst)
 { //47
 	cc[C] = A_REG & 1;
 	A_REG= (A_REG & 0x80) | (A_REG >> 1);
@@ -4379,7 +4380,7 @@ void Asra_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Asla_I()
+void Asla_I(const DecodedInst* inst)
 { //48
 	cc[C] = A_REG > 0x7F;
 	cc[V] =  cc[C] ^((A_REG & 0x40)>>6);
@@ -4389,7 +4390,7 @@ void Asla_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Rola_I()
+void Rola_I(const DecodedInst* inst)
 { //49
 	postbyte=cc[C];
 	cc[C] = A_REG > 0x7F;
@@ -4400,7 +4401,7 @@ void Rola_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Deca_I()
+void Deca_I(const DecodedInst* inst)
 { //4A
 	A_REG--;
 	cc[Z] = ZTEST(A_REG);
@@ -4409,7 +4410,7 @@ void Deca_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Inca_I()
+void Inca_I(const DecodedInst* inst)
 { //4C
 	A_REG++;
 	cc[Z] = ZTEST(A_REG);
@@ -4418,7 +4419,7 @@ void Inca_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Tsta_I()
+void Tsta_I(const DecodedInst* inst)
 { //4D
 	cc[Z] = ZTEST(A_REG);
 	cc[N] = NTEST8(A_REG);
@@ -4426,7 +4427,7 @@ void Tsta_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Clra_I()
+void Clra_I(const DecodedInst* inst)
 { //4F
 	A_REG= 0;
 	cc[C] =0;
@@ -4436,7 +4437,7 @@ void Clra_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Negb_I()
+void Negb_I(const DecodedInst* inst)
 { //50
 	temp8= 0-B_REG;
 	cc[C] = temp8>0;
@@ -4447,7 +4448,7 @@ void Negb_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Comb_I()
+void Comb_I(const DecodedInst* inst)
 { //53
 	B_REG= 0xFF- B_REG;
 	cc[Z] = ZTEST(B_REG);
@@ -4457,7 +4458,7 @@ void Comb_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Lsrb_I()
+void Lsrb_I(const DecodedInst* inst)
 { //54
 	cc[C] = B_REG & 1;
 	B_REG= B_REG>>1;
@@ -4466,7 +4467,7 @@ void Lsrb_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Rorb_I()
+void Rorb_I(const DecodedInst* inst)
 { //56
 	postbyte=cc[C]<<7;
 	cc[C] = B_REG & 1;
@@ -4476,7 +4477,7 @@ void Rorb_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Asrb_I()
+void Asrb_I(const DecodedInst* inst)
 { //57
 	cc[C] = B_REG & 1;
 	B_REG= (B_REG & 0x80) | (B_REG >> 1);
@@ -4485,7 +4486,7 @@ void Asrb_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Aslb_I()
+void Aslb_I(const DecodedInst* inst)
 { //58
 	cc[C] = B_REG > 0x7F;
 	cc[V] =  cc[C] ^((B_REG & 0x40)>>6);
@@ -4495,7 +4496,7 @@ void Aslb_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Rolb_I()
+void Rolb_I(const DecodedInst* inst)
 { //59
 	postbyte=cc[C];
 	cc[C] = B_REG > 0x7F;
@@ -4506,7 +4507,7 @@ void Rolb_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Decb_I()
+void Decb_I(const DecodedInst* inst)
 { //5A
 	B_REG--;
 	cc[Z] = ZTEST(B_REG);
@@ -4515,7 +4516,7 @@ void Decb_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Incb_I()
+void Incb_I(const DecodedInst* inst)
 { //5C
 	B_REG++;
 	cc[Z] = ZTEST(B_REG);
@@ -4524,7 +4525,7 @@ void Incb_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Tstb_I()
+void Tstb_I(const DecodedInst* inst)
 { //5D
 	cc[Z] = ZTEST(B_REG);
 	cc[N] = NTEST8(B_REG);
@@ -4532,7 +4533,7 @@ void Tstb_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Clrb_I()
+void Clrb_I(const DecodedInst* inst)
 { //5F
 	B_REG=0;
 	cc[C] =0;
@@ -4542,7 +4543,7 @@ void Clrb_I()
 	CycleCounter+=NatEmuCycles21;
 }
 
-void Neg_X()
+void Neg_X(const DecodedInst* inst)
 { //60
 	temp16=INDADDRESS(PC_REG++);	
 	postbyte=MemRead8(temp16);
@@ -4555,7 +4556,7 @@ void Neg_X()
 	CycleCounter+=6;
 }
 
-void Oim_X()
+void Oim_X(const DecodedInst* inst)
 { //61 6309 DONE
 	postbyte=MemRead8(PC_REG++);
 	temp16=INDADDRESS(PC_REG++);
@@ -4567,7 +4568,7 @@ void Oim_X()
 	CycleCounter+=6;
 }
 
-void Aim_X()
+void Aim_X(const DecodedInst* inst)
 { //62 6309 Phase 2
 	postbyte=MemRead8(PC_REG++);
 	temp16=INDADDRESS(PC_REG++);
@@ -4579,7 +4580,7 @@ void Aim_X()
 	CycleCounter+=6;
 }
 
-void Com_X()
+void Com_X(const DecodedInst* inst)
 { //63
 	temp16=INDADDRESS(PC_REG++);
 	temp8=MemRead8(temp16);
@@ -4592,7 +4593,7 @@ void Com_X()
 	CycleCounter+=6;
 }
 
-void Lsr_X()
+void Lsr_X(const DecodedInst* inst)
 { //64
 	temp16=INDADDRESS(PC_REG++);
 	temp8=MemRead8(temp16);
@@ -4604,7 +4605,7 @@ void Lsr_X()
 	CycleCounter+=6;
 }
 
-void Eim_X()
+void Eim_X(const DecodedInst* inst)
 { //65 6309 Untested TESTED NITRO
 	postbyte=MemRead8(PC_REG++);
 	temp16=INDADDRESS(PC_REG++);
@@ -4616,7 +4617,7 @@ void Eim_X()
 	CycleCounter+=7;
 }
 
-void Ror_X()
+void Ror_X(const DecodedInst* inst)
 { //66
 	temp16=INDADDRESS(PC_REG++);
 	temp8=MemRead8(temp16);
@@ -4629,7 +4630,7 @@ void Ror_X()
 	CycleCounter+=6;
 }
 
-void Asr_X()
+void Asr_X(const DecodedInst* inst)
 { //67
 	temp16=INDADDRESS(PC_REG++);
 	temp8=MemRead8(temp16);
@@ -4641,7 +4642,7 @@ void Asr_X()
 	CycleCounter+=6;
 }
 
-void Asl_X()
+void Asl_X(const DecodedInst* inst)
 { //68 
 	temp16=INDADDRESS(PC_REG++);
 	temp8= MemRead8(temp16);
@@ -4654,7 +4655,7 @@ void Asl_X()
 	CycleCounter+=6;
 }
 
-void Rol_X()
+void Rol_X(const DecodedInst* inst)
 { //69
 	temp16=INDADDRESS(PC_REG++);
 	temp8=MemRead8(temp16);
@@ -4668,7 +4669,7 @@ void Rol_X()
 	CycleCounter+=6;
 }
 
-void Dec_X()
+void Dec_X(const DecodedInst* inst)
 { //6A
 	temp16=INDADDRESS(PC_REG++);
 	temp8=MemRead8(temp16);
@@ -4680,7 +4681,7 @@ void Dec_X()
 	CycleCounter+=6;
 }
 
-void Tim_X()
+void Tim_X(const DecodedInst* inst)
 { //6B 6309
 	postbyte=MemRead8(PC_REG++);
 	temp8=MemRead8(INDADDRESS(PC_REG++));
@@ -4691,7 +4692,7 @@ void Tim_X()
 	CycleCounter+=7;
 }
 
-void Inc_X()
+void Inc_X(const DecodedInst* inst)
 { //6C
 	temp16=INDADDRESS(PC_REG++);
 	temp8=MemRead8(temp16);
@@ -4703,7 +4704,7 @@ void Inc_X()
 	CycleCounter+=6;
 }
 
-void Tst_X()
+void Tst_X(const DecodedInst* inst)
 { //6D
 	temp8=MemRead8(INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(temp8);
@@ -4712,13 +4713,13 @@ void Tst_X()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Jmp_X()
+void Jmp_X(const DecodedInst* inst)
 { //6E
 	PC_REG=INDADDRESS(PC_REG++);
 	CycleCounter+=3;
 }
 
-void Clr_X()
+void Clr_X(const DecodedInst* inst)
 { //6F
 	MemWrite8(0,INDADDRESS(PC_REG++));
 	cc[C] = 0;
@@ -4728,7 +4729,7 @@ void Clr_X()
 	CycleCounter+=6;
 }
 
-void Neg_E()
+void Neg_E(const DecodedInst* inst)
 { //70
 	temp16=IMMADDRESS(PC_REG);
 	postbyte=MemRead8(temp16);
@@ -4742,7 +4743,7 @@ void Neg_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Oim_E()
+void Oim_E(const DecodedInst* inst)
 { //71 6309 Phase 2
 	postbyte=MemRead8(PC_REG++);
 	temp16=IMMADDRESS(PC_REG);
@@ -4755,7 +4756,7 @@ void Oim_E()
 	CycleCounter+=7;
 }
 
-void Aim_E()
+void Aim_E(const DecodedInst* inst)
 { //72 6309 Untested CHECK NITRO
 	postbyte=MemRead8(PC_REG++);
 	temp16=IMMADDRESS(PC_REG);
@@ -4768,7 +4769,7 @@ void Aim_E()
 	CycleCounter+=7;
 }
 
-void Com_E()
+void Com_E(const DecodedInst* inst)
 { //73
 	temp16=IMMADDRESS(PC_REG);
 	temp8=MemRead8(temp16);
@@ -4782,7 +4783,7 @@ void Com_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Lsr_E()
+void Lsr_E(const DecodedInst* inst)
 {  //74
 	temp16=IMMADDRESS(PC_REG);
 	temp8=MemRead8(temp16);
@@ -4795,7 +4796,7 @@ void Lsr_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Eim_E()
+void Eim_E(const DecodedInst* inst)
 { //75 6309 Untested CHECK NITRO
 	postbyte=MemRead8(PC_REG++);
 	temp16=IMMADDRESS(PC_REG);
@@ -4808,7 +4809,7 @@ void Eim_E()
 	CycleCounter+=7;
 }
 
-void Ror_E()
+void Ror_E(const DecodedInst* inst)
 { //76
 	temp16=IMMADDRESS(PC_REG);
 	temp8=MemRead8(temp16);
@@ -4822,7 +4823,7 @@ void Ror_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Asr_E()
+void Asr_E(const DecodedInst* inst)
 { //77
 	temp16=IMMADDRESS(PC_REG);
 	temp8=MemRead8(temp16);
@@ -4835,7 +4836,7 @@ void Asr_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Asl_E()
+void Asl_E(const DecodedInst* inst)
 { //78 6309
 	temp16=IMMADDRESS(PC_REG);
 	temp8= MemRead8(temp16);
@@ -4849,7 +4850,7 @@ void Asl_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Rol_E()
+void Rol_E(const DecodedInst* inst)
 { //79
 	temp16=IMMADDRESS(PC_REG);
 	temp8=MemRead8(temp16);
@@ -4864,7 +4865,7 @@ void Rol_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Dec_E()
+void Dec_E(const DecodedInst* inst)
 { //7A
 	temp16=IMMADDRESS(PC_REG);
 	temp8=MemRead8(temp16);
@@ -4877,7 +4878,7 @@ void Dec_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Tim_E()
+void Tim_E(const DecodedInst* inst)
 { //7B 6309 NITRO 
 	postbyte=MemRead8(PC_REG++);
 	temp16=IMMADDRESS(PC_REG);
@@ -4889,7 +4890,7 @@ void Tim_E()
 	CycleCounter+=7;
 }
 
-void Inc_E()
+void Inc_E(const DecodedInst* inst)
 { //7C
 	temp16=IMMADDRESS(PC_REG);
 	temp8=MemRead8(temp16);
@@ -4902,7 +4903,7 @@ void Inc_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Tst_E()
+void Tst_E(const DecodedInst* inst)
 { //7D
 	temp8=MemRead8(IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(temp8);
@@ -4912,13 +4913,13 @@ void Tst_E()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Jmp_E()
+void Jmp_E(const DecodedInst* inst)
 { //7E
 	PC_REG=IMMADDRESS(PC_REG);
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Clr_E()
+void Clr_E(const DecodedInst* inst)
 { //7F
 	MemWrite8(0,IMMADDRESS(PC_REG));
 	cc[C] = 0;
@@ -4929,7 +4930,7 @@ void Clr_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Suba_M()
+void Suba_M(const DecodedInst* inst)
 { //80
 	postbyte=MemRead8(PC_REG++);
 	temp16 = A_REG - postbyte;
@@ -4941,7 +4942,7 @@ void Suba_M()
 	CycleCounter+=2;
 }
 
-void Cmpa_M()
+void Cmpa_M(const DecodedInst* inst)
 { //81
 	postbyte=MemRead8(PC_REG++);
 	temp8= A_REG-postbyte;
@@ -4952,7 +4953,7 @@ void Cmpa_M()
 	CycleCounter+=2;
 }
 
-void Sbca_M()
+void Sbca_M(const DecodedInst* inst)
 {  //82
 	postbyte=MemRead8(PC_REG++);
 	temp16=A_REG-postbyte-cc[C];
@@ -4964,7 +4965,7 @@ void Sbca_M()
 	CycleCounter+=2;
 }
 
-void Subd_M()
+void Subd_M(const DecodedInst* inst)
 { //83
 	temp16=IMMADDRESS(PC_REG);
 	temp32=D_REG-temp16;
@@ -4977,7 +4978,7 @@ void Subd_M()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Anda_M()
+void Anda_M(const DecodedInst* inst)
 { //84
 	A_REG = A_REG & MemRead8(PC_REG++);
 	cc[N] = NTEST8(A_REG);
@@ -4986,7 +4987,7 @@ void Anda_M()
 	CycleCounter+=2;
 }
 
-void Bita_M()
+void Bita_M(const DecodedInst* inst)
 { //85
 	temp8 = A_REG & MemRead8(PC_REG++);
 	cc[N] = NTEST8(temp8);
@@ -4995,7 +4996,7 @@ void Bita_M()
 	CycleCounter+=2;
 }
 
-void Lda_M()
+void Lda_M(const DecodedInst* inst)
 { //86
 	A_REG = MemRead8(PC_REG++);
 	cc[Z] = ZTEST(A_REG);
@@ -5004,7 +5005,7 @@ void Lda_M()
 	CycleCounter+=2;
 }
 
-void Eora_M()
+void Eora_M(const DecodedInst* inst)
 { //88
 	A_REG = A_REG ^ MemRead8(PC_REG++);
 	cc[N] = NTEST8(A_REG);
@@ -5013,7 +5014,7 @@ void Eora_M()
 	CycleCounter+=2;
 }
 
-void Adca_M()
+void Adca_M(const DecodedInst* inst)
 { //89
 	postbyte=MemRead8(PC_REG++);
 	temp16= A_REG + postbyte + cc[C];
@@ -5026,7 +5027,7 @@ void Adca_M()
 	CycleCounter+=2;
 }
 
-void Ora_M()
+void Ora_M(const DecodedInst* inst)
 { //8A
 	A_REG = A_REG | MemRead8(PC_REG++);
 	cc[N] = NTEST8(A_REG);
@@ -5035,7 +5036,7 @@ void Ora_M()
 	CycleCounter+=2;
 }
 
-void Adda_M()
+void Adda_M(const DecodedInst* inst)
 { //8B
 	postbyte=MemRead8(PC_REG++);
 	temp16=A_REG+postbyte;
@@ -5048,7 +5049,7 @@ void Adda_M()
 	CycleCounter+=2;
 }
 
-void Cmpx_M()
+void Cmpx_M(const DecodedInst* inst)
 { //8C
 	postword=IMMADDRESS(PC_REG);
 	temp16 = X_REG-postword;
@@ -5060,7 +5061,7 @@ void Cmpx_M()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Bsr_R()
+void Bsr_R(const DecodedInst* inst)
 { //8D
 	*spostbyte=MemRead8(PC_REG++);
 	S_REG--;
@@ -5070,7 +5071,7 @@ void Bsr_R()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Ldx_M()
+void Ldx_M(const DecodedInst* inst)
 { //8E
 	X_REG = IMMADDRESS(PC_REG);
 	cc[Z] = ZTEST(X_REG);
@@ -5080,7 +5081,7 @@ void Ldx_M()
 	CycleCounter+=3;
 }
 
-void Suba_D()
+void Suba_D(const DecodedInst* inst)
 { //90
 	postbyte=MemRead8( DPADDRESS(PC_REG++));
 	temp16 = A_REG - postbyte;
@@ -5092,7 +5093,7 @@ void Suba_D()
 	CycleCounter+=NatEmuCycles43;
 }	
 
-void Cmpa_D()
+void Cmpa_D(const DecodedInst* inst)
 { //91
 	postbyte=MemRead8(DPADDRESS(PC_REG++));
 	temp8 = A_REG-postbyte;
@@ -5103,7 +5104,7 @@ void Cmpa_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Scba_D()
+void Scba_D(const DecodedInst* inst)
 { //92
 	postbyte=MemRead8(DPADDRESS(PC_REG++));
 	temp16=A_REG-postbyte-cc[C];
@@ -5115,7 +5116,7 @@ void Scba_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Subd_D()
+void Subd_D(const DecodedInst* inst)
 { //93
 	temp16= MemRead16(DPADDRESS(PC_REG++));
 	temp32= D_REG-temp16;
@@ -5127,7 +5128,7 @@ void Subd_D()
 	CycleCounter+=NatEmuCycles64;
 }
 
-void Anda_D()
+void Anda_D(const DecodedInst* inst)
 { //94
 	A_REG = A_REG & MemRead8(DPADDRESS(PC_REG++));
 	cc[N] = NTEST8(A_REG);
@@ -5136,7 +5137,7 @@ void Anda_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Bita_D()
+void Bita_D(const DecodedInst* inst)
 { //95
 	temp8 = A_REG & MemRead8(DPADDRESS(PC_REG++));
 	cc[N] = NTEST8(temp8);
@@ -5145,7 +5146,7 @@ void Bita_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Lda_D()
+void Lda_D(const DecodedInst* inst)
 { //96
 	A_REG = MemRead8(DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(A_REG);
@@ -5154,7 +5155,7 @@ void Lda_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Sta_D()
+void Sta_D(const DecodedInst* inst)
 { //97
 	MemWrite8( A_REG,DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(A_REG);
@@ -5163,7 +5164,7 @@ void Sta_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Eora_D()
+void Eora_D(const DecodedInst* inst)
 { //98
 	A_REG= A_REG ^ MemRead8(DPADDRESS(PC_REG++));
 	cc[N] = NTEST8(A_REG);
@@ -5172,7 +5173,7 @@ void Eora_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Adca_D()
+void Adca_D(const DecodedInst* inst)
 { //99
 	postbyte=MemRead8(DPADDRESS(PC_REG++));
 	temp16= A_REG + postbyte + cc[C];
@@ -5185,7 +5186,7 @@ void Adca_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Ora_D()
+void Ora_D(const DecodedInst* inst)
 { //9A
 	A_REG = A_REG | MemRead8(DPADDRESS(PC_REG++));
 	cc[N] = NTEST8(A_REG);
@@ -5194,7 +5195,7 @@ void Ora_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Adda_D()
+void Adda_D(const DecodedInst* inst)
 { //9B
 	postbyte=MemRead8(DPADDRESS(PC_REG++));
 	temp16=A_REG+postbyte;
@@ -5207,7 +5208,7 @@ void Adda_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Cmpx_D()
+void Cmpx_D(const DecodedInst* inst)
 { //9C
 	postword=MemRead16(DPADDRESS(PC_REG++));
 	temp16= X_REG - postword ;
@@ -5218,7 +5219,7 @@ void Cmpx_D()
 	CycleCounter+=NatEmuCycles64;
 }
 
-void Jsr_D()
+void Jsr_D(const DecodedInst* inst)
 { //9D
 	temp16 = DPADDRESS(PC_REG++);
 	S_REG--;
@@ -5228,7 +5229,7 @@ void Jsr_D()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Ldx_D()
+void Ldx_D(const DecodedInst* inst)
 { //9E
 	X_REG=MemRead16(DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(X_REG);	
@@ -5237,7 +5238,7 @@ void Ldx_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Stx_D()
+void Stx_D(const DecodedInst* inst)
 { //9F
 	MemWrite16(X_REG,DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(X_REG);
@@ -5246,7 +5247,7 @@ void Stx_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Suba_X()
+void Suba_X(const DecodedInst* inst)
 { //A0
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp16 = A_REG - postbyte;
@@ -5258,7 +5259,7 @@ void Suba_X()
 	CycleCounter+=4;
 }	
 
-void Cmpa_X()
+void Cmpa_X(const DecodedInst* inst)
 { //A1
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp8= A_REG-postbyte;
@@ -5269,7 +5270,7 @@ void Cmpa_X()
 	CycleCounter+=4;
 }
 
-void Sbca_X()
+void Sbca_X(const DecodedInst* inst)
 { //A2
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp16=A_REG-postbyte-cc[C];
@@ -5281,7 +5282,7 @@ void Sbca_X()
 	CycleCounter+=4;
 }
 
-void Subd_X()
+void Subd_X(const DecodedInst* inst)
 { //A3
 	temp16= MemRead16(INDADDRESS(PC_REG++));
 	temp32= D_REG-temp16;
@@ -5293,7 +5294,7 @@ void Subd_X()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Anda_X()
+void Anda_X(const DecodedInst* inst)
 { //A4
 	A_REG = A_REG & MemRead8(INDADDRESS(PC_REG++));
 	cc[N] = NTEST8(A_REG);
@@ -5302,7 +5303,7 @@ void Anda_X()
 	CycleCounter+=4;
 }
 
-void Bita_X()
+void Bita_X(const DecodedInst* inst)
 {  //A5
 	temp8 = A_REG & MemRead8(INDADDRESS(PC_REG++));
 	cc[N] = NTEST8(temp8);
@@ -5311,7 +5312,7 @@ void Bita_X()
 	CycleCounter+=4;
 }
 
-void Lda_X()
+void Lda_X(const DecodedInst* inst)
 { //A6
 	A_REG = MemRead8(INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(A_REG);
@@ -5320,7 +5321,7 @@ void Lda_X()
 	CycleCounter+=4;
 }
 
-void Sta_X()
+void Sta_X(const DecodedInst* inst)
 { //A7
 	MemWrite8(A_REG,INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(A_REG);
@@ -5329,7 +5330,7 @@ void Sta_X()
 	CycleCounter+=4;
 }
 
-void Eora_X()
+void Eora_X(const DecodedInst* inst)
 { //A8
 	A_REG= A_REG ^ MemRead8(INDADDRESS(PC_REG++));
 	cc[N] = NTEST8(A_REG);
@@ -5338,7 +5339,7 @@ void Eora_X()
 	CycleCounter+=4;
 }
 
-void Adca_X()
+void Adca_X(const DecodedInst* inst)
 { //A9	
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp16= A_REG + postbyte + cc[C];
@@ -5351,7 +5352,7 @@ void Adca_X()
 	CycleCounter+=4;
 }
 
-void Ora_X()
+void Ora_X(const DecodedInst* inst)
 { //AA
 	A_REG= A_REG | MemRead8(INDADDRESS(PC_REG++));
 	cc[N] = NTEST8(A_REG);
@@ -5360,7 +5361,7 @@ void Ora_X()
 	CycleCounter+=4;
 }
 
-void Adda_X()
+void Adda_X(const DecodedInst* inst)
 { //AB
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp16= A_REG+postbyte;
@@ -5373,7 +5374,7 @@ void Adda_X()
 	CycleCounter+=4;
 }
 
-void Cmpx_X()
+void Cmpx_X(const DecodedInst* inst)
 { //AC
 	postword=MemRead16(INDADDRESS(PC_REG++));
 	temp16= X_REG - postword ;
@@ -5384,7 +5385,7 @@ void Cmpx_X()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Jsr_X()
+void Jsr_X(const DecodedInst* inst)
 { //AD
 	temp16=INDADDRESS(PC_REG++);
 	S_REG--;
@@ -5394,7 +5395,7 @@ void Jsr_X()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Ldx_X()
+void Ldx_X(const DecodedInst* inst)
 { //AE
 	X_REG=MemRead16(INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(X_REG);
@@ -5403,7 +5404,7 @@ void Ldx_X()
 	CycleCounter+=5;
 }
 
-void Stx_X()
+void Stx_X(const DecodedInst* inst)
 { //AF
 	MemWrite16(X_REG,INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(X_REG);
@@ -5412,7 +5413,7 @@ void Stx_X()
 	CycleCounter+=5;
 }
 
-void Suba_E()
+void Suba_E(const DecodedInst* inst)
 { //B0
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp16 = A_REG - postbyte;
@@ -5425,7 +5426,7 @@ void Suba_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Cmpa_E()
+void Cmpa_E(const DecodedInst* inst)
 { //B1
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp8= A_REG-postbyte;
@@ -5437,7 +5438,7 @@ void Cmpa_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Sbca_E()
+void Sbca_E(const DecodedInst* inst)
 { //B2
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp16=A_REG-postbyte-cc[C];
@@ -5450,7 +5451,7 @@ void Sbca_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Subd_E()
+void Subd_E(const DecodedInst* inst)
 { //B3
 	temp16=MemRead16(IMMADDRESS(PC_REG));
 	temp32=D_REG-temp16;
@@ -5463,7 +5464,7 @@ void Subd_E()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Anda_E()
+void Anda_E(const DecodedInst* inst)
 { //B4
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	A_REG = A_REG & postbyte;
@@ -5474,7 +5475,7 @@ void Anda_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Bita_E()
+void Bita_E(const DecodedInst* inst)
 { //B5
 	temp8 = A_REG & MemRead8(IMMADDRESS(PC_REG));
 	cc[N] = NTEST8(temp8);
@@ -5484,7 +5485,7 @@ void Bita_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Lda_E()
+void Lda_E(const DecodedInst* inst)
 { //B6
 	A_REG= MemRead8(IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(A_REG);
@@ -5494,7 +5495,7 @@ void Lda_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Sta_E()
+void Sta_E(const DecodedInst* inst)
 { //B7
 	MemWrite8(A_REG,IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(A_REG);
@@ -5504,7 +5505,7 @@ void Sta_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Eora_E()
+void Eora_E(const DecodedInst* inst)
 {  //B8
 	A_REG = A_REG ^ MemRead8(IMMADDRESS(PC_REG));
 	cc[N] = NTEST8(A_REG);
@@ -5514,7 +5515,7 @@ void Eora_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Adca_E()
+void Adca_E(const DecodedInst* inst)
 { //B9
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp16= A_REG + postbyte + cc[C];
@@ -5528,7 +5529,7 @@ void Adca_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Ora_E()
+void Ora_E(const DecodedInst* inst)
 { //BA
 	A_REG = A_REG | MemRead8(IMMADDRESS(PC_REG));
 	cc[N] = NTEST8(A_REG);
@@ -5538,7 +5539,7 @@ void Ora_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Adda_E()
+void Adda_E(const DecodedInst* inst)
 { //BB
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp16=A_REG+postbyte;
@@ -5552,7 +5553,7 @@ void Adda_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Cmpx_E()
+void Cmpx_E(const DecodedInst* inst)
 { //BC
 	postword=MemRead16(IMMADDRESS(PC_REG));
 	temp16 = X_REG-postword;
@@ -5564,7 +5565,7 @@ void Cmpx_E()
 	CycleCounter+=NatEmuCycles75;
 }
 
-void Bsr_E()
+void Bsr_E(const DecodedInst* inst)
 { //BD
 	postword=IMMADDRESS(PC_REG);
 	PC_REG+=2;
@@ -5575,7 +5576,7 @@ void Bsr_E()
 	CycleCounter+=NatEmuCycles87;
 }
 
-void Ldx_E()
+void Ldx_E(const DecodedInst* inst)
 { //BE
 	X_REG=MemRead16(IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(X_REG);
@@ -5585,7 +5586,7 @@ void Ldx_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Stx_E()
+void Stx_E(const DecodedInst* inst)
 { //BF
 	MemWrite16(X_REG,IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(X_REG);
@@ -5595,7 +5596,7 @@ void Stx_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Subb_M()
+void Subb_M(const DecodedInst* inst)
 { //C0
 	postbyte=MemRead8(PC_REG++);
 	temp16 = B_REG - postbyte;
@@ -5607,7 +5608,7 @@ void Subb_M()
 	CycleCounter+=2;
 }
 
-void Cmpb_M()
+void Cmpb_M(const DecodedInst* inst)
 { //C1
 	postbyte=MemRead8(PC_REG++);
 	temp8= B_REG-postbyte;
@@ -5618,7 +5619,7 @@ void Cmpb_M()
 	CycleCounter+=2;
 }
 
-void Sbcb_M()
+void Sbcb_M(const DecodedInst* inst)
 { //C2
 	postbyte=MemRead8(PC_REG++);
 	temp16=B_REG-postbyte-cc[C];
@@ -5630,7 +5631,7 @@ void Sbcb_M()
 	CycleCounter+=2;
 }
 
-void Addd_M()
+void Addd_M(const DecodedInst* inst)
 { //C3
 	temp16=IMMADDRESS(PC_REG);
 	temp32= D_REG+ temp16;
@@ -5643,7 +5644,7 @@ void Addd_M()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Andb_M()
+void Andb_M(const DecodedInst* inst)
 { //C4 LOOK
 	B_REG = B_REG & MemRead8(PC_REG++);
 	cc[N] = NTEST8(B_REG);
@@ -5652,7 +5653,7 @@ void Andb_M()
 	CycleCounter+=2;
 }
 
-void Bitb_M()
+void Bitb_M(const DecodedInst* inst)
 { //C5
 	temp8 = B_REG & MemRead8(PC_REG++);
 	cc[N] = NTEST8(temp8);
@@ -5661,7 +5662,7 @@ void Bitb_M()
 	CycleCounter+=2;
 }
 
-void Ldb_M()
+void Ldb_M(const DecodedInst* inst)
 { //C6
 	B_REG=MemRead8(PC_REG++);
 	cc[Z] = ZTEST(B_REG);
@@ -5670,7 +5671,7 @@ void Ldb_M()
 	CycleCounter+=2;
 }
 
-void Eorb_M()
+void Eorb_M(const DecodedInst* inst)
 { //C8
 	B_REG = B_REG ^ MemRead8(PC_REG++);
 	cc[N] =NTEST8(B_REG);
@@ -5679,7 +5680,7 @@ void Eorb_M()
 	CycleCounter+=2;
 }
 
-void Adcb_M()
+void Adcb_M(const DecodedInst* inst)
 { //C9
 	postbyte=MemRead8(PC_REG++);
 	temp16= B_REG + postbyte + cc[C];
@@ -5692,7 +5693,7 @@ void Adcb_M()
 	CycleCounter+=2;
 }
 
-void Orb_M()
+void Orb_M(const DecodedInst* inst)
 { //CA
 	B_REG= B_REG | MemRead8(PC_REG++);
 	cc[N] = NTEST8(B_REG);
@@ -5701,7 +5702,7 @@ void Orb_M()
 	CycleCounter+=2;
 }
 
-void Addb_M()
+void Addb_M(const DecodedInst* inst)
 { //CB
 	postbyte=MemRead8(PC_REG++);
 	temp16=B_REG+postbyte;
@@ -5714,7 +5715,7 @@ void Addb_M()
 	CycleCounter+=2;
 }
 
-void Ldd_M()
+void Ldd_M(const DecodedInst* inst)
 { //CC
 	D_REG=IMMADDRESS(PC_REG);
 	cc[Z] = ZTEST(D_REG);
@@ -5724,7 +5725,7 @@ void Ldd_M()
 	CycleCounter+=3;
 }
 
-void Ldq_M()
+void Ldq_M(const DecodedInst* inst)
 { //CD 6309 WORK
 	Q_REG = MemRead32(PC_REG);
 	PC_REG+=4;
@@ -5734,7 +5735,7 @@ void Ldq_M()
 	CycleCounter+=5;
 }
 
-void Ldu_M()
+void Ldu_M(const DecodedInst* inst)
 { //CE
 	U_REG = IMMADDRESS(PC_REG);
 	cc[Z] = ZTEST(U_REG);
@@ -5744,7 +5745,7 @@ void Ldu_M()
 	CycleCounter+=3;
 }
 
-void Subb_D()
+void Subb_D(const DecodedInst* inst)
 { //D0
 	postbyte=MemRead8( DPADDRESS(PC_REG++));
 	temp16 = B_REG - postbyte;
@@ -5756,7 +5757,7 @@ void Subb_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Cmpb_D()
+void Cmpb_D(const DecodedInst* inst)
 { //D1
 	postbyte=MemRead8(DPADDRESS(PC_REG++));
 	temp8= B_REG-postbyte;
@@ -5767,7 +5768,7 @@ void Cmpb_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Sbcb_D()
+void Sbcb_D(const DecodedInst* inst)
 { //D2
 	postbyte=MemRead8(DPADDRESS(PC_REG++));
 	temp16=B_REG-postbyte-cc[C];
@@ -5779,7 +5780,7 @@ void Sbcb_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Addd_D()
+void Addd_D(const DecodedInst* inst)
 { //D3
 	temp16=MemRead16( DPADDRESS(PC_REG++));
 	temp32= D_REG+ temp16;
@@ -5791,7 +5792,7 @@ void Addd_D()
 	CycleCounter+=NatEmuCycles64;
 }
 
-void Andb_D()
+void Andb_D(const DecodedInst* inst)
 { //D4 
 	B_REG = B_REG & MemRead8(DPADDRESS(PC_REG++));
 	cc[N] =NTEST8(B_REG);
@@ -5800,7 +5801,7 @@ void Andb_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Bitb_D()
+void Bitb_D(const DecodedInst* inst)
 { //D5
 	temp8 = B_REG & MemRead8(DPADDRESS(PC_REG++));
 	cc[N] = NTEST8(temp8);
@@ -5809,7 +5810,7 @@ void Bitb_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Ldb_D()
+void Ldb_D(const DecodedInst* inst)
 { //D6
 	B_REG= MemRead8( DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(B_REG);
@@ -5818,7 +5819,7 @@ void Ldb_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Stb_D()
+void Stb_D(const DecodedInst* inst)
 { //D7
 	MemWrite8( B_REG,DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(B_REG);
@@ -5827,7 +5828,7 @@ void Stb_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Eorb_D()
+void Eorb_D(const DecodedInst* inst)
 { //D8	
 	B_REG = B_REG ^ MemRead8(DPADDRESS(PC_REG++));
 	cc[N] = NTEST8(B_REG);
@@ -5836,7 +5837,7 @@ void Eorb_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Adcb_D()
+void Adcb_D(const DecodedInst* inst)
 { //D9
 	postbyte=MemRead8(DPADDRESS(PC_REG++));
 	temp16= B_REG + postbyte + cc[C];
@@ -5849,7 +5850,7 @@ void Adcb_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Orb_D()
+void Orb_D(const DecodedInst* inst)
 { //DA
 	B_REG = B_REG | MemRead8(DPADDRESS(PC_REG++));
 	cc[N] = NTEST8(B_REG);
@@ -5858,7 +5859,7 @@ void Orb_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Addb_D()
+void Addb_D(const DecodedInst* inst)
 { //DB
 	postbyte=MemRead8(DPADDRESS(PC_REG++));
 	temp16= B_REG+postbyte;
@@ -5871,7 +5872,7 @@ void Addb_D()
 	CycleCounter+=NatEmuCycles43;
 }
 
-void Ldd_D()
+void Ldd_D(const DecodedInst* inst)
 { //DC
 	D_REG = MemRead16(DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(D_REG);
@@ -5880,7 +5881,7 @@ void Ldd_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Std_D()
+void Std_D(const DecodedInst* inst)
 { //DD
 	MemWrite16(D_REG,DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(D_REG);
@@ -5889,7 +5890,7 @@ void Std_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Ldu_D()
+void Ldu_D(const DecodedInst* inst)
 { //DE
 	U_REG = MemRead16(DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(U_REG);
@@ -5898,7 +5899,7 @@ void Ldu_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Stu_D()
+void Stu_D(const DecodedInst* inst)
 { //DF
 	MemWrite16(U_REG,DPADDRESS(PC_REG++));
 	cc[Z] = ZTEST(U_REG);
@@ -5907,7 +5908,7 @@ void Stu_D()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Subb_X()
+void Subb_X(const DecodedInst* inst)
 { //E0
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp16 = B_REG - postbyte;
@@ -5919,7 +5920,7 @@ void Subb_X()
 	CycleCounter+=4;
 }
 
-void Cmpb_X()
+void Cmpb_X(const DecodedInst* inst)
 { //E1
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp8 = B_REG-postbyte;
@@ -5930,7 +5931,7 @@ void Cmpb_X()
 	CycleCounter+=4;
 }
 
-void Sbcb_X()
+void Sbcb_X(const DecodedInst* inst)
 { //E2
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp16=B_REG-postbyte-cc[C];
@@ -5942,7 +5943,7 @@ void Sbcb_X()
 	CycleCounter+=4;
 }
 
-void Addd_X()
+void Addd_X(const DecodedInst* inst)
 { //E3 
 	temp16=MemRead16(INDADDRESS(PC_REG++));
 	temp32= D_REG+ temp16;
@@ -5954,7 +5955,7 @@ void Addd_X()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Andb_X()
+void Andb_X(const DecodedInst* inst)
 { //E4
 	B_REG = B_REG & MemRead8(INDADDRESS(PC_REG++));
 	cc[N] = NTEST8(B_REG);
@@ -5963,7 +5964,7 @@ void Andb_X()
 	CycleCounter+=4;
 }
 
-void Bitb_X()
+void Bitb_X(const DecodedInst* inst)
 { //E5 
 	temp8 = B_REG & MemRead8(INDADDRESS(PC_REG++));
 	cc[N] = NTEST8(temp8);
@@ -5972,7 +5973,7 @@ void Bitb_X()
 	CycleCounter+=4;
 }
 
-void Ldb_X()
+void Ldb_X(const DecodedInst* inst)
 { //E6
 	B_REG=MemRead8(INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(B_REG);
@@ -5981,7 +5982,7 @@ void Ldb_X()
 	CycleCounter+=4;
 }
 
-void Stb_X()
+void Stb_X(const DecodedInst* inst)
 { //E7
 	MemWrite8(B_REG,CalculateEA( MemRead8(PC_REG++)));
 	cc[Z] = ZTEST(B_REG);
@@ -5990,7 +5991,7 @@ void Stb_X()
 	CycleCounter+=4;
 }
 
-void Eorb_X()
+void Eorb_X(const DecodedInst* inst)
 { //E8
 	B_REG= B_REG ^ MemRead8(INDADDRESS(PC_REG++));
 	cc[N] = NTEST8(B_REG);
@@ -5999,7 +6000,7 @@ void Eorb_X()
 	CycleCounter+=4;
 }
 
-void Adcb_X()
+void Adcb_X(const DecodedInst* inst)
 { //E9
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp16= B_REG + postbyte + cc[C];
@@ -6012,7 +6013,7 @@ void Adcb_X()
 	CycleCounter+=4;
 }
 
-void Orb_X()
+void Orb_X(const DecodedInst* inst)
 { //EA 
 	B_REG = B_REG | MemRead8(INDADDRESS(PC_REG++));
 	cc[N] = NTEST8(B_REG);
@@ -6021,7 +6022,7 @@ void Orb_X()
 	CycleCounter+=4;
 }
 
-void Addb_X()
+void Addb_X(const DecodedInst* inst)
 { //EB
 	postbyte=MemRead8(INDADDRESS(PC_REG++));
 	temp16=B_REG+postbyte;
@@ -6034,7 +6035,7 @@ void Addb_X()
 	CycleCounter+=4;
 }
 
-void Ldd_X()
+void Ldd_X(const DecodedInst* inst)
 { //EC
 	D_REG=MemRead16(INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(D_REG);
@@ -6043,7 +6044,7 @@ void Ldd_X()
 	CycleCounter+=5;
 }
 
-void Std_X()
+void Std_X(const DecodedInst* inst)
 { //ED
 	MemWrite16(D_REG,INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(D_REG);
@@ -6052,7 +6053,7 @@ void Std_X()
 	CycleCounter+=5;
 }
 
-void Ldu_X()
+void Ldu_X(const DecodedInst* inst)
 { //EE
 	U_REG=MemRead16(INDADDRESS(PC_REG++));
 	cc[Z] =ZTEST(U_REG);
@@ -6061,7 +6062,7 @@ void Ldu_X()
 	CycleCounter+=5;
 }
 
-void Stu_X()
+void Stu_X(const DecodedInst* inst)
 { //EF
 	MemWrite16(U_REG,INDADDRESS(PC_REG++));
 	cc[Z] = ZTEST(U_REG);
@@ -6070,7 +6071,7 @@ void Stu_X()
 	CycleCounter+=5;
 }
 
-void Subb_E()
+void Subb_E(const DecodedInst* inst)
 { //F0
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp16 = B_REG - postbyte;
@@ -6083,7 +6084,7 @@ void Subb_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Cmpb_E()
+void Cmpb_E(const DecodedInst* inst)
 { //F1
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp8= B_REG-postbyte;
@@ -6095,7 +6096,7 @@ void Cmpb_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Sbcb_E()
+void Sbcb_E(const DecodedInst* inst)
 { //F2
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp16=B_REG-postbyte-cc[C];
@@ -6108,7 +6109,7 @@ void Sbcb_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Addd_E()
+void Addd_E(const DecodedInst* inst)
 { //F3
 	temp16=MemRead16(IMMADDRESS(PC_REG));
 	temp32= D_REG+ temp16;
@@ -6121,7 +6122,7 @@ void Addd_E()
 	CycleCounter+=NatEmuCycles76;
 }
 
-void Andb_E()
+void Andb_E(const DecodedInst* inst)
 {  //F4
 	B_REG = B_REG & MemRead8(IMMADDRESS(PC_REG));
 	cc[N] = NTEST8(B_REG);
@@ -6131,7 +6132,7 @@ void Andb_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Bitb_E()
+void Bitb_E(const DecodedInst* inst)
 { //F5
 	temp8 = B_REG & MemRead8(IMMADDRESS(PC_REG));
 	cc[N] = NTEST8(temp8);
@@ -6141,7 +6142,7 @@ void Bitb_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Ldb_E()
+void Ldb_E(const DecodedInst* inst)
 { //F6
 	B_REG=MemRead8(IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(B_REG);
@@ -6151,7 +6152,7 @@ void Ldb_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Stb_E()
+void Stb_E(const DecodedInst* inst)
 { //F7 
 	MemWrite8(B_REG,IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(B_REG);
@@ -6161,7 +6162,7 @@ void Stb_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Eorb_E()
+void Eorb_E(const DecodedInst* inst)
 { //F8
 	B_REG = B_REG ^ MemRead8(IMMADDRESS(PC_REG));
 	cc[N] = NTEST8(B_REG);
@@ -6171,7 +6172,7 @@ void Eorb_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Adcb_E()
+void Adcb_E(const DecodedInst* inst)
 { //F9
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp16= B_REG + postbyte + cc[C];
@@ -6185,7 +6186,7 @@ void Adcb_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Orb_E()
+void Orb_E(const DecodedInst* inst)
 { //FA
 	B_REG = B_REG | MemRead8(IMMADDRESS(PC_REG));
 	cc[N] = NTEST8(B_REG);
@@ -6195,7 +6196,7 @@ void Orb_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Addb_E()
+void Addb_E(const DecodedInst* inst)
 { //FB
 	postbyte=MemRead8(IMMADDRESS(PC_REG));
 	temp16=B_REG+postbyte;
@@ -6209,7 +6210,7 @@ void Addb_E()
 	CycleCounter+=NatEmuCycles54;
 }
 
-void Ldd_E()
+void Ldd_E(const DecodedInst* inst)
 { //FC
 	D_REG=MemRead16(IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(D_REG);
@@ -6219,7 +6220,7 @@ void Ldd_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Std_E()
+void Std_E(const DecodedInst* inst)
 { //FD
 	MemWrite16(D_REG,IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(D_REG);
@@ -6229,7 +6230,7 @@ void Std_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Ldu_E()
+void Ldu_E(const DecodedInst* inst)
 { //FE
 	U_REG= MemRead16(IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(U_REG);
@@ -6239,7 +6240,7 @@ void Ldu_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Stu_E()
+void Stu_E(const DecodedInst* inst)
 { //FF
 	MemWrite16(U_REG,IMMADDRESS(PC_REG));
 	cc[Z] = ZTEST(U_REG);
@@ -6249,7 +6250,7 @@ void Stu_E()
 	CycleCounter+=NatEmuCycles65;
 }
 
-void Halt()
+void Halt(const DecodedInst* inst)
 {
 	if (EmuState.Debugger.Halt_Enabled()) {
 		HaltedInsPending = 1;
@@ -6261,7 +6262,7 @@ void Halt()
 	}
 }
 
-void Break()
+void Break(const DecodedInst* inst)
 {
 	if (EmuState.Debugger.Break_Enabled()) {
 		EmuState.Debugger.Halt();
@@ -6270,7 +6271,7 @@ void Break()
 	}
 }
 
-void(*JmpVec1[256])() = {
+InstHandler JmpVec1[256] = {
 	Neg_D,		// 00
 	Oim_D,		// 01
 	Aim_D,		// 02
@@ -6529,7 +6530,7 @@ void(*JmpVec1[256])() = {
 	Stu_E,		// FF
 };
 
-void(*JmpVec2[256])() = {
+InstHandler JmpVec2[256] = {
 	InvalidInsHandler,		// 00
 	InvalidInsHandler,		// 01
 	InvalidInsHandler,		// 02
@@ -6788,7 +6789,7 @@ void(*JmpVec2[256])() = {
 	Sts_E,		// FF
 };
 
-void(*JmpVec3[256])() = {
+InstHandler JmpVec3[256] = {
 	InvalidInsHandler,		// 00
 	InvalidInsHandler,		// 01
 	InvalidInsHandler,		// 02
@@ -7049,10 +7050,10 @@ void(*JmpVec3[256])() = {
 
 
 // Stepping check for Tfm and step over it
-void StepIns() {
-	JmpVec1[MemRead8(PC_REG++)]();
+void StepIns(const DecodedInst* inst) {
+	JmpVec1[MemRead8(PC_REG++)](nullptr);
 	while (DoingTFM)
-		JmpVec1[MemRead8(PC_REG++)]();
+		JmpVec1[MemRead8(PC_REG++)](nullptr);
 }
 
 // Returns true if the debugger needs per-instruction attention.
@@ -7100,7 +7101,7 @@ int HD6309Exec(int CycleFor)
 				// Cached block fits within budget. Execute all instructions
 				// in a tight loop with no interrupt checks.
 				for (int i = 0; i < block->num_insns; i++)
-					JmpVec1[MemRead8(PC_REG++)]();
+					JmpVec1[MemRead8(PC_REG++)](nullptr);
 
 				if (JS_Ramp_Clock < 0xFFFF)
 					JS_Ramp_Clock += CycleCounter - PrevCycleCount;
@@ -7119,7 +7120,7 @@ int HD6309Exec(int CycleFor)
 			}
 
 			unsigned char opcode = MemRead8(PC_REG); // peek, don't consume
-			JmpVec1[MemRead8(PC_REG++)]();
+			JmpVec1[MemRead8(PC_REG++)](nullptr);
 
 			if (blockCache.IsRecording())
 			{
@@ -7161,7 +7162,7 @@ debugger_path:
 		// CPU is stepping.
 		if (EmuState.Debugger.IsStepping())
 		{
-			StepIns();
+			StepIns(nullptr);
 			EmuState.Debugger.Halt();
 			return(CycleFor - CycleCounter);
 		}
@@ -7169,7 +7170,7 @@ debugger_path:
 		// Halted instruction pending.
 		if (HaltedInsPending) {
 			VCC::ApplyHaltpoints(false);
-			StepIns();
+			StepIns(nullptr);
 			VCC::ApplyHaltpoints(true);
 			HaltedInsPending = 0;
 			return(CycleFor - CycleCounter);
@@ -7219,7 +7220,7 @@ debugger_path:
 			EmuState.Debugger.TraceCaptureBefore(CycleCounter, HD6309GetState());
 		}
 
-		JmpVec1[MemRead8(PC_REG++)]();
+		JmpVec1[MemRead8(PC_REG++)](nullptr);
 
 		if (EmuState.Debugger.IsTracing())
 		{
@@ -7236,14 +7237,14 @@ debugger_path:
 	return(CycleFor - CycleCounter);
 }
 
-void Page_2() //10
+void Page_2(const DecodedInst* inst) //10
 {
-	JmpVec2[MemRead8(PC_REG++)](); // Execute instruction pointed to by PC_REG
+	JmpVec2[MemRead8(PC_REG++)](nullptr); // Execute instruction pointed to by PC_REG
 }
 
-void Page_3() //11
+void Page_3(const DecodedInst* inst) //11
 {
-	JmpVec3[MemRead8(PC_REG++)](); // Execute instruction pointed to by PC_REG
+	JmpVec3[MemRead8(PC_REG++)](nullptr); // Execute instruction pointed to by PC_REG
 }
 
 void cpu_firq()
@@ -7668,23 +7669,23 @@ void HD6309DeAssertInterupt(InterruptSource src, Interrupt interrupt)
 	InterruptLine[src] &= BitMask(interrupt);
 }
 
-void InvalidInsHandler()
+void InvalidInsHandler(const DecodedInst* inst)
 {	
 	md[ILLEGAL]=1;
 	mdbits=getmd();
-	ErrorVector();
+	ErrorVector(nullptr);
 	return;
 }
 
-void DivbyZero()
+void DivbyZero(const DecodedInst* inst)
 {
 	md[ZERODIV]=1;
 	mdbits=getmd();
-	ErrorVector();
+	ErrorVector(nullptr);
 	return;
 }
 
-void ErrorVector()
+void ErrorVector(const DecodedInst* inst)
 {
 	cc[E]=1;
 	MemWrite8( pc.B.lsb,--S_REG);
