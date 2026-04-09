@@ -24,6 +24,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "tcc1014mmu.h"
 #include "OpDecoder.h"
 #include "Disassembler.h"
+#include "BlockCache.h"
 
 //Global variables for CPU Emulation-----------------------
 
@@ -73,6 +74,44 @@ static std::vector<unsigned short> CPUBreakpoints;
 static std::vector<unsigned short> CPUTraceTriggers;
 static int HaltedInsPending = 0;
 
+//--- Block Cache ---
+static BlockCache blockCache;
+
+// Block terminator table for page 1 opcodes.
+// True = this opcode ends a basic block (control flow change).
+static const bool IsTerminator[256] = {
+// 0x00-0x0F: direct page ops. 0x0E = JMP direct
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
+// 0x10-0x1F: 0x10=Page2(term), 0x11=Page3(term), 0x13=SYNC, 0x15=HALT,
+//            0x16=LBRA, 0x17=LBSR
+   1,1,0,1,0,1,1,1, 0,0,0,0,0,0,0,0,
+// 0x20-0x2F: all branches are terminators
+   1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,
+// 0x30-0x3F: 0x39=RTS, 0x3B=RTI, 0x3C=CWAI, 0x3F=SWI
+   0,0,0,0,0,0,0,0, 0,1,0,1,1,0,0,1,
+// 0x40-0x4F: inherent A ops - none are terminators
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+// 0x50-0x5F: inherent B ops - none are terminators
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+// 0x60-0x6F: indexed ops. 0x6E = JMP indexed
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
+// 0x70-0x7F: extended ops. 0x7E = JMP extended
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
+// 0x80-0x8F: immediate ops. 0x8D = BSR
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
+// 0x90-0x9F: direct ops. 0x9D = JSR direct
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
+// 0xA0-0xAF: indexed ops. 0xAD = JSR indexed
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
+// 0xB0-0xBF: extended ops. 0xBD = JSR extended
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
+// 0xC0-0xFF: no terminators in these rows
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+};
+
 //END Global variables for CPU Emulation-------------------
 
 //Fuction Prototypes---------------------------------------
@@ -111,6 +150,7 @@ void MC6809Reset()
 	SyncWaiting=0;
 	pc.Reg=MemRead16(VRESET);	//PC gets its reset vector
 	SetMapType(0);
+	blockCache.Clear();
 }
 
 VCC::CPUState MC6809GetState()
@@ -349,7 +389,7 @@ int MC6809Exec(int CycleFor)
 	if (DebuggerActive())
 		goto debugger_path;
 
-	// Fast path: no debugger overhead
+	// Fast path: no debugger overhead, with block execution
 	while (CycleCounter<CycleFor) {
 
 		LatchInterrupts();
@@ -364,7 +404,53 @@ int MC6809Exec(int CycleFor)
 		if (SyncWaiting==1)
 			return 0;
 
-		Do_Opcode(CycleFor);
+		// Try block execution: look up a cached block at the current PC.
+		{
+			const CachedBlock* block = blockCache.Lookup(pc.Reg);
+			int remaining = CycleFor - CycleCounter;
+
+			if (block && block->total_cycles <= remaining)
+			{
+				// We have a cached block and enough budget to execute it
+				// without being interrupted. Run all instructions in a
+				// tight loop with no interrupt checks.
+				for (int i = 0; i < block->num_insns; i++)
+					Do_Opcode(CycleFor);
+
+				if (JS_Ramp_Clock < 0xFFFF)
+					JS_Ramp_Clock += CycleCounter - PrevCycleCount;
+				PrevCycleCount = CycleCounter;
+
+				if (HaltedInsPending)
+					goto debugger_path;
+				continue;
+			}
+
+			// No cached block, or not enough budget. Execute a single
+			// instruction and try to record a new block.
+			if (!block && !blockCache.IsRecording())
+			{
+				// Start recording a new block from this PC
+				blockCache.BeginRecord(pc.Reg);
+				blockCache.SetCycleStart(CycleCounter);
+			}
+
+			unsigned char opcode = MemRead8(pc.Reg); // peek, don't consume
+			Do_Opcode(CycleFor);
+
+			if (blockCache.IsRecording())
+			{
+				if (IsTerminator[opcode])
+				{
+					// This instruction ends the block
+					blockCache.EndRecord(pc.Reg, CycleCounter);
+				}
+				else if (!blockCache.RecordInstruction(pc.Reg, CycleCounter))
+				{
+					// Max block size reached
+				}
+			}
+		}
 
 		if (JS_Ramp_Clock < 0xFFFF) {
 			JS_Ramp_Clock += CycleCounter-PrevCycleCount;
@@ -376,6 +462,9 @@ int MC6809Exec(int CycleFor)
 			goto debugger_path;
 
 	} // End fast instruction loop
+
+	// If we were recording a block when budget ran out, cancel it.
+	blockCache.CancelRecord();
 
 	return(CycleFor-CycleCounter);
 

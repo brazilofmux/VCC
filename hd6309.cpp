@@ -24,6 +24,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "hd6309.h"
 #include "hd6309defs.h"
 #include "tcc1014mmu.h"
+#include "BlockCache.h"
 #include <vcc/util/logger.h>
 #include "string.h"
 #include "OpDecoder.h"
@@ -196,6 +197,43 @@ static unsigned char *NatEmuCycles[] =
 int HaltedInsPending = 0;
 BOOL DoingTFM = false;
 
+//--- Block Cache ---
+static BlockCache blockCache;
+
+// Block terminator table for page 1 opcodes.
+static const bool IsTerminator[256] = {
+// 0x00-0x0F: direct page ops. 0x0E = JMP direct
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
+// 0x10-0x1F: 0x10=Page2(term), 0x11=Page3(term), 0x13=SYNC, 0x15=HALT,
+//            0x16=LBRA, 0x17=LBSR
+   1,1,0,1,0,1,1,1, 0,0,0,0,0,0,0,0,
+// 0x20-0x2F: all branches are terminators
+   1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,
+// 0x30-0x3F: 0x39=RTS, 0x3B=RTI, 0x3C=CWAI, 0x3F=SWI
+   0,0,0,0,0,0,0,0, 0,1,0,1,1,0,0,1,
+// 0x40-0x4F: inherent A ops
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+// 0x50-0x5F: inherent B ops
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+// 0x60-0x6F: indexed ops. 0x6E = JMP indexed
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
+// 0x70-0x7F: extended ops. 0x7E = JMP extended
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
+// 0x80-0x8F: immediate ops. 0x8D = BSR
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
+// 0x90-0x9F: direct ops. 0x9D = JSR direct
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
+// 0xA0-0xAF: indexed ops. 0xAD = JSR indexed
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
+// 0xB0-0xBF: extended ops. 0xBD = JSR extended
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
+// 0xC0-0xFF: no terminators
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+};
+
 //END Global variables for CPU Emulation-------------------
 
 //Fuction Prototypes---------------------------------------
@@ -237,6 +275,7 @@ void HD6309Reset()
 	SyncWaiting=0;
 	PC_REG=MemRead16(VRESET);	//PC gets its reset vector
 	SetMapType(0);	//shouldn't be here
+	blockCache.Clear();
 	return;
 }
 
@@ -7027,7 +7066,7 @@ int HD6309Exec(int CycleFor)
 	if (DebuggerActive())
 		goto debugger_path;
 
-	// Fast path: no debugger overhead
+	// Fast path: no debugger overhead, with block execution
 	while (CycleCounter < CycleFor) {
 
 		LatchInterrupts();
@@ -7042,18 +7081,61 @@ int HD6309Exec(int CycleFor)
 		if (SyncWaiting == 1)
 			return 0;
 
-		JmpVec1[MemRead8(PC_REG++)]();
+		// Try block execution: look up a cached block at the current PC.
+		{
+			const CachedBlock* block = blockCache.Lookup(PC_REG);
+			int remaining = CycleFor - CycleCounter;
+
+			if (block && block->total_cycles <= remaining)
+			{
+				// Cached block fits within budget. Execute all instructions
+				// in a tight loop with no interrupt checks.
+				for (int i = 0; i < block->num_insns; i++)
+					JmpVec1[MemRead8(PC_REG++)]();
+
+				if (JS_Ramp_Clock < 0xFFFF)
+					JS_Ramp_Clock += CycleCounter - PrevCycleCount;
+				PrevCycleCount = CycleCounter;
+
+				if (HaltedInsPending)
+					goto debugger_path;
+				continue;
+			}
+
+			// No cached block, or not enough budget.
+			if (!block && !blockCache.IsRecording())
+			{
+				blockCache.BeginRecord(PC_REG);
+				blockCache.SetCycleStart(CycleCounter);
+			}
+
+			unsigned char opcode = MemRead8(PC_REG); // peek, don't consume
+			JmpVec1[MemRead8(PC_REG++)]();
+
+			if (blockCache.IsRecording())
+			{
+				if (IsTerminator[opcode])
+				{
+					blockCache.EndRecord(PC_REG, CycleCounter);
+				}
+				else if (!blockCache.RecordInstruction(PC_REG, CycleCounter))
+				{
+					// Max block size reached
+				}
+			}
+		}
 
 		if (JS_Ramp_Clock < 0xFFFF) {
 			JS_Ramp_Clock += CycleCounter-PrevCycleCount;
 		}
 		PrevCycleCount = CycleCounter;
 
-		// Check if debugger became active (e.g., HALT opcode executed)
 		if (HaltedInsPending)
 			goto debugger_path;
 
 	} // End fast instruction loop
+
+	blockCache.CancelRecord();
 
 	return(CycleFor-CycleCounter);
 
