@@ -5119,11 +5119,11 @@ void Cmpx_M(const DecodedInst* inst)
 
 void Bsr_R(const DecodedInst* inst)
 { //8D
-	*spostbyte=MemRead8(PC_REG++);
+	*spostbyte = (signed char)OPERAND_8(inst);
 	S_REG--;
 	MemWrite8(pc.B.lsb,S_REG--);
 	MemWrite8(pc.B.msb,S_REG);
-	PC_REG+=*spostbyte;
+	PC_REG += *spostbyte;
 	CycleCounter+=NatEmuCycles76;
 }
 
