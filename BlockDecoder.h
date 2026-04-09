@@ -205,11 +205,19 @@ static const uint8_t Page3InsLen[256] = {
    1, 1, 1, 1, IDX_BASE(2), 1, 1, 1,
 // 0xB0-0xBF: B3=CMPU(3), BC=CMPS(3), others illegal
    1, 1, 1, 3, 1, 1, 1, 1,  1, 1, 1, 1, 3, 1, 1, 1,
-// 0xC0-0xFF: all illegal
-   1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
-   1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
-   1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
-   1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
+// 0xC0-0xCF: F-register immediate ops.
+// C0/C1/C6/CB use imm8 (2 bytes after prefix), others illegal.
+   2, 2, 1, 1, 1, 1, 2, 1,  1, 1, 1, 2, 1, 1, 1, 1,
+// 0xD0-0xDF: F-register direct ops.
+// D0/D1/D6/D7/DB use direct (2 bytes after prefix), others illegal.
+   2, 2, 1, 1, 1, 1, 2, 2,  1, 1, 1, 2, 1, 1, 1, 1,
+// 0xE0-0xEF: F-register indexed ops.
+// E0/E1/E6/E7/EB use indexed (postbyte follows second opcode).
+   IDX_BASE(2), IDX_BASE(2), 1, 1, 1, 1, IDX_BASE(2), IDX_BASE(2),
+   1, 1, 1, IDX_BASE(2), 1, 1, 1, 1,
+// 0xF0-0xFF: F-register extended ops.
+// F0/F1/F6/F7/FB use extended (3 bytes after prefix), others illegal.
+   3, 3, 1, 1, 1, 1, 3, 3,  1, 1, 1, 3, 1, 1, 1, 1,
 };
 
 #undef IDX_BASE
@@ -423,16 +431,52 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
         }
         else if (opcode == 0x11)
         {
-            // Page 3 prefix
-            inst.handler = JmpVec1[0x11];
             uint8_t op3 = MemRead8(pc + 1);
             uint8_t lenEntry = Page3InsLen[op3];
+            bool directDispatch = false;
+
+            switch (op3)
+            {
+            case 0x43: case 0x4A: case 0x4C: case 0x4D: case 0x4F:
+            case 0x53: case 0x5A: case 0x5C: case 0x5D: case 0x5F:
+            case 0x80: case 0x81: case 0x83: case 0x86: case 0x8B: case 0x8C:
+            case 0xC0: case 0xC1: case 0xC6: case 0xCB:
+                directDispatch = true;
+                break;
+            default:
+                break;
+            }
+
+            inst.handler = directDispatch ? JmpVec3[op3] : JmpVec1[0x11];
+
             int innerLen = (lenEntry & 0x80)
                 ? (lenEntry & 0x7F) + IndexedExtraBytes(MemRead8(pc + 2))
                 : lenEntry;
             inst.length = (uint8_t)(1 + innerLen);
-            inst.operand = op3;
             inst.ea_info = 0;
+
+            if (directDispatch)
+            {
+                switch (innerLen)
+                {
+                case 1:
+                    inst.operand = 0;
+                    break;
+                case 2:
+                    inst.operand = MemRead8(pc + 2);
+                    break;
+                case 3:
+                    inst.operand = MemRead16(pc + 2);
+                    break;
+                default:
+                    inst.operand = MemRead16(pc + 2);
+                    break;
+                }
+            }
+            else
+            {
+                inst.operand = op3;
+            }
         }
         else
         {

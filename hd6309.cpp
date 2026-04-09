@@ -2830,7 +2830,7 @@ void Clrf_I(const DecodedInst* inst)
 
 void Sube_M(const DecodedInst* inst)
 { //1180 6309 Untested
-	postbyte=MemRead8(PC_REG++);
+	postbyte=OPERAND_8(inst);
 	temp16 = E_REG - postbyte;
 	cc[C] =(temp16 & 0x100)>>8; 
 	cc[V] = OVERFLOW8(cc[C],postbyte,temp16,E_REG);
@@ -2842,7 +2842,7 @@ void Sube_M(const DecodedInst* inst)
 
 void Cmpe_M(const DecodedInst* inst)
 { //1181 6309
-	postbyte=MemRead8(PC_REG++);
+	postbyte=OPERAND_8(inst);
 	temp8= E_REG-postbyte;
 	cc[C] = temp8 > E_REG;
 	cc[V] = OVERFLOW8(cc[C],postbyte,temp8,E_REG);
@@ -2853,19 +2853,18 @@ void Cmpe_M(const DecodedInst* inst)
 
 void Cmpu_M(const DecodedInst* inst)
 { //1183
-	postword=IMMADDRESS(PC_REG);
+	postword=OPERAND_16(inst);
 	temp16 = U_REG-postword;
 	cc[C] = temp16 > U_REG;
 	cc[V] = OVERFLOW16(cc[C],postword,temp16,U_REG);
 	cc[N] = NTEST16(temp16);
 	cc[Z] = ZTEST(temp16);
-	PC_REG+=2;	
 	CycleCounter+=NatEmuCycles54;
 }
 
 void Lde_M(const DecodedInst* inst)
 { //1186 6309
-	E_REG= MemRead8(PC_REG++);
+	E_REG= OPERAND_8(inst);
 	cc[Z] = ZTEST(E_REG);
 	cc[N] = NTEST8(E_REG);
 	cc[V] = 0;
@@ -2874,7 +2873,7 @@ void Lde_M(const DecodedInst* inst)
 
 void Adde_M(const DecodedInst* inst)
 { //118B 6309
-	postbyte=MemRead8(PC_REG++);
+	postbyte=OPERAND_8(inst);
 	temp16=E_REG+postbyte;
 	cc[C] =(temp16 & 0x100)>>8;
 	cc[H] = ((E_REG ^ postbyte ^ temp16) & 0x10)>>4;
@@ -2887,13 +2886,12 @@ void Adde_M(const DecodedInst* inst)
 
 void Cmps_M(const DecodedInst* inst)
 { //118C
-	postword=IMMADDRESS(PC_REG);
+	postword=OPERAND_16(inst);
 	temp16 = S_REG-postword;
 	cc[C] = temp16 > S_REG;
 	cc[V] = OVERFLOW16(cc[C],postword,temp16,S_REG);
 	cc[N] = NTEST16(temp16);
 	cc[Z] = ZTEST(temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles54;
 }
 
@@ -3511,7 +3509,7 @@ void Muld_E(const DecodedInst* inst)
 
 void Subf_M(const DecodedInst* inst)
 { //11C0 6309 Untested
-	postbyte=MemRead8(PC_REG++);
+	postbyte=OPERAND_8(inst);
 	temp16 = F_REG - postbyte;
 	cc[C] = (temp16 & 0x100)>>8; 
 	cc[V] = OVERFLOW8(cc[C],postbyte,temp16,F_REG);
@@ -3523,7 +3521,7 @@ void Subf_M(const DecodedInst* inst)
 
 void Cmpf_M(const DecodedInst* inst)
 { //11C1 6309
-	postbyte=MemRead8(PC_REG++);
+	postbyte=OPERAND_8(inst);
 	temp8= F_REG-postbyte;
 	cc[C] = temp8 > F_REG;
 	cc[V] = OVERFLOW8(cc[C],postbyte,temp8,F_REG);
@@ -3534,7 +3532,7 @@ void Cmpf_M(const DecodedInst* inst)
 
 void Ldf_M(const DecodedInst* inst)
 { //11C6 6309
-	F_REG= MemRead8(PC_REG++);
+	F_REG= OPERAND_8(inst);
 	cc[Z] = ZTEST(F_REG);
 	cc[N] = NTEST8(F_REG);
 	cc[V] = 0;
@@ -3543,7 +3541,7 @@ void Ldf_M(const DecodedInst* inst)
 
 void Addf_M(const DecodedInst* inst)
 { //11CB 6309 Untested
-	postbyte=MemRead8(PC_REG++);
+	postbyte=OPERAND_8(inst);
 	temp16=F_REG+postbyte;
 	cc[C] = (temp16 & 0x100)>>8;
 	cc[H] = ((F_REG ^ postbyte ^ temp16) & 0x10)>>4;
