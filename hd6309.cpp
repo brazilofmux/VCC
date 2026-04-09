@@ -1562,97 +1562,89 @@ void Clrw_I(const DecodedInst* inst)
 
 void Subw_M(const DecodedInst* inst)
 { //1080 6309 CHECK
-	postword=IMMADDRESS(PC_REG);
+	postword=OPERAND_16(inst);
 	temp16= W_REG-postword;
 	cc[C] = temp16 > W_REG;
 	cc[V] = OVERFLOW16(cc[C],temp16,W_REG,postword);
 	cc[N] = NTEST16(temp16);
 	cc[Z] = ZTEST(temp16);
 	W_REG= temp16;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles54;
 }
 
 void Cmpw_M(const DecodedInst* inst)
 { //1081 6309 CHECK
-	postword=IMMADDRESS(PC_REG);
+	postword=OPERAND_16(inst);
 	temp16= W_REG-postword;
 	cc[C] = temp16 > W_REG;
 	cc[V] = OVERFLOW16(cc[C],temp16,W_REG,postword);
 	cc[N] = NTEST16(temp16);
 	cc[Z] = ZTEST(temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles54;
 }
 
 void Sbcd_M(const DecodedInst* inst)
 { //1082 6309
-	postword=IMMADDRESS(PC_REG);
+	postword=OPERAND_16(inst);
 	temp32=D_REG-postword-cc[C];
 	cc[C] = (temp32 & 0x10000)>>16;
 	cc[V] = OVERFLOW16(cc[C],temp32,D_REG,postword);
 	D_REG= temp32;
 	cc[N] = NTEST16(D_REG);
 	cc[Z] = ZTEST(D_REG);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles54;
 }
 
 void Cmpd_M(const DecodedInst* inst)
 { //1083
-	postword=IMMADDRESS(PC_REG);
+	postword=OPERAND_16(inst);
 	temp16 = D_REG-postword;
 	cc[C] = temp16 > D_REG;
 	cc[V] = OVERFLOW16(cc[C],postword,temp16,D_REG);
 	cc[N] = NTEST16(temp16);
 	cc[Z] = ZTEST(temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles54;
 }
 
 void Andd_M(const DecodedInst* inst)
 { //1084 6309
-	D_REG &= IMMADDRESS(PC_REG);
+	D_REG &= OPERAND_16(inst);
 	cc[N] = NTEST16(D_REG);
 	cc[Z] = ZTEST(D_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles54;
 }
 
 void Bitd_M(const DecodedInst* inst)
 { //1085 6309 Untested
-	temp16= D_REG & IMMADDRESS(PC_REG);
+	temp16= D_REG & OPERAND_16(inst);
 	cc[N] = NTEST16(temp16);
 	cc[Z] = ZTEST(temp16);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles54;
 }
 
 void Ldw_M(const DecodedInst* inst)
 { //1086 6309
-	W_REG=IMMADDRESS(PC_REG);
+	W_REG=OPERAND_16(inst);
 	cc[Z] = ZTEST(W_REG);
 	cc[N] = NTEST16(W_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles54;
 }
 
 void Eord_M(const DecodedInst* inst)
 { //1088 6309 Untested
-	D_REG ^= IMMADDRESS(PC_REG);
+	D_REG ^= OPERAND_16(inst);
 	cc[N] = NTEST16(D_REG);
 	cc[Z] = ZTEST(D_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles54;
 }
 
 void Adcd_M(const DecodedInst* inst)
 { //1089 6309
-	postword=IMMADDRESS(PC_REG);
+	postword=OPERAND_16(inst);
 	temp32= D_REG + postword + cc[C];
 	cc[C] = (temp32 & 0x10000)>>16;
 	cc[V] = OVERFLOW16(cc[C],postword,temp32,D_REG);
@@ -1660,58 +1652,53 @@ void Adcd_M(const DecodedInst* inst)
 	D_REG = temp32;
 	cc[N] = NTEST16(D_REG);
 	cc[Z] = ZTEST(D_REG);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles54;
 }
 
 void Ord_M(const DecodedInst* inst)
 { //108A 6309 Untested
-	D_REG |= IMMADDRESS(PC_REG);
+	D_REG |= OPERAND_16(inst);
 	cc[N] = NTEST16(D_REG);
 	cc[Z] = ZTEST(D_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles54;
 }
 
 void Addw_M(const DecodedInst* inst)
 { //108B Phase 5 6309
-	temp16=IMMADDRESS(PC_REG);
+	temp16=OPERAND_16(inst);
 	temp32= W_REG+ temp16;
 	cc[C] = (temp32 & 0x10000)>>16;
 	cc[V] = OVERFLOW16(cc[C],temp32,temp16,W_REG);
 	W_REG = temp32;
 	cc[Z] = ZTEST(W_REG);
 	cc[N] = NTEST16(W_REG);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles54;
 }
 
 void Cmpy_M(const DecodedInst* inst)
 { //108C
-	postword=IMMADDRESS(PC_REG);
+	postword=OPERAND_16(inst);
 	temp16 = Y_REG-postword;
 	cc[C] = temp16 > Y_REG;
 	cc[V] = OVERFLOW16(cc[C],postword,temp16,Y_REG);
 	cc[N] = NTEST16(temp16);
 	cc[Z] = ZTEST(temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles54;
 }
 	
 void Ldy_M(const DecodedInst* inst)
 { //108E
-	Y_REG = IMMADDRESS(PC_REG);
+	Y_REG = OPERAND_16(inst);
 	cc[Z] = ZTEST(Y_REG);
 	cc[N] = NTEST16(Y_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles54;
 }
 
 void Subw_D(const DecodedInst* inst)
 { //1090 Untested 6309
-	temp16= MemRead16(DPADDRESS(PC_REG++));
+	temp16= MemRead16(DPAGE_ADDR(inst));
 	temp32= W_REG-temp16;
 	cc[C] = (temp32 & 0x10000)>>16;
 	cc[V] = OVERFLOW16(cc[C],temp32,temp16,W_REG);
@@ -1723,7 +1710,7 @@ void Subw_D(const DecodedInst* inst)
 
 void Cmpw_D(const DecodedInst* inst)
 { //1091 6309 Untested
-	postword=MemRead16(DPADDRESS(PC_REG++));
+	postword=MemRead16(DPAGE_ADDR(inst));
 	temp16= W_REG - postword ;
 	cc[C] = temp16 > W_REG;
 	cc[V] = OVERFLOW16(cc[C],postword,temp16,W_REG); 
@@ -1734,7 +1721,7 @@ void Cmpw_D(const DecodedInst* inst)
 
 void Sbcd_D(const DecodedInst* inst)
 { //1092 6309
-	postword= MemRead16(DPADDRESS(PC_REG++));
+	postword= MemRead16(DPAGE_ADDR(inst));
 	temp32=D_REG-postword-cc[C];
 	cc[C] = (temp32 & 0x10000)>>16;
 	cc[V] = OVERFLOW16(cc[C],temp32,D_REG,postword);
@@ -1746,7 +1733,7 @@ void Sbcd_D(const DecodedInst* inst)
 
 void Cmpd_D(const DecodedInst* inst)
 { //1093
-	postword=MemRead16(DPADDRESS(PC_REG++));
+	postword=MemRead16(DPAGE_ADDR(inst));
 	temp16= D_REG - postword ;
 	cc[C] = temp16 > D_REG;
 	cc[V] = OVERFLOW16(cc[C],postword,temp16,D_REG); 
@@ -1757,7 +1744,7 @@ void Cmpd_D(const DecodedInst* inst)
 
 void Andd_D(const DecodedInst* inst)
 { //1094 6309 Untested
-	postword=MemRead16(DPADDRESS(PC_REG++));
+	postword=MemRead16(DPAGE_ADDR(inst));
 	D_REG&=postword;
 	cc[N] = NTEST16(D_REG);
 	cc[Z] = ZTEST(D_REG);
@@ -1767,7 +1754,7 @@ void Andd_D(const DecodedInst* inst)
 
 void Bitd_D(const DecodedInst* inst)
 { //1095 6309 Untested
-	temp16= D_REG & MemRead16(DPADDRESS(PC_REG++));
+	temp16= D_REG & MemRead16(DPAGE_ADDR(inst));
 	cc[N] = NTEST16(temp16);
 	cc[Z] = ZTEST(temp16);
 	cc[V] = 0;
@@ -1776,7 +1763,7 @@ void Bitd_D(const DecodedInst* inst)
 
 void Ldw_D(const DecodedInst* inst)
 { //1096 6309
-	W_REG = MemRead16(DPADDRESS(PC_REG++));
+	W_REG = MemRead16(DPAGE_ADDR(inst));
 	cc[Z] = ZTEST(W_REG);
 	cc[N] = NTEST16(W_REG);
 	cc[V] = 0;
@@ -1785,7 +1772,7 @@ void Ldw_D(const DecodedInst* inst)
 
 void Stw_D(const DecodedInst* inst)
 { //1097 6309
-	MemWrite16(W_REG,DPADDRESS(PC_REG++));
+	MemWrite16(W_REG,DPAGE_ADDR(inst));
 	cc[Z] = ZTEST(W_REG);
 	cc[N] = NTEST16(W_REG);
 	cc[V] = 0;
@@ -1794,7 +1781,7 @@ void Stw_D(const DecodedInst* inst)
 
 void Eord_D(const DecodedInst* inst)
 { //1098 6309 Untested
-	D_REG^=MemRead16(DPADDRESS(PC_REG++));
+	D_REG^=MemRead16(DPAGE_ADDR(inst));
 	cc[N] = NTEST16(D_REG);
 	cc[Z] = ZTEST(D_REG);
 	cc[V] = 0;
@@ -1803,7 +1790,7 @@ void Eord_D(const DecodedInst* inst)
 
 void Adcd_D(const DecodedInst* inst)
 { //1099 6309
-	postword=MemRead16(DPADDRESS(PC_REG++));
+	postword=MemRead16(DPAGE_ADDR(inst));
 	temp32= D_REG + postword + cc[C];
 	cc[C] = (temp32 & 0x10000)>>16;
 	cc[V] = OVERFLOW16(cc[C],postword,temp32,D_REG);
@@ -1816,7 +1803,7 @@ void Adcd_D(const DecodedInst* inst)
 
 void Ord_D(const DecodedInst* inst)
 { //109A 6309 Untested
-	D_REG|=MemRead16(DPADDRESS(PC_REG++));
+	D_REG|=MemRead16(DPAGE_ADDR(inst));
 	cc[N] = NTEST16(D_REG);
 	cc[Z] = ZTEST(D_REG);
 	cc[V] = 0;
@@ -1825,7 +1812,7 @@ void Ord_D(const DecodedInst* inst)
 
 void Addw_D(const DecodedInst* inst)
 { //109B 6309
-	temp16=MemRead16( DPADDRESS(PC_REG++));
+	temp16=MemRead16(DPAGE_ADDR(inst));
 	temp32= W_REG+ temp16;
 	cc[C] =(temp32 & 0x10000)>>16;
 	cc[V] = OVERFLOW16(cc[C],temp32,temp16,W_REG);
@@ -1837,7 +1824,7 @@ void Addw_D(const DecodedInst* inst)
 
 void Cmpy_D(const DecodedInst* inst)
 {	//109C
-	postword=MemRead16(DPADDRESS(PC_REG++));
+	postword=MemRead16(DPAGE_ADDR(inst));
 	temp16= Y_REG - postword ;
 	cc[C] = temp16 > Y_REG;
 	cc[V] = OVERFLOW16(cc[C],postword,temp16,Y_REG);
@@ -1848,7 +1835,7 @@ void Cmpy_D(const DecodedInst* inst)
 
 void Ldy_D(const DecodedInst* inst)
 { //109E
-	Y_REG=MemRead16(DPADDRESS(PC_REG++));
+	Y_REG=MemRead16(DPAGE_ADDR(inst));
 	cc[Z] = ZTEST(Y_REG);	
 	cc[N] = NTEST16(Y_REG);
 	cc[V] = 0;
@@ -1857,7 +1844,7 @@ void Ldy_D(const DecodedInst* inst)
 	
 void Sty_D(const DecodedInst* inst)
 { //109F
-	MemWrite16(Y_REG,DPADDRESS(PC_REG++));
+	MemWrite16(Y_REG,DPAGE_ADDR(inst));
 	cc[Z] = ZTEST(Y_REG);
 	cc[N] = NTEST16(Y_REG);
 	cc[V] = 0;
@@ -2020,107 +2007,98 @@ void Sty_X(const DecodedInst* inst)
 
 void Subw_E(const DecodedInst* inst)
 { //10B0 6309 Untested
-	temp16=MemRead16(IMMADDRESS(PC_REG));
+	temp16=MemRead16(EXTENDED_ADDR(inst));
 	temp32=W_REG-temp16;
 	cc[C] = (temp32 & 0x10000)>>16;
 	cc[V] = OVERFLOW16(cc[C],temp32,temp16,W_REG);
 	W_REG= temp32;
 	cc[Z] = ZTEST(W_REG);
 	cc[N] = NTEST16(W_REG);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles86;
 }
 
 void Cmpw_E(const DecodedInst* inst)
 { //10B1 6309 Untested
-	postword=MemRead16(IMMADDRESS(PC_REG));
+	postword=MemRead16(EXTENDED_ADDR(inst));
 	temp16 = W_REG-postword;
 	cc[C] = temp16 > W_REG;
 	cc[V] = OVERFLOW16(cc[C],postword,temp16,W_REG);
 	cc[N] = NTEST16(temp16);
 	cc[Z] = ZTEST(temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles86;
 }
 
 void Sbcd_E(const DecodedInst* inst)
 { //10B2 6309 Untested
-	temp16=MemRead16(IMMADDRESS(PC_REG));
+	temp16=MemRead16(EXTENDED_ADDR(inst));
 	temp32=D_REG-temp16-cc[C];
 	cc[C] = (temp32 & 0x10000)>>16;
 	cc[V] = OVERFLOW16(cc[C],temp32,temp16,D_REG);
 	D_REG= temp32;
 	cc[Z] = ZTEST(D_REG);
 	cc[N] = NTEST16(D_REG);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles86;
 }
 
 void Cmpd_E(const DecodedInst* inst)
 { //10B3
-	postword=MemRead16(IMMADDRESS(PC_REG));
+	postword=MemRead16(EXTENDED_ADDR(inst));
 	temp16 = D_REG-postword;
 	cc[C] = temp16 > D_REG;
 	cc[V] = OVERFLOW16(cc[C],postword,temp16,D_REG);
 	cc[N] = NTEST16(temp16);
 	cc[Z] = ZTEST(temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles86;
 }
 
 void Andd_E(const DecodedInst* inst)
 { //10B4 6309 Untested
-	D_REG &= MemRead16(IMMADDRESS(PC_REG));
+	D_REG &= MemRead16(EXTENDED_ADDR(inst));
 	cc[N] = NTEST16(D_REG);
 	cc[Z] = ZTEST(D_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles86;
 }
 
 void Bitd_E(const DecodedInst* inst)
 { //10B5 6309 Untested CHECK NITRO
-	temp16= D_REG & MemRead16(IMMADDRESS(PC_REG));
+	temp16= D_REG & MemRead16(EXTENDED_ADDR(inst));
 	cc[N] = NTEST16(temp16);
 	cc[Z] = ZTEST(temp16);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles86;
 }
 
 void Ldw_E(const DecodedInst* inst)
 { //10B6 6309
-	W_REG=MemRead16(IMMADDRESS(PC_REG));
+	W_REG=MemRead16(EXTENDED_ADDR(inst));
 	cc[Z] = ZTEST(W_REG);
 	cc[N] = NTEST16(W_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
 void Stw_E(const DecodedInst* inst)
 { //10B7 6309
-	MemWrite16(W_REG,IMMADDRESS(PC_REG));
+	MemWrite16(W_REG,EXTENDED_ADDR(inst));
 	cc[Z] = ZTEST(W_REG);
 	cc[N] = NTEST16(W_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
 void Eord_E(const DecodedInst* inst)
 { //10B8 6309 Untested
-	D_REG ^= MemRead16(IMMADDRESS(PC_REG));
+	D_REG ^= MemRead16(EXTENDED_ADDR(inst));
 	cc[N] = NTEST16(D_REG);
 	cc[Z] = ZTEST(D_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles86;
 }
 
 void Adcd_E(const DecodedInst* inst)
 { //10B9 6309 untested
-	postword = MemRead16(IMMADDRESS(PC_REG));
+	postword = MemRead16(EXTENDED_ADDR(inst));
 	temp32 = D_REG + postword + cc[C];
 	cc[C] = (temp32 & 0x10000)>>16;
 	cc[V] = OVERFLOW16(cc[C],postword,temp32,D_REG);
@@ -2128,78 +2106,71 @@ void Adcd_E(const DecodedInst* inst)
 	D_REG = temp32;
 	cc[N] = NTEST16(D_REG);
 	cc[Z] = ZTEST(D_REG);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles86;
 }
 
 void Ord_E(const DecodedInst* inst)
 { //10BA 6309 Untested
-	D_REG |= MemRead16(IMMADDRESS(PC_REG));
+	D_REG |= MemRead16(EXTENDED_ADDR(inst));
 	cc[N] = NTEST16(D_REG);
 	cc[Z] = ZTEST(D_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles86;
 }
 
 void Addw_E(const DecodedInst* inst)
 { //10BB 6309 Untested
-	temp16=MemRead16(IMMADDRESS(PC_REG));
+	temp16=MemRead16(EXTENDED_ADDR(inst));
 	temp32= W_REG+ temp16;
 	cc[C] =(temp32 & 0x10000)>>16;
 	cc[V] = OVERFLOW16(cc[C],temp32,temp16,W_REG);
 	W_REG= temp32;
 	cc[Z] = ZTEST(W_REG);
 	cc[N] = NTEST16(W_REG);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles86;
 }
 
 void Cmpy_E(const DecodedInst* inst)
 { //10BC
-	postword=MemRead16(IMMADDRESS(PC_REG));
+	postword=MemRead16(EXTENDED_ADDR(inst));
 	temp16 = Y_REG-postword;
 	cc[C] = temp16 > Y_REG;
 	cc[V] = OVERFLOW16(cc[C],postword,temp16,Y_REG);
 	cc[N] = NTEST16(temp16);
 	cc[Z] = ZTEST(temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles86;
 }
 
 void Ldy_E(const DecodedInst* inst)
 { //10BE
-	Y_REG=MemRead16(IMMADDRESS(PC_REG));
+	Y_REG=MemRead16(EXTENDED_ADDR(inst));
 	cc[Z] = ZTEST(Y_REG);
 	cc[N] = NTEST16(Y_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
 void Sty_E(const DecodedInst* inst)
 { //10BF
-	MemWrite16(Y_REG,IMMADDRESS(PC_REG));
+	MemWrite16(Y_REG,EXTENDED_ADDR(inst));
 	cc[Z] = ZTEST(Y_REG);
 	cc[N] = NTEST16(Y_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
 void Lds_I(const DecodedInst* inst)
 {  //10CE
-	S_REG=IMMADDRESS(PC_REG);
+	S_REG=OPERAND_16(inst);
 	cc[Z] = ZTEST(S_REG);
 	cc[N] = NTEST16(S_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=4;
 }
 
 void Ldq_D(const DecodedInst* inst)
 { //10DC 6309
-	Q_REG=MemRead32(DPADDRESS(PC_REG++));
+	Q_REG=MemRead32(DPAGE_ADDR(inst));
 	cc[Z] = ZTEST(Q_REG);
 	cc[N] = NTEST32(Q_REG);
 	cc[V] = 0;
@@ -2208,7 +2179,7 @@ void Ldq_D(const DecodedInst* inst)
 
 void Stq_D(const DecodedInst* inst)
 { //10DD 6309
-	MemWrite32(Q_REG,DPADDRESS(PC_REG++));
+	MemWrite32(Q_REG,DPAGE_ADDR(inst));
 	cc[Z] = ZTEST(Q_REG);
 	cc[N] = NTEST32(Q_REG);
 	cc[V] = 0;
@@ -2217,7 +2188,7 @@ void Stq_D(const DecodedInst* inst)
 
 void Lds_D(const DecodedInst* inst)
 { //10DE
-	S_REG=MemRead16(DPADDRESS(PC_REG++));
+	S_REG=MemRead16(DPAGE_ADDR(inst));
 	cc[Z] = ZTEST(S_REG);
 	cc[N] = NTEST16(S_REG);
 	cc[V] = 0;
@@ -2226,7 +2197,7 @@ void Lds_D(const DecodedInst* inst)
 
 void Sts_D(const DecodedInst* inst)
 { //10DF 6309
-	MemWrite16(S_REG,DPADDRESS(PC_REG++));
+	MemWrite16(S_REG,DPAGE_ADDR(inst));
 	cc[Z] = ZTEST(S_REG);
 	cc[N] = NTEST16(S_REG);
 	cc[V] = 0;
@@ -2272,41 +2243,37 @@ void Sts_X(const DecodedInst* inst)
 
 void Ldq_E(const DecodedInst* inst)
 { //10FC 6309
-	Q_REG=MemRead32(IMMADDRESS(PC_REG));
+	Q_REG=MemRead32(EXTENDED_ADDR(inst));
 	cc[Z] = ZTEST(Q_REG);
 	cc[N] = NTEST32(Q_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles98;
 }
 
 void Stq_E(const DecodedInst* inst)
 { //10FD 6309
-	MemWrite32(Q_REG,IMMADDRESS(PC_REG));
+	MemWrite32(Q_REG,EXTENDED_ADDR(inst));
 	cc[Z] = ZTEST(Q_REG);
 	cc[N] = NTEST32(Q_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles98;
 }
 
 void Lds_E(const DecodedInst* inst)
 { //10FE
-	S_REG=MemRead16(IMMADDRESS(PC_REG));
+	S_REG=MemRead16(EXTENDED_ADDR(inst));
 	cc[Z] = ZTEST(S_REG);
 	cc[N] = NTEST16(S_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
 void Sts_E(const DecodedInst* inst)
 { //10FF 6309
-	MemWrite16(S_REG,IMMADDRESS(PC_REG));
+	MemWrite16(S_REG,EXTENDED_ADDR(inst));
 	cc[Z] = ZTEST(S_REG);
 	cc[N] = NTEST16(S_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
