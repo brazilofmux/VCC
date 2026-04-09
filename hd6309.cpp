@@ -648,175 +648,161 @@ void Clr_D(const DecodedInst* inst)
 
 void LBeq_R(const DecodedInst* inst)
 { //1027
+	*spostword = (signed short)OPERAND_16(inst);
 	if (cc[Z])
 	{
-		*spostword=IMMADDRESS(PC_REG);
-		PC_REG+=*spostword;
+		PC_REG += *spostword;
 		CycleCounter+=1;
 	}
-	PC_REG+=2;
 	CycleCounter+=5;
 }
 
 void LBrn_R(const DecodedInst* inst)
 { //1021
-	PC_REG+=2;
+	(void)OPERAND_16(inst);
 	CycleCounter+=5;
 }
 
 void LBhi_R(const DecodedInst* inst)
 { //1022
+	*spostword = (signed short)OPERAND_16(inst);
 	if  (!(cc[C] | cc[Z]))
 	{
-		*spostword=IMMADDRESS(PC_REG);
-		PC_REG+=*spostword;
+		PC_REG += *spostword;
 		CycleCounter+=1;
 	}
-	PC_REG+=2;
 	CycleCounter+=5;
 }
 
 void LBls_R(const DecodedInst* inst)
 { //1023
+	*spostword = (signed short)OPERAND_16(inst);
 	if (cc[C] | cc[Z])
 	{
-		*spostword=IMMADDRESS(PC_REG);
-		PC_REG+=*spostword;
+		PC_REG += *spostword;
 		CycleCounter+=1;
 	}
-	PC_REG+=2;
 	CycleCounter+=5;
 }
 
 void LBhs_R(const DecodedInst* inst)
 { //1024
+	*spostword = (signed short)OPERAND_16(inst);
 	if (!cc[C])
 	{
-		*spostword=IMMADDRESS(PC_REG);
-		PC_REG+=*spostword;
+		PC_REG += *spostword;
 		CycleCounter+=1;
 	}
-	PC_REG+=2;
 	CycleCounter+=6;
 }
 
 void LBcs_R(const DecodedInst* inst)
 { //1025
+	*spostword = (signed short)OPERAND_16(inst);
 	if (cc[C])
 	{
-		*spostword=IMMADDRESS(PC_REG);
-		PC_REG+=*spostword;
+		PC_REG += *spostword;
 		CycleCounter+=1;
 	}
-	PC_REG+=2;
 	CycleCounter+=5;
 }
 
 void LBne_R(const DecodedInst* inst)
 { //1026
+	*spostword = (signed short)OPERAND_16(inst);
 	if (!cc[Z])
 	{
-		*spostword=IMMADDRESS(PC_REG);
-		PC_REG+=*spostword;
+		PC_REG += *spostword;
 		CycleCounter+=1;
 	}
-	PC_REG+=2;
 	CycleCounter+=5;
 }
 
 void LBvc_R(const DecodedInst* inst)
 { //1028
+	*spostword = (signed short)OPERAND_16(inst);
 	if ( !cc[V])
 	{
-		*spostword=IMMADDRESS(PC_REG);
-		PC_REG+=*spostword;
+		PC_REG += *spostword;
 		CycleCounter+=1;
 	}
-	PC_REG+=2;
 	CycleCounter+=5;
 }
 
 void LBvs_R(const DecodedInst* inst)
 { //1029
+	*spostword = (signed short)OPERAND_16(inst);
 	if ( cc[V])
 	{
-		*spostword=IMMADDRESS(PC_REG);
-		PC_REG+=*spostword;
+		PC_REG += *spostword;
 		CycleCounter+=1;
 	}
-	PC_REG+=2;
 	CycleCounter+=5;
 }
 
 void LBpl_R(const DecodedInst* inst)
 { //102A
+	*spostword = (signed short)OPERAND_16(inst);
 if (!cc[N])
 	{
-		*spostword=IMMADDRESS(PC_REG);
-		PC_REG+=*spostword;
+		PC_REG += *spostword;
 		CycleCounter+=1;
 	}
-	PC_REG+=2;
 	CycleCounter+=5;
 }
 
 void LBmi_R(const DecodedInst* inst)
 { //102B
+	*spostword = (signed short)OPERAND_16(inst);
 if ( cc[N])
 	{
-		*spostword=IMMADDRESS(PC_REG);
-		PC_REG+=*spostword;
+		PC_REG += *spostword;
 		CycleCounter+=1;
 	}
-	PC_REG+=2;
 	CycleCounter+=5;
 }
 
 void LBge_R(const DecodedInst* inst)
 { //102C
+	*spostword = (signed short)OPERAND_16(inst);
 	if (! (cc[N] ^ cc[V]))
 	{
-		*spostword=IMMADDRESS(PC_REG);
-		PC_REG+=*spostword;
+		PC_REG += *spostword;
 		CycleCounter+=1;
 	}
-	PC_REG+=2;
 	CycleCounter+=5;
 }
 
 void LBlt_R(const DecodedInst* inst)
 { //102D
+	*spostword = (signed short)OPERAND_16(inst);
 	if ( cc[V] ^ cc[N])
 	{
-		*spostword=IMMADDRESS(PC_REG);
-		PC_REG+=*spostword;
+		PC_REG += *spostword;
 		CycleCounter+=1;
 	}
-	PC_REG+=2;
 	CycleCounter+=5;
 }
 
 void LBgt_R(const DecodedInst* inst)
 { //102E
+	*spostword = (signed short)OPERAND_16(inst);
 	if ( !( cc[Z] | (cc[N]^cc[V] ) ))
 	{
-		*spostword=IMMADDRESS(PC_REG);
-		PC_REG+=*spostword;
+		PC_REG += *spostword;
 		CycleCounter+=1;
 	}
-	PC_REG+=2;
 	CycleCounter+=5;
 }
 
 void LBle_R(const DecodedInst* inst)
 {	//102F
+	*spostword = (signed short)OPERAND_16(inst);
 	if ( cc[Z] | (cc[N]^cc[V]) )
 	{
-		*spostword=IMMADDRESS(PC_REG);
-		PC_REG+=*spostword;
+		PC_REG += *spostword;
 		CycleCounter+=1;
 	}
-	PC_REG+=2;
 	CycleCounter+=5;
 }
 
@@ -3734,20 +3720,18 @@ void Sexw_I(const DecodedInst* inst)
 
 void Lbra_R(const DecodedInst* inst)
 { //16
-	*spostword=IMMADDRESS(PC_REG);
-	PC_REG+=2;
-	PC_REG+=*spostword;
+	*spostword = (signed short)OPERAND_16(inst);
+	PC_REG += *spostword;
 	CycleCounter+=NatEmuCycles54;
 }
 
 void Lbsr_R(const DecodedInst* inst)
 { //17
-	*spostword=IMMADDRESS(PC_REG);
-	PC_REG+=2;
+	*spostword = (signed short)OPERAND_16(inst);
 	S_REG--;
 	MemWrite8(pc.B.lsb,S_REG--);
 	MemWrite8(pc.B.msb,S_REG);
-	PC_REG+=*spostword;
+	PC_REG += *spostword;
 	CycleCounter+=NatEmuCycles97;
 }
 
@@ -3910,126 +3894,126 @@ void Tfr_M(const DecodedInst* inst)
 
 void Bra_R(const DecodedInst* inst)
 { //20
-	*spostbyte=MemRead8(PC_REG++);
-	PC_REG+=*spostbyte;
+	*spostbyte = (signed char)OPERAND_8(inst);
+	PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
 void Brn_R(const DecodedInst* inst)
 { //21
+	(void)OPERAND_8(inst);
 	CycleCounter+=3;
-	PC_REG++;
 }
 
 void Bhi_R(const DecodedInst* inst)
 { //22
+	*spostbyte = (signed char)OPERAND_8(inst);
 	if  (!(cc[C] | cc[Z]))
-		PC_REG+=(signed char)MemRead8(PC_REG);
-	PC_REG++;
+		PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
 void Bls_R(const DecodedInst* inst)
 { //23
+	*spostbyte = (signed char)OPERAND_8(inst);
 	if (cc[C] | cc[Z])
-		PC_REG+=(signed char)MemRead8(PC_REG);
-	PC_REG++;
+		PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
 void Bhs_R(const DecodedInst* inst)
 { //24
+	*spostbyte = (signed char)OPERAND_8(inst);
 	if (!cc[C])
-		PC_REG+=(signed char)MemRead8(PC_REG);
-	PC_REG++;
+		PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
 void Blo_R(const DecodedInst* inst)
 { //25
+	*spostbyte = (signed char)OPERAND_8(inst);
 	if (cc[C])
-		PC_REG+=(signed char)MemRead8(PC_REG);
-	PC_REG++;
+		PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
 void Bne_R(const DecodedInst* inst)
 { //26
+	*spostbyte = (signed char)OPERAND_8(inst);
 	if (!cc[Z])
-		PC_REG+=(signed char)MemRead8(PC_REG);
-	PC_REG++;
+		PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
 void Beq_R(const DecodedInst* inst)
 { //27
+	*spostbyte = (signed char)OPERAND_8(inst);
 	if (cc[Z])
-		PC_REG+=(signed char)MemRead8(PC_REG);
-	PC_REG++;
+		PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
 void Bvc_R(const DecodedInst* inst)
 { //28
+	*spostbyte = (signed char)OPERAND_8(inst);
 	if (!cc[V])
-		PC_REG+=(signed char)MemRead8(PC_REG);
-	PC_REG++;
+		PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
 void Bvs_R(const DecodedInst* inst)
 { //29
+	*spostbyte = (signed char)OPERAND_8(inst);
 	if ( cc[V])
-		PC_REG+=(signed char)MemRead8(PC_REG);
-	PC_REG++;
+		PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
 void Bpl_R(const DecodedInst* inst)
 { //2A
+	*spostbyte = (signed char)OPERAND_8(inst);
 	if (!cc[N])
-		PC_REG+=(signed char)MemRead8(PC_REG);
-	PC_REG++;
+		PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
 void Bmi_R(const DecodedInst* inst)
 { //2B
+	*spostbyte = (signed char)OPERAND_8(inst);
 	if ( cc[N])
-		PC_REG+=(signed char)MemRead8(PC_REG);
-	PC_REG++;
+		PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
 void Bge_R(const DecodedInst* inst)
 { //2C
+	*spostbyte = (signed char)OPERAND_8(inst);
 	if (! (cc[N] ^ cc[V]))
-		PC_REG+=(signed char)MemRead8(PC_REG);
-	PC_REG++;
+		PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
 void Blt_R(const DecodedInst* inst)
 { //2D
+	*spostbyte = (signed char)OPERAND_8(inst);
 	if ( cc[V] ^ cc[N])
-		PC_REG+=(signed char)MemRead8(PC_REG);
-	PC_REG++;
+		PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
 void Bgt_R(const DecodedInst* inst)
 { //2E
+	*spostbyte = (signed char)OPERAND_8(inst);
 	if ( !( cc[Z] | (cc[N]^cc[V] ) ))
-		PC_REG+=(signed char)MemRead8(PC_REG);
-	PC_REG++;
+		PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
 void Ble_R(const DecodedInst* inst)
 { //2F
+	*spostbyte = (signed char)OPERAND_8(inst);
 	if ( cc[Z] | (cc[N]^cc[V]) )
-		PC_REG+=(signed char)MemRead8(PC_REG);
-	PC_REG++;
+		PC_REG += *spostbyte;
 	CycleCounter+=3;
 }
 
