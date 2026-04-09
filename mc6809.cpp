@@ -77,6 +77,13 @@ static int HaltedInsPending = 0;
 //--- Block Cache ---
 static BlockCache blockCache;
 
+static void MC6809BlockInvalidate(unsigned short address) {
+	blockCache.InvalidateIfCached(address);
+}
+static void MC6809BlockInvalidateAll() {
+	blockCache.InvalidateAll();
+}
+
 // Block terminator table for page 1 opcodes.
 // True = this opcode ends a basic block (control flow change).
 static const bool IsTerminator[256] = {
@@ -151,6 +158,8 @@ void MC6809Reset()
 	pc.Reg=MemRead16(VRESET);	//PC gets its reset vector
 	SetMapType(0);
 	blockCache.Clear();
+	gBlockInvalidate = MC6809BlockInvalidate;
+	gBlockInvalidateAll = MC6809BlockInvalidateAll;
 }
 
 VCC::CPUState MC6809GetState()

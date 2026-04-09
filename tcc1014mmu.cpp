@@ -31,6 +31,10 @@ This file is part of VCC (Virtual Color Computer).
 #include <vcc/util/FileOps.h>
 
 
+// Block cache invalidation callbacks (set by active CPU engine)
+BlockInvalidateFunc gBlockInvalidate = nullptr;
+BlockInvalidateAllFunc gBlockInvalidateAll = nullptr;
+
 static unsigned char *MemPages[1024];
 static unsigned short MemPageOffsets[1024];
 static unsigned char *memory=nullptr;	//Emulated RAM
@@ -163,18 +167,20 @@ void SetVectors(unsigned char data)
 }
 
 void SetMmuRegister(unsigned char Register,unsigned char data)
-{	
+{
 	unsigned char BankRegister,Task;
 	BankRegister = Register & 7;
 	Task=!!(Register & 8);
 	MmuRegisters[Task][BankRegister]= MmuPrefix |(data & RamMask[CurrentRamConfig]); //gime.c returns what was written so I can get away with this
+	if (gBlockInvalidateAll) gBlockInvalidateAll();
 	return;
 }
 
 void SetRomMap(unsigned char data)
-{	
+{
 	RomMap=(data & 3);
 	UpdateMmuArray();
+	if (gBlockInvalidateAll) gBlockInvalidateAll();
 	return;
 }
 
@@ -182,6 +188,7 @@ void SetMapType(unsigned char type)
 {
 	MapType=type;
 	UpdateMmuArray();
+	if (gBlockInvalidateAll) gBlockInvalidateAll();
 	return;
 }
 
@@ -189,6 +196,7 @@ void Set_MmuTask(unsigned char task)
 {
 	MmuTask=task;
 	MmuState= (!MmuEnabled)<<1 | MmuTask;
+	if (gBlockInvalidateAll) gBlockInvalidateAll();
 	return;
 }
 
@@ -196,6 +204,7 @@ void Set_MmuEnabled (unsigned char usingmmu)
 {
 	MmuEnabled=usingmmu;
 	MmuState= (!MmuEnabled)<<1 | MmuTask;
+	if (gBlockInvalidateAll) gBlockInvalidateAll();
 	return;
 }
  
@@ -272,7 +281,11 @@ void MemWrite8(unsigned char data,unsigned short address)
 	{
 		unsigned short page = MmuRegisters[MmuState][address>>13];
 		if (MapType | (page <VectorMaska[CurrentRamConfig]) | (page > VectorMask[CurrentRamConfig]))
+		{
 			MemPages[page][address & 0x1FFF]=data;
+			if (gBlockInvalidate)
+				gBlockInvalidate(address);
+		}
 		return;
 	}
 	if (address>0xFEFF)
@@ -283,12 +296,18 @@ void MemWrite8(unsigned char data,unsigned short address)
 	if (RamVectors)	//Address must be $FE00 - $FEFF
 	{
 		memory[(0x2000 * VectorMask[CurrentRamConfig]) | (address & 0x1FFF)] = data;
+		if (gBlockInvalidate)
+			gBlockInvalidate(address);
 	}
 	else
 	{
 		unsigned short page = MmuRegisters[MmuState][address >> 13];
 		if (MapType | (page < VectorMaska[CurrentRamConfig]) | (page > VectorMask[CurrentRamConfig]))
+		{
 			MemPages[page][address & 0x1FFF] = data;
+			if (gBlockInvalidate)
+				gBlockInvalidate(address);
+		}
 	}
 
 	return;
@@ -331,7 +350,11 @@ void __fastcall fMemWrite8(unsigned char data,unsigned short address)
 	{
 		unsigned short page = MmuRegisters[MmuState][address>>13];
 		if (MapType | (page <VectorMaska[CurrentRamConfig]) | (page > VectorMask[CurrentRamConfig]))
+		{
 			MemPages[page][address & 0x1FFF]=data;
+			if (gBlockInvalidate)
+				gBlockInvalidate(address);
+		}
 		return;
 	}
 	if (address>0xFEFF)
@@ -342,12 +365,18 @@ void __fastcall fMemWrite8(unsigned char data,unsigned short address)
 	if (RamVectors)	//Address must be $FE00 - $FEFF
 	{
 		memory[(0x2000 * VectorMask[CurrentRamConfig]) | (address & 0x1FFF)] = data;
+		if (gBlockInvalidate)
+			gBlockInvalidate(address);
 	}
 	else
 	{
 		unsigned short page = MmuRegisters[MmuState][address >> 13];
 		if (MapType | (page < VectorMaska[CurrentRamConfig]) | (page > VectorMask[CurrentRamConfig]))
+		{
 			MemPages[page][address & 0x1FFF] = data;
+			if (gBlockInvalidate)
+				gBlockInvalidate(address);
+		}
 	}
 	return;
 }

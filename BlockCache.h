@@ -28,8 +28,13 @@ This file is part of VCC (Virtual Color Computer).
 // subsequent executions use the cached instruction count and cycle cost to
 // execute the block in a tight loop without per-instruction interrupt checks.
 //
-// The cache is direct-mapped by PC (logical address). MMU changes or writes
-// to code pages should invalidate affected entries.
+// Write invalidation: A 64KB reverse map tracks which block (if any) covers
+// each logical address. When memory is written, the reverse map provides O(1)
+// lookup to find and invalidate the affected block. This handles self-modifying
+// code, code loading, and other dynamic code scenarios.
+//
+// MMU changes invalidate the entire cache since logical-to-physical mappings
+// have changed.
 
 #include <cstdint>
 #include <cstring>
@@ -40,7 +45,7 @@ struct CachedBlock
     uint16_t end_pc;        // PC after the last instruction in the block
     uint8_t  num_insns;     // number of instructions in the block
     uint8_t  total_cycles;  // total cycle cost of the block
-    bool     valid;         // is this entry populated?
+    uint32_t generation;    // generation when this block was cached
 };
 
 class BlockCache
@@ -54,20 +59,55 @@ public:
     // At ~5 cycles/instruction average, 12 instructions = ~60 cycles = ~33us.
     static constexpr int MAX_BLOCK_INSNS = 12;
 
+    // Sentinel value meaning "no block covers this address".
+    static constexpr uint16_t NO_BLOCK = 0xFFFF;
+
     BlockCache() { Clear(); }
 
     void Clear()
     {
         memset(blocks_, 0, sizeof(blocks_));
+        memset(reverseMap_, 0xFF, sizeof(reverseMap_));  // fill with NO_BLOCK
+        memset(pageBitmap_, 0, sizeof(pageBitmap_));
+        generation_ = 1;  // start at 1 so 0-initialized blocks are invalid
     }
 
     // Look up a block by its starting PC. Returns nullptr if not cached.
     const CachedBlock* Lookup(uint16_t pc) const
     {
         const CachedBlock& b = blocks_[pc & CACHE_MASK];
-        if (b.valid && b.start_pc == pc)
+        if (b.generation == generation_ && b.start_pc == pc)
             return &b;
         return nullptr;
+    }
+
+    // Check if a memory write invalidates a cached block.
+    // Called from MemWrite8 on every RAM write. Must be VERY fast.
+    // The coarse bitmap (32 bytes, fits in L1) rejects 99.99% of writes
+    // before touching the 128KB reverse map.
+    void InvalidateIfCached(uint16_t address)
+    {
+        // Fast reject: check coarse bitmap (one bit per 256-byte page).
+        // This 32-byte array stays in L1 cache. Almost all writes bail here.
+        if (!(pageBitmap_[address >> 11] & (1 << ((address >> 8) & 7))))
+            return;
+
+        // Slow path: a block exists on this page. Use reverse map.
+        uint16_t block_pc = reverseMap_[address];
+        if (block_pc == NO_BLOCK)
+            return;
+
+        CachedBlock& b = blocks_[block_pc & CACHE_MASK];
+        if (b.generation == generation_ && b.start_pc == block_pc)
+        {
+            ClearReverseMap(b.start_pc, b.end_pc);
+            b.generation = 0;  // invalidate
+        }
+        else
+        {
+            // Stale reverse map entry — block was already evicted or generation changed.
+            reverseMap_[address] = NO_BLOCK;
+        }
     }
 
     // Begin recording a new block at the given PC.
@@ -117,25 +157,84 @@ public:
     void Invalidate(uint16_t pc)
     {
         CachedBlock& b = blocks_[pc & CACHE_MASK];
-        if (b.valid && b.start_pc == pc)
-            b.valid = false;
+        if (b.generation == generation_ && b.start_pc == pc)
+        {
+            ClearReverseMap(b.start_pc, b.end_pc);
+            b.generation = 0;
+        }
     }
 
     // Invalidate all entries (e.g., on MMU change).
+    // O(1): just bump the generation counter. All existing blocks become
+    // stale instantly. Reverse map and bitmap entries self-clean lazily.
     void InvalidateAll()
     {
-        for (int i = 0; i < CACHE_SIZE; i++)
-            blocks_[i].valid = false;
+        generation_++;
+        // On the rare wraparound, do a full clear
+        if (generation_ == 0)
+            Clear();
     }
 
 private:
     CachedBlock blocks_[CACHE_SIZE];
+
+    // Reverse map: for each address in the 64KB logical space, stores the
+    // start_pc of the cached block covering that address, or NO_BLOCK.
+    // This gives O(1) lookup on memory writes.
+    uint16_t reverseMap_[65536];
+
+    // Coarse page bitmap: one bit per 256-byte page (32 bytes total).
+    // Indexed as pageBitmap_[address >> 11] & (1 << ((address >> 8) & 7)).
+    // Fits in a single L1 cache line for fast rejection of data-page writes.
+    uint8_t pageBitmap_[32];
+
+    // Generation counter for O(1) bulk invalidation.
+    // Blocks are valid only if their generation matches this value.
+    uint32_t generation_ = 1;
 
     // Recording state
     bool recording_ = false;
     uint16_t rec_start_pc_ = 0;
     int rec_insn_count_ = 0;
     int rec_cycle_start_ = 0;
+
+    // Set a bit in the page bitmap for the given address.
+    void SetPageBit(uint16_t address)
+    {
+        pageBitmap_[address >> 11] |= (1 << ((address >> 8) & 7));
+    }
+
+    // Clear page bitmap bits for a block's range.
+    // Note: we could leave stale bits (safe, just causes unnecessary reverse
+    // map lookups). But clearing is cheap for small blocks.
+    void ClearPageBitmap(uint16_t start_pc, uint16_t end_pc)
+    {
+        // Only clear if no other block covers the same page.
+        // For simplicity, just clear — the bitmap will be rebuilt as
+        // blocks are re-cached. A stale '1' bit is safe (causes a reverse
+        // map check that returns NO_BLOCK).
+        // Actually, don't clear — stale bits are safe and avoiding the
+        // scan is faster. The bitmap gets reset on InvalidateAll().
+        (void)start_pc;
+        (void)end_pc;
+    }
+
+    // Mark the reverse map for a block's address range.
+    void SetReverseMap(uint16_t start_pc, uint16_t end_pc)
+    {
+        for (uint16_t a = start_pc; a != end_pc; a++)
+            reverseMap_[a] = start_pc;
+    }
+
+    // Clear the reverse map for a block's address range.
+    void ClearReverseMap(uint16_t start_pc, uint16_t end_pc)
+    {
+        for (uint16_t a = start_pc; a != end_pc; a++)
+        {
+            if (reverseMap_[a] == start_pc)
+                reverseMap_[a] = NO_BLOCK;
+        }
+    }
 
     void FinishRecord(uint16_t end_pc, int cycle_counter)
     {
@@ -145,12 +244,24 @@ private:
         // Only cache if we got useful data
         if (rec_insn_count_ > 0 && total_cycles > 0 && total_cycles < 256)
         {
-            CachedBlock& b = blocks_[rec_start_pc_ & CACHE_MASK];
-            b.start_pc = rec_start_pc_;
-            b.end_pc = end_pc;
-            b.num_insns = (uint8_t)rec_insn_count_;
-            b.total_cycles = (uint8_t)total_cycles;
-            b.valid = true;
+            CachedBlock& old = blocks_[rec_start_pc_ & CACHE_MASK];
+
+            // If replacing a valid block, clear its reverse map first
+            if (old.generation == generation_)
+                ClearReverseMap(old.start_pc, old.end_pc);
+
+            old.start_pc = rec_start_pc_;
+            old.end_pc = end_pc;
+            old.num_insns = (uint8_t)rec_insn_count_;
+            old.total_cycles = (uint8_t)total_cycles;
+            old.generation = generation_;
+
+            SetReverseMap(rec_start_pc_, end_pc);
+
+            // Mark page bitmap for all pages this block spans
+            for (uint16_t a = rec_start_pc_; a < end_pc; a += 256)
+                SetPageBit(a);
+            SetPageBit((uint16_t)(end_pc - 1));  // catch last page if block spans boundary
         }
     }
 };

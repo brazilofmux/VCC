@@ -200,6 +200,13 @@ BOOL DoingTFM = false;
 //--- Block Cache ---
 static BlockCache blockCache;
 
+static void HD6309BlockInvalidate(unsigned short address) {
+	blockCache.InvalidateIfCached(address);
+}
+static void HD6309BlockInvalidateAll() {
+	blockCache.InvalidateAll();
+}
+
 // Block terminator table for page 1 opcodes.
 static const bool IsTerminator[256] = {
 // 0x00-0x0F: direct page ops. 0x0E = JMP direct
@@ -276,6 +283,8 @@ void HD6309Reset()
 	PC_REG=MemRead16(VRESET);	//PC gets its reset vector
 	SetMapType(0);	//shouldn't be here
 	blockCache.Clear();
+	gBlockInvalidate = HD6309BlockInvalidate;
+	gBlockInvalidateAll = HD6309BlockInvalidateAll;
 	return;
 }
 

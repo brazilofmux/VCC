@@ -68,9 +68,15 @@ void SetDistoRamBank(unsigned char);
 void SetMmuPrefix(unsigned char);
 unsigned char * Get_mem_pointer();
 
+// Block cache invalidation callbacks. Set by the active CPU engine.
+typedef void (*BlockInvalidateFunc)(unsigned short address);
+typedef void (*BlockInvalidateAllFunc)();
+extern BlockInvalidateFunc gBlockInvalidate;       // per-address, called from MemWrite8
+extern BlockInvalidateAllFunc gBlockInvalidateAll;  // full flush, called on MMU changes
+
 // FIXME: These need to be turned into an enum and the signature of functions
 // that use them updated.
-#define _128K	0	
+#define _128K	0
 #define _512K	1
 #define _2M		2
 
