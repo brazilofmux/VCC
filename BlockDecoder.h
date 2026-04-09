@@ -442,10 +442,13 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
             case 0x80: case 0x81: case 0x83: case 0x86: case 0x8B: case 0x8C:
             case 0x90: case 0x91: case 0x93: case 0x96: case 0x97:
             case 0x9B: case 0x9C: case 0x9D: case 0x9E: case 0x9F:
+            case 0xA0: case 0xA1: case 0xA3: case 0xA6: case 0xA7:
+            case 0xAB: case 0xAC: case 0xAD: case 0xAE: case 0xAF:
             case 0xB0: case 0xB1: case 0xB3: case 0xB6: case 0xB7:
             case 0xBB: case 0xBC: case 0xBD: case 0xBE: case 0xBF:
             case 0xC0: case 0xC1: case 0xC6: case 0xCB:
             case 0xD0: case 0xD1: case 0xD6: case 0xD7: case 0xDB:
+            case 0xE0: case 0xE1: case 0xE6: case 0xE7: case 0xEB:
             case 0xF0: case 0xF1: case 0xF6: case 0xF7: case 0xFB:
                 directDispatch = true;
                 break;
@@ -455,32 +458,49 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
 
             inst.handler = directDispatch ? JmpVec3[op3] : JmpVec1[0x11];
 
-            int innerLen = (lenEntry & 0x80)
-                ? (lenEntry & 0x7F) + IndexedExtraBytes(MemRead8(pc + 2))
-                : lenEntry;
-            inst.length = (uint8_t)(1 + innerLen);
-            inst.ea_info = 0;
-
             if (directDispatch)
             {
-                switch (innerLen)
+                if (lenEntry & 0x80)
                 {
-                case 1:
-                    inst.operand = 0;
-                    break;
-                case 2:
-                    inst.operand = MemRead8(pc + 2);
-                    break;
-                case 3:
-                    inst.operand = MemRead16(pc + 2);
-                    break;
-                default:
-                    inst.operand = MemRead16(pc + 2);
-                    break;
+                    uint8_t pb = MemRead8(pc + 2);
+                    EAMode mode;
+                    uint8_t reg;
+                    uint16_t operand = 0;
+                    DecodeIndexedPostbyte(pb, pc + 2, mode, reg, operand);
+                    inst.ea_info = MAKE_EA_INFO(mode, reg);
+                    inst.operand = operand;
+                    inst.length = (uint8_t)(1 + (lenEntry & 0x7F) + IndexedExtraBytes(pb));
+                }
+                else
+                {
+                    int innerLen = lenEntry;
+                    inst.length = (uint8_t)(1 + innerLen);
+                    inst.ea_info = 0;
+
+                    switch (innerLen)
+                    {
+                    case 1:
+                        inst.operand = 0;
+                        break;
+                    case 2:
+                        inst.operand = MemRead8(pc + 2);
+                        break;
+                    case 3:
+                        inst.operand = MemRead16(pc + 2);
+                        break;
+                    default:
+                        inst.operand = MemRead16(pc + 2);
+                        break;
+                    }
                 }
             }
             else
             {
+                int innerLen = (lenEntry & 0x80)
+                    ? (lenEntry & 0x7F) + IndexedExtraBytes(MemRead8(pc + 2))
+                    : lenEntry;
+                inst.length = (uint8_t)(1 + innerLen);
+                inst.ea_info = 0;
                 inst.operand = op3;
             }
         }
