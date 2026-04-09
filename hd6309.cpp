@@ -7145,11 +7145,15 @@ int HD6309Exec(int CycleFor)
 			{
 				// Cached block fits within budget. Execute all instructions
 				// in a tight loop using pre-decoded handlers.
-				const DecodedInst* insns = block->insns;
-				for (int i = 0; i < block->num_insns; i++)
+				const DecodedInst* ip = block->insns;
+				const DecodedInst* end = ip + block->num_insns;
+				unsigned short local_pc = PC_REG;
+				while (ip < end)
 				{
-					insns[i].handler(&insns[i]);
-					PC_REG += insns[i].length;
+					local_pc += ip->length;
+					PC_REG = local_pc;
+					ip->handler(ip);
+					ip++;
 				}
 
 				if (JS_Ramp_Clock < 0xFFFF)
