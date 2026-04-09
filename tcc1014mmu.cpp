@@ -240,17 +240,19 @@ unsigned char MemRead8( unsigned short address)
 {
 	if (address<0xFE00)
 	{
-		if (MemPageOffsets[MmuRegisters[MmuState][address>>13]]==1)
-			return(MemPages[MmuRegisters[MmuState][address>>13]][address & 0x1FFF]);
-		return( PackMem8Read( MemPageOffsets[MmuRegisters[MmuState][address>>13]] + (address & 0x1FFF) ));
+		unsigned short page = MmuRegisters[MmuState][address>>13];
+		if (MemPageOffsets[page]==1)
+			return(MemPages[page][address & 0x1FFF]);
+		return( PackMem8Read( MemPageOffsets[page] + (address & 0x1FFF) ));
 	}
 	if (address>0xFEFF)
 		return (port_read(address));
 	if (RamVectors)	//Address must be $FE00 - $FEFF
-		return(memory[(0x2000*VectorMask[CurrentRamConfig])|(address & 0x1FFF)]); 
-	if (MemPageOffsets[MmuRegisters[MmuState][address>>13]]==1)
-		return(MemPages[MmuRegisters[MmuState][address>>13]][address & 0x1FFF]);
-	return( PackMem8Read( MemPageOffsets[MmuRegisters[MmuState][address>>13]] + (address & 0x1FFF) ));
+		return(memory[(0x2000*VectorMask[CurrentRamConfig])|(address & 0x1FFF)]);
+	unsigned short page = MmuRegisters[MmuState][address>>13];
+	if (MemPageOffsets[page]==1)
+		return(MemPages[page][address & 0x1FFF]);
+	return( PackMem8Read( MemPageOffsets[page] + (address & 0x1FFF) ));
 }
 
 // Debugger does not want to do port reads that change state
@@ -268,61 +270,9 @@ void MemWrite8(unsigned char data,unsigned short address)
 {
 	if (address<0xFE00)
 	{
-		if (MapType | (MmuRegisters[MmuState][address>>13] <VectorMaska[CurrentRamConfig]) | (MmuRegisters[MmuState][address>>13] > VectorMask[CurrentRamConfig]))
-			MemPages[MmuRegisters[MmuState][address>>13]][address & 0x1FFF]=data;
-		return;
-	}
-	if (address>0xFEFF)
-	{
-		port_write(data,address);
-		return;
-	}
-	if (RamVectors)	//Address must be $FE00 - $FEFF
-	{
-		memory[(0x2000 * VectorMask[CurrentRamConfig]) | (address & 0x1FFF)] = data;
-	}
-	else if (MapType | (MmuRegisters[MmuState][address >> 13] < VectorMaska[CurrentRamConfig]) | (MmuRegisters[MmuState][address >> 13] > VectorMask[CurrentRamConfig]))
-	{
-		MemPages[MmuRegisters[MmuState][address >> 13]][address & 0x1FFF] = data;
-	}
-
-	return;
-}
-
-// Returns TRUE if address is writable RAM (Not Cart, Not a Port)
-bool MemCheckWrite(unsigned short address)
-{
-	if (address<0xFE00)
-	{
-		if (MapType | (MmuRegisters[MmuState][address>>13] <VectorMaska[CurrentRamConfig]) | (MmuRegisters[MmuState][address>>13] > VectorMask[CurrentRamConfig]))
-			return true;
-	}
-	return false;
-}
-
-unsigned char __fastcall fMemRead8( unsigned short address)
-{
-	if (address<0xFE00)
-	{
-		if (MemPageOffsets[MmuRegisters[MmuState][address>>13]]==1)
-			return(MemPages[MmuRegisters[MmuState][address>>13]][address & 0x1FFF]);
-		return( PackMem8Read( MemPageOffsets[MmuRegisters[MmuState][address>>13]] + (address & 0x1FFF) ));
-	}
-	if (address>0xFEFF)
-		return (port_read(address));
-	if (RamVectors)	//Address must be $FE00 - $FEFF
-		return(memory[(0x2000*VectorMask[CurrentRamConfig])|(address & 0x1FFF)]); 
-	if (MemPageOffsets[MmuRegisters[MmuState][address>>13]]==1)
-		return(MemPages[MmuRegisters[MmuState][address>>13]][address & 0x1FFF]);
-	return( PackMem8Read( MemPageOffsets[MmuRegisters[MmuState][address>>13]] + (address & 0x1FFF) ));
-}
-
-void __fastcall fMemWrite8(unsigned char data,unsigned short address)
-{
-	if (address<0xFE00)
-	{
-		if (MapType | (MmuRegisters[MmuState][address>>13] <VectorMaska[CurrentRamConfig]) | (MmuRegisters[MmuState][address>>13] > VectorMask[CurrentRamConfig]))
-			MemPages[MmuRegisters[MmuState][address>>13]][address & 0x1FFF]=data;
+		unsigned short page = MmuRegisters[MmuState][address>>13];
+		if (MapType | (page <VectorMaska[CurrentRamConfig]) | (page > VectorMask[CurrentRamConfig]))
+			MemPages[page][address & 0x1FFF]=data;
 		return;
 	}
 	if (address>0xFEFF)
@@ -336,10 +286,68 @@ void __fastcall fMemWrite8(unsigned char data,unsigned short address)
 	}
 	else
 	{
-		if (MapType | (MmuRegisters[MmuState][address >> 13] < VectorMaska[CurrentRamConfig]) | (MmuRegisters[MmuState][address >> 13] > VectorMask[CurrentRamConfig]))
-		{
-			MemPages[MmuRegisters[MmuState][address >> 13]][address & 0x1FFF] = data;
-		}
+		unsigned short page = MmuRegisters[MmuState][address >> 13];
+		if (MapType | (page < VectorMaska[CurrentRamConfig]) | (page > VectorMask[CurrentRamConfig]))
+			MemPages[page][address & 0x1FFF] = data;
+	}
+
+	return;
+}
+
+// Returns TRUE if address is writable RAM (Not Cart, Not a Port)
+bool MemCheckWrite(unsigned short address)
+{
+	if (address<0xFE00)
+	{
+		unsigned short page = MmuRegisters[MmuState][address>>13];
+		if (MapType | (page <VectorMaska[CurrentRamConfig]) | (page > VectorMask[CurrentRamConfig]))
+			return true;
+	}
+	return false;
+}
+
+unsigned char __fastcall fMemRead8( unsigned short address)
+{
+	if (address<0xFE00)
+	{
+		unsigned short page = MmuRegisters[MmuState][address>>13];
+		if (MemPageOffsets[page]==1)
+			return(MemPages[page][address & 0x1FFF]);
+		return( PackMem8Read( MemPageOffsets[page] + (address & 0x1FFF) ));
+	}
+	if (address>0xFEFF)
+		return (port_read(address));
+	if (RamVectors)	//Address must be $FE00 - $FEFF
+		return(memory[(0x2000*VectorMask[CurrentRamConfig])|(address & 0x1FFF)]);
+	unsigned short page = MmuRegisters[MmuState][address>>13];
+	if (MemPageOffsets[page]==1)
+		return(MemPages[page][address & 0x1FFF]);
+	return( PackMem8Read( MemPageOffsets[page] + (address & 0x1FFF) ));
+}
+
+void __fastcall fMemWrite8(unsigned char data,unsigned short address)
+{
+	if (address<0xFE00)
+	{
+		unsigned short page = MmuRegisters[MmuState][address>>13];
+		if (MapType | (page <VectorMaska[CurrentRamConfig]) | (page > VectorMask[CurrentRamConfig]))
+			MemPages[page][address & 0x1FFF]=data;
+		return;
+	}
+	if (address>0xFEFF)
+	{
+		port_write(data,address);
+		return;
+	}
+	if (RamVectors)	//Address must be $FE00 - $FEFF
+	{
+		memory[(0x2000 * VectorMask[CurrentRamConfig]) | (address & 0x1FFF)] = data;
+	}
+	else
+	{
+		unsigned short page = MmuRegisters[MmuState][address >> 13];
+		if (MapType | (page < VectorMaska[CurrentRamConfig]) | (page > VectorMask[CurrentRamConfig]))
+			MemPages[page][address & 0x1FFF] = data;
 	}
 	return;
 }
