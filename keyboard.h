@@ -88,3 +88,7 @@ extern "C"
 bool GetPaste();
 void SetPaste(bool);
 void PasteIntoQueue(const std::string& txt);
+
+// Returns wall-clock time of last physical key event (for turbo mode throttling).
+// Returns the raw QPC value as a long long to avoid Windows.h dependency.
+long long vccKeyboardGetLastKeyEventTimeQPC();

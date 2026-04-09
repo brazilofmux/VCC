@@ -98,6 +98,14 @@ bool CtrlPaste = false;
 static int ScanTable[256];
 static bool ShiftLatchTable[256];
 
+// Wall-clock timestamp of last physical key event, for turbo mode throttling.
+static LARGE_INTEGER lastKeyEventTime = {};
+
+long long vccKeyboardGetLastKeyEventTimeQPC()
+{
+	return lastKeyEventTime.QuadPart;
+}
+
 /* run-time 'rollover' table to pass to the MC6821 when a key is pressed */
 static unsigned char RolloverTable[8];	// CoCo 'keys' for emulator
 
@@ -272,6 +280,8 @@ void _vccKeyboardUpdateRolloverTable()
 
 void vccKeyboardHandleKey(unsigned char ScanCode, keyevent_e keyState)
 {
+	// Timestamp for turbo mode throttling
+	QueryPerformanceCounter(&lastKeyEventTime);
 
 	DLOG_C("HandleKey %d %d\n",ScanCode,keyState);
 
@@ -427,6 +437,10 @@ int keyTransCompare(const void * e1, const void * e2)
 */
 void vccKeyboardBuildRuntimeTable(keyboardlayout_e keyBoardLayout)
 {
+	// Ensure performance counter frequency is initialized for keyboard scan throttling
+	if (Frequency.QuadPart == 0)
+		QueryPerformanceFrequency(&Frequency);
+
 	int Index1 = 0;
 	int Index2 = 0;
 	const keytranslationentry_t *		keyLayoutTable = nullptr;

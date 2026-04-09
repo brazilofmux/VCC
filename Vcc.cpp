@@ -1128,6 +1128,21 @@ unsigned __stdcall EmuLoop(HANDLE hEvent)
 
 		if (EmuState.Throttle)	//Do nothing untill the frame is over returning unused time to OS
 			FrameWait();
+		else
+		{
+			// Turbo mode: temporarily throttle while keyboard is active
+			// so keys behave the same as at normal speed.
+			long long lastKeyQPC = vccKeyboardGetLastKeyEventTimeQPC();
+			if (lastKeyQPC != 0)
+			{
+				LARGE_INTEGER now, freq;
+				QueryPerformanceCounter(&now);
+				QueryPerformanceFrequency(&freq);
+				double elapsedMs = (double)(now.QuadPart - lastKeyQPC) * 1000.0 / (double)freq.QuadPart;
+				if (elapsedMs < 250.0)  // throttle for 250ms after last keystroke
+					FrameWait();
+			}
+		}
 	} //Still Emulating
 
 	return 0;
