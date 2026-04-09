@@ -27,5 +27,6 @@ void HD6309ForcePC(unsigned short);
 VCC::CPUState HD6309GetState();
 void HD6309SetBreakpoints(const std::vector<unsigned short>& breakpoints);
 void HD6309SetTraceTriggers(const std::vector<unsigned short>& triggers);
+void HD6309GetBlockStatsText(char* buf, int bufsize);
 
 #endif

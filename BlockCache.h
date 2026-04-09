@@ -57,6 +57,16 @@ struct CachedBlock
     DecodedInst insns[12];  // MAX_BLOCK_INSNS — can't forward-ref constexpr
 };
 
+struct BlockCacheStats
+{
+    uint64_t block_hits;        // instructions executed via cached blocks
+    uint64_t block_insns;       // total instructions in those blocks
+    uint64_t single_steps;      // instructions executed one-at-a-time
+    uint64_t blocks_recorded;   // new blocks committed to cache
+    uint64_t invalidations;     // individual block invalidations (write)
+    uint64_t bulk_invalidations;// full cache invalidations (MMU change)
+};
+
 class BlockCache
 {
 public:
@@ -111,6 +121,7 @@ public:
         {
             ClearReverseMap(b.start_pc, b.end_pc);
             b.generation = 0;  // invalidate
+            stats_.invalidations++;
         }
         else
         {
@@ -162,6 +173,18 @@ public:
 
     void SetCycleStart(int cycles) { rec_cycle_start_ = cycles; }
 
+    // Stats: call from the execution loop
+    void RecordBlockHit(int num_insns) { stats_.block_hits++; stats_.block_insns += num_insns; }
+    void RecordSingleStep() { stats_.single_steps++; }
+
+    // Return accumulated stats and reset counters.
+    BlockCacheStats GetAndResetStats()
+    {
+        BlockCacheStats s = stats_;
+        memset(&stats_, 0, sizeof(stats_));
+        return s;
+    }
+
     // Invalidate a cache entry by PC.
     void Invalidate(uint16_t pc)
     {
@@ -170,6 +193,7 @@ public:
         {
             ClearReverseMap(b.start_pc, b.end_pc);
             b.generation = 0;
+            stats_.invalidations++;
         }
     }
 
@@ -179,6 +203,7 @@ public:
     void InvalidateAll()
     {
         generation_++;
+        stats_.bulk_invalidations++;
         // On the rare wraparound, do a full clear
         if (generation_ == 0)
             Clear();
@@ -206,6 +231,9 @@ private:
     uint16_t rec_start_pc_ = 0;
     int rec_insn_count_ = 0;
     int rec_cycle_start_ = 0;
+
+    // Performance counters (reset by GetAndResetStats)
+    BlockCacheStats stats_ = {};
 
     // Set a bit in the page bitmap for the given address.
     void SetPageBit(uint16_t address)
@@ -272,6 +300,7 @@ private:
             old.end_pc = decode_end_pc;
 
             SetReverseMap(rec_start_pc_, decode_end_pc);
+            stats_.blocks_recorded++;
 
             // Mark page bitmap for all pages this block spans
             for (uint16_t a = rec_start_pc_; a < decode_end_pc; a += 256)

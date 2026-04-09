@@ -1102,18 +1102,20 @@ unsigned __stdcall EmuLoop(HANDLE hEvent)
 		FPS/=EmuState.FrameSkip;
 		GetModuleStatus(&EmuState);
 		
-		char tstatus[128];
+		char tstatus[256];
 		char tspeed[32];
+		char tblock[80];
 		snprintf(tspeed,sizeof(tspeed),"%2.2fMhz",EmuState.CPUCurrentSpeed);
 		// Append "+" to speed if overclocking is enabled
 		if (EmuState.OverclockFlag && (EmuState.DoubleSpeedMultiplyer>2))
 			strncat (tspeed,"+",sizeof(tspeed));
+		HD6309GetBlockStatsText(tblock, sizeof(tblock));
 		if (EmuState.Debugger.IsHalted()) {
-			snprintf(tstatus,sizeof(tstatus), " Paused - Hit F7 | %s @ %s | %s",
-				CpuName,tspeed,EmuState.StatusLine);
+			snprintf(tstatus,sizeof(tstatus), " Paused - Hit F7 | %s @ %s | %s | %s",
+				CpuName,tspeed,tblock,EmuState.StatusLine);
 		} else {
-			snprintf(tstatus,sizeof(tstatus),"Skip:%2.2i | FPS:%3.0f | %s @ %s | %s",
-				EmuState.FrameSkip,FPS,CpuName,tspeed,EmuState.StatusLine);
+			snprintf(tstatus,sizeof(tstatus),"Skip:%2.2i | FPS:%3.0f | %s @ %s | %s | %s",
+				EmuState.FrameSkip,FPS,CpuName,tspeed,tblock,EmuState.StatusLine);
 		}
 		int len = strlen(tstatus);
 		UpdateTapeStatus(tstatus + len, sizeof(tstatus) - len);

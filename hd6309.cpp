@@ -428,6 +428,22 @@ void HD6309SetTraceTriggers(const std::vector<unsigned short>& triggers)
 	CPUTraceTriggers = triggers;
 }
 
+void HD6309GetBlockStatsText(char* buf, int bufsize)
+{
+	BlockCacheStats s = blockCache.GetAndResetStats();
+	uint64_t total_insns = s.block_insns + s.single_steps;
+	double hit_pct = 0.0;
+	double avg_block = 0.0;
+	if (total_insns > 0)
+		hit_pct = 100.0 * s.block_insns / total_insns;
+	if (s.block_hits > 0)
+		avg_block = (double)s.block_insns / s.block_hits;
+	snprintf(buf, bufsize, "Blk:%.0f%% %.1fi/b %llurec %lluinv",
+		hit_pct, avg_block,
+		(unsigned long long)s.blocks_recorded,
+		(unsigned long long)s.invalidations);
+}
+
 void Neg_D(const DecodedInst* inst)
 { //0
 	temp16 = DPAGE_ADDR(inst);
@@ -7212,6 +7228,7 @@ int HD6309Exec(int CycleFor)
 			{
 				// Cached block fits within budget. Execute all instructions
 				// in a tight loop using pre-decoded handlers.
+				blockCache.RecordBlockHit(block->num_insns);
 				const DecodedInst* ip = block->insns;
 				const DecodedInst* end = ip + block->num_insns;
 				unsigned short local_pc = PC_REG;
@@ -7239,6 +7256,7 @@ int HD6309Exec(int CycleFor)
 				blockCache.SetCycleStart(CycleCounter);
 			}
 
+			blockCache.RecordSingleStep();
 			unsigned char opcode = MemRead8(PC_REG); // peek, don't consume
 			JmpVec1[MemRead8(PC_REG++)](nullptr);
 
