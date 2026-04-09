@@ -235,8 +235,8 @@ static void HD6309BlockInvalidateAll() {
 // Block terminator table for page 1 opcodes.
 static const bool IsTerminator[256] = {
 // 0x00-0x0F: direct page ops. 0x0E = JMP direct.
-// 0x01=OIM, 0x02=AIM, 0x05=EIM, 0x0B=TIM: terminators (unconverted PC handling)
-   0,1,1,0,0,1,0,0, 0,0,0,1,0,0,1,0,
+// 0x01=OIM, 0x02=AIM, 0x05=EIM, 0x0B=TIM direct forms are converted.
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
 // 0x10-0x1F: 0x10=Page2(term), 0x11=Page3(term), 0x13=SYNC, 0x15=HALT,
 //            0x16=LBRA, 0x17=LBSR, 0x1E=EXG(can target PC), 0x1F=TFR(can target PC)
    1,1,0,1,0,1,1,1, 0,0,0,0,0,0,1,1,
@@ -253,8 +253,8 @@ static const bool IsTerminator[256] = {
 // 0x61=OIM, 0x62=AIM, 0x65=EIM, 0x6B=TIM: terminators (unconverted PC handling)
    0,1,1,0,0,1,0,0, 0,0,0,1,0,0,1,0,
 // 0x70-0x7F: extended ops. 0x7E = JMP extended.
-// 0x71=OIM, 0x72=AIM, 0x75=EIM, 0x7B=TIM: terminators (unconverted PC handling)
-   0,1,1,0,0,1,0,0, 0,0,0,1,0,0,1,0,
+// 0x71=OIM, 0x72=AIM, 0x75=EIM, 0x7B=TIM extended forms are converted.
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
 // 0x80-0x8F: immediate ops. 0x8D = BSR
    0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
 // 0x90-0x9F: direct ops. 0x9D = JSR direct
@@ -443,8 +443,9 @@ void Neg_D(const DecodedInst* inst)
 
 void Oim_D(const DecodedInst* inst)
 {//1 6309
-	postbyte=MemRead8(PC_REG++);
-	temp16 = DPADDRESS(PC_REG++);
+	postword = OPERAND_16(inst);
+	postbyte = (unsigned char)(postword >> 8);
+	temp16 = dp.Reg | (postword & 0xFF);
 	postbyte|= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
 	cc[N] = NTEST8(postbyte);
@@ -455,8 +456,9 @@ void Oim_D(const DecodedInst* inst)
 
 void Aim_D(const DecodedInst* inst)
 {//2 Phase 2 6309
-	postbyte=MemRead8(PC_REG++);
-	temp16 = DPADDRESS(PC_REG++);
+	postword = OPERAND_16(inst);
+	postbyte = (unsigned char)(postword >> 8);
+	temp16 = dp.Reg | (postword & 0xFF);
 	postbyte&= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
 	cc[N] = NTEST8(postbyte);
@@ -492,8 +494,9 @@ void Lsr_D(const DecodedInst* inst)
 
 void Eim_D(const DecodedInst* inst)
 { //05 6309 Untested
-	postbyte=MemRead8(PC_REG++);
-	temp16 = DPADDRESS(PC_REG++);
+	postword = OPERAND_16(inst);
+	postbyte = (unsigned char)(postword >> 8);
+	temp16 = dp.Reg | (postword & 0xFF);
 	postbyte^= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
 	cc[N] = NTEST8(postbyte);
@@ -567,8 +570,9 @@ void Dec_D(const DecodedInst* inst)
 
 void Tim_D(const DecodedInst* inst)
 {	//B 6309 Untested wcreate
-	postbyte=MemRead8(PC_REG++);
-	temp8=MemRead8(DPADDRESS(PC_REG++));
+	postword = OPERAND_16(inst);
+	postbyte = (unsigned char)(postword >> 8);
+	temp8 = MemRead8(dp.Reg | (postword & 0xFF));
 	postbyte&=temp8;
 	cc[N] = NTEST8(postbyte);
 	cc[Z] = ZTEST(postbyte);
@@ -4731,27 +4735,43 @@ void Neg_E(const DecodedInst* inst)
 
 void Oim_E(const DecodedInst* inst)
 { //71 6309 Phase 2
-	postbyte=MemRead8(PC_REG++);
-	temp16=IMMADDRESS(PC_REG);
+	if (inst)
+	{
+		postbyte = inst->ea_info;
+		temp16 = EXTENDED_ADDR(inst);
+	}
+	else
+	{
+		postbyte = MemRead8(PC_REG++);
+		temp16 = IMMADDRESS(PC_REG);
+		PC_REG += 2;
+	}
 	postbyte|= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
 	cc[N] = NTEST8(postbyte);
 	cc[Z] = ZTEST(postbyte);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=7;
 }
 
 void Aim_E(const DecodedInst* inst)
 { //72 6309 Untested CHECK NITRO
-	postbyte=MemRead8(PC_REG++);
-	temp16=IMMADDRESS(PC_REG);
+	if (inst)
+	{
+		postbyte = inst->ea_info;
+		temp16 = EXTENDED_ADDR(inst);
+	}
+	else
+	{
+		postbyte = MemRead8(PC_REG++);
+		temp16 = IMMADDRESS(PC_REG);
+		PC_REG += 2;
+	}
 	postbyte&= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
 	cc[N] = NTEST8(postbyte);
 	cc[Z] = ZTEST(postbyte);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=7;
 }
 
@@ -4782,14 +4802,22 @@ void Lsr_E(const DecodedInst* inst)
 
 void Eim_E(const DecodedInst* inst)
 { //75 6309 Untested CHECK NITRO
-	postbyte=MemRead8(PC_REG++);
-	temp16=IMMADDRESS(PC_REG);
+	if (inst)
+	{
+		postbyte = inst->ea_info;
+		temp16 = EXTENDED_ADDR(inst);
+	}
+	else
+	{
+		postbyte = MemRead8(PC_REG++);
+		temp16 = IMMADDRESS(PC_REG);
+		PC_REG += 2;
+	}
 	postbyte^= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
 	cc[N] = NTEST8(postbyte);
 	cc[Z] = ZTEST(postbyte);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=7;
 }
 
@@ -4859,13 +4887,21 @@ void Dec_E(const DecodedInst* inst)
 
 void Tim_E(const DecodedInst* inst)
 { //7B 6309 NITRO 
-	postbyte=MemRead8(PC_REG++);
-	temp16=IMMADDRESS(PC_REG);
+	if (inst)
+	{
+		postbyte = inst->ea_info;
+		temp16 = EXTENDED_ADDR(inst);
+	}
+	else
+	{
+		postbyte = MemRead8(PC_REG++);
+		temp16 = IMMADDRESS(PC_REG);
+		PC_REG += 2;
+	}
 	postbyte&=MemRead8(temp16);
 	cc[N] = NTEST8(postbyte);
 	cc[Z] = ZTEST(postbyte);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=7;
 }
 

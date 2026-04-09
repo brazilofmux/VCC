@@ -566,20 +566,29 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
                 inst.length = lenEntry;
                 inst.ea_info = 0;
 
-                switch (lenEntry)
+                if (opcode == 0x71 || opcode == 0x72 || opcode == 0x75 || opcode == 0x7B)
                 {
-                case 1:
-                    inst.operand = 0;
-                    break;
-                case 2:
-                    inst.operand = MemRead8(pc + 1);
-                    break;
-                case 3:
-                    inst.operand = MemRead16(pc + 1);
-                    break;
-                default:
-                    inst.operand = MemRead16(pc + 1);
-                    break;
+                    // OIM/AIM/EIM/TIM extended: imm8 then ext16
+                    inst.ea_info = MemRead8(pc + 1);
+                    inst.operand = MemRead16(pc + 2);
+                }
+                else
+                {
+                    switch (lenEntry)
+                    {
+                    case 1:
+                        inst.operand = 0;
+                        break;
+                    case 2:
+                        inst.operand = MemRead8(pc + 1);
+                        break;
+                    case 3:
+                        inst.operand = MemRead16(pc + 1);
+                        break;
+                    default:
+                        inst.operand = MemRead16(pc + 1);
+                        break;
+                    }
                 }
             }
         }
