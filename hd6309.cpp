@@ -7316,12 +7316,34 @@ debugger_path:
 
 void Page_2(const DecodedInst* inst) //10
 {
-	JmpVec2[MemRead8(PC_REG++)](nullptr); // Execute instruction pointed to by PC_REG
+	if (inst)
+	{
+		// Block path enters with PC_REG at the end of the full prefixed
+		// instruction. Rewind to the legacy operand position so the existing
+		// page-2 handlers can consume their operands unchanged.
+		PC_REG -= (inst->length - 2);
+		JmpVec2[(unsigned char)inst->operand](nullptr);
+	}
+	else
+	{
+		JmpVec2[MemRead8(PC_REG++)](nullptr); // Execute instruction pointed to by PC_REG
+	}
 }
 
 void Page_3(const DecodedInst* inst) //11
 {
-	JmpVec3[MemRead8(PC_REG++)](nullptr); // Execute instruction pointed to by PC_REG
+	if (inst)
+	{
+		// Block path enters with PC_REG at the end of the full prefixed
+		// instruction. Rewind to the legacy operand position so the existing
+		// page-3 handlers can consume their operands unchanged.
+		PC_REG -= (inst->length - 2);
+		JmpVec3[(unsigned char)inst->operand](nullptr);
+	}
+	else
+	{
+		JmpVec3[MemRead8(PC_REG++)](nullptr); // Execute instruction pointed to by PC_REG
+	}
 }
 
 void cpu_firq()

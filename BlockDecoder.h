@@ -25,10 +25,8 @@ This file is part of VCC (Virtual Color Computer).
 // for each instruction. This is called once when a block is first cached.
 // Subsequent executions use the pre-decoded data directly.
 //
-// Page 2/3 instructions are stored with the Page_2/Page_3 handler and
-// decoded length — the handler still does its own inner dispatch for now.
-// As individual page 2/3 handlers are converted, the decoder can be
-// extended to look through the prefix.
+// Page 2 instructions can now be decoded directly to their handlers.
+// Page 3 still uses the Page_3 compatibility wrapper for now.
 
 #include <cstdint>
 #include "DecodedInst.h"
@@ -374,16 +372,54 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
 
         if (opcode == 0x10)
         {
-            // Page 2 prefix
-            inst.handler = JmpVec1[0x10];
+            // Page 2 prefix: decode through to the actual handler.
             uint8_t op2 = MemRead8(pc + 1);
             uint8_t lenEntry = Page2InsLen[op2];
-            int innerLen = (lenEntry & 0x80)
-                ? (lenEntry & 0x7F) + IndexedExtraBytes(MemRead8(pc + 2))
-                : lenEntry;
-            inst.length = (uint8_t)(1 + innerLen);
-            inst.operand = op2;
-            inst.ea_info = 0;
+            inst.handler = JmpVec2[op2];
+
+            if (lenEntry & 0x80)
+            {
+                // Indexed mode: page-2 indexed opcodes have the same inner
+                // layout as page-1 indexed forms, just with a prefix byte.
+                int base = lenEntry & 0x7F;
+                int pbOffset = (base >= 3) ? 3 : 2;
+                uint8_t pb = MemRead8(pc + pbOffset);
+
+                EAMode mode;
+                uint8_t reg;
+                uint16_t operand = 0;
+                if (base >= 3)
+                    operand = MemRead8(pc + 2);  // immediate byte before postbyte
+
+                DecodeIndexedPostbyte(pb, pc + pbOffset, mode, reg, operand);
+                inst.ea_info = MAKE_EA_INFO(mode, reg);
+                inst.length = (uint8_t)(1 + base + IndexedExtraBytes(pb));
+
+                if (base < 3)
+                    inst.operand = operand;
+            }
+            else
+            {
+                int innerLen = lenEntry;
+                inst.length = (uint8_t)(1 + innerLen);
+                inst.ea_info = 0;
+
+                switch (innerLen)
+                {
+                case 1:
+                    inst.operand = 0;
+                    break;
+                case 2:
+                    inst.operand = MemRead8(pc + 2);
+                    break;
+                case 3:
+                    inst.operand = MemRead16(pc + 2);
+                    break;
+                default:
+                    inst.operand = MemRead16(pc + 2);
+                    break;
+                }
+            }
         }
         else if (opcode == 0x11)
         {
