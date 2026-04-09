@@ -36,6 +36,7 @@ This file is part of VCC (Virtual Color Computer).
 // MMU changes invalidate the entire cache since logical-to-physical mappings
 // have changed.
 
+#include <cassert>
 #include <cstdint>
 #include <cstring>
 #include "DecodedInst.h"
@@ -263,7 +264,10 @@ private:
             old.total_cycles = (uint8_t)total_cycles;
             old.generation = generation_;
 
-            // Pre-decode instructions for the block execution path
+            // Pre-decode instructions for the block execution path.
+            // Note: end_pc from the recorder may be a branch target (not the
+            // byte after the last instruction) because PC_REG is read after
+            // the handler modifies it. The decoder's end_pc is authoritative.
             uint16_t decode_end_pc = DecodeBlock(rec_start_pc_, rec_insn_count_, old.insns);
             old.end_pc = decode_end_pc;
 

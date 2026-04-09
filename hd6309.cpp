@@ -263,8 +263,8 @@ static const bool IsTerminator[256] = {
    0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
 // 0xB0-0xBF: extended ops. 0xBD = JSR extended
    0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
-// 0xC0-0xCF: 0xCD=LDQ(term, unconverted PC handling)
-   0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
+// 0xC0-0xCF: no terminators (LDQ 0xCD is now converted)
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
@@ -5794,8 +5794,16 @@ void Ldd_M(const DecodedInst* inst)
 
 void Ldq_M(const DecodedInst* inst)
 { //CD 6309 WORK
-	Q_REG = MemRead32(PC_REG);
-	PC_REG+=4;
+	// 5-byte instruction: opcode + 4 immediate bytes.
+	// Block path: PC already past all 5 bytes; read 4 bytes behind PC.
+	// Non-block path: read at PC and advance by 4.
+	if (inst)
+		Q_REG = MemRead32(PC_REG - 4);
+	else
+	{
+		Q_REG = MemRead32(PC_REG);
+		PC_REG += 4;
+	}
 	cc[Z] = ZTEST(Q_REG);
 	cc[N] = NTEST32(Q_REG);
 	cc[V] = 0;
