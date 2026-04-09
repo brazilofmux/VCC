@@ -7150,7 +7150,10 @@ int HD6309Exec(int CycleFor)
 			blockCache.CancelRecord();
 
 		if (SyncWaiting == 1)
+		{
+			blockCache.CancelRecord();
 			return 0;
+		}
 
 		// Try block execution: look up a cached block at the current PC.
 		{
@@ -7219,6 +7222,8 @@ int HD6309Exec(int CycleFor)
 	return(CycleFor-CycleCounter);
 
 debugger_path:
+	blockCache.CancelRecord();
+
 	// Slow path: full debugger support
 	while (CycleCounter < CycleFor) {
 
@@ -7255,7 +7260,10 @@ debugger_path:
 			cpu_irq();
 
 		if (SyncWaiting == 1)
+		{
+			blockCache.CancelRecord();
 			return 0;
+		}
 
 		// Any CPU Breakpoints set?
 		if (!EmuState.Debugger.IsStepping() && !CPUBreakpoints.empty())
