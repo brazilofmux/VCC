@@ -106,7 +106,6 @@
       <Filter>Source</Filter>
     </ClCompile>
     <ClCompile Include="joystickinput.cpp" />
-    <ClCompile Include="CartridgeMenu.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="audio.h">

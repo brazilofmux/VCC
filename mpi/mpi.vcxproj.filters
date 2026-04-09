@@ -30,15 +30,15 @@
     <ClInclude Include="configuration_dialog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="multipak_cartridge_context.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="multipak_configuration.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="multipak_configuration.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="cartridge_slot_adapter.h" />
+    <ClInclude Include="host_cartridge_callbacks.h" />
+    <ClInclude Include="mpi.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Header Files">

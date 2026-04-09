@@ -259,20 +259,20 @@ private:
                 ClearReverseMap(old.start_pc, old.end_pc);
 
             old.start_pc = rec_start_pc_;
-            old.end_pc = end_pc;
             old.num_insns = (uint8_t)rec_insn_count_;
             old.total_cycles = (uint8_t)total_cycles;
             old.generation = generation_;
 
             // Pre-decode instructions for the block execution path
-            DecodeBlock(rec_start_pc_, rec_insn_count_, old.insns);
+            uint16_t decode_end_pc = DecodeBlock(rec_start_pc_, rec_insn_count_, old.insns);
+            old.end_pc = decode_end_pc;
 
-            SetReverseMap(rec_start_pc_, end_pc);
+            SetReverseMap(rec_start_pc_, decode_end_pc);
 
             // Mark page bitmap for all pages this block spans
-            for (uint16_t a = rec_start_pc_; a < end_pc; a += 256)
+            for (uint16_t a = rec_start_pc_; a < decode_end_pc; a += 256)
                 SetPageBit(a);
-            SetPageBit((uint16_t)(end_pc - 1));  // catch last page if block spans boundary
+            SetPageBit((uint16_t)(decode_end_pc - 1));  // catch last page if block spans boundary
         }
     }
 };
