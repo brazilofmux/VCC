@@ -6254,6 +6254,9 @@ void Stu_E(const DecodedInst* inst)
 
 void Halt(const DecodedInst* inst)
 {
+	if (blockCache.IsRecording())
+		blockCache.CancelRecord();
+
 	if (EmuState.Debugger.Halt_Enabled()) {
 		HaltedInsPending = 1;
 		VCC::ApplyHaltpoints(false);
@@ -7275,6 +7278,8 @@ void Page_2(const DecodedInst* inst) //10
 {
 	if (inst)
 	{
+		assert(inst->length >= 2);
+
 		// Block path enters with PC_REG at the end of the full prefixed
 		// instruction. Rewind to the legacy operand position so the existing
 		// page-2 handlers can consume their operands unchanged.
@@ -7291,6 +7296,8 @@ void Page_3(const DecodedInst* inst) //11
 {
 	if (inst)
 	{
+		assert(inst->length >= 2);
+
 		// Block path enters with PC_REG at the end of the full prefixed
 		// instruction. Rewind to the legacy operand position so the existing
 		// page-3 handlers can consume their operands unchanged.
