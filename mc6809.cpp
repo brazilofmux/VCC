@@ -134,6 +134,105 @@ static void P3_Opcode();
 
 #include "CpuCommon.h"
 
+// ============================================================
+// Threaded interpreter: handler functions and dispatch table
+// ============================================================
+static int gCycleFor;   // stashed CycleFor for fallback handlers
+
+#include "mc6809_handlers.h"
+
+// Fallback handler: re-dispatches through the existing Do_Opcode switch.
+// Used for opcodes not yet extracted into standalone handlers.
+static void op_FALLBACK() {
+    pc.Reg--;               // back up PC so Do_Opcode re-reads the opcode
+    Do_Opcode(gCycleFor);
+}
+
+// Page 1 handler table (256 entries).
+static OpcodeHandler HandlerTable[256] = {
+    // $00-$0F: Direct page RMW + JMP
+    op_NEG_D,   op_ILLEGAL, op_ILLEGAL, op_COM_D,     // 00-03
+    op_LSR_D,   op_ILLEGAL, op_ROR_D,   op_ASR_D,     // 04-07
+    op_ASL_D,   op_ROL_D,   op_DEC_D,   op_ILLEGAL,   // 08-0B
+    op_INC_D,   op_TST_D,   op_JMP_D,   op_CLR_D,     // 0C-0F
+
+    // $10-$1F: Page2, Page3, NOP, SYNC, HALT, LBRA, LBSR, DAA, ORCC, ANDCC, SEX, EXG, TFR
+    op_FALLBACK, op_FALLBACK, op_NOP,      op_FALLBACK,  // 10-13
+    op_ILLEGAL,  op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 14-17
+    op_ILLEGAL,  op_FALLBACK, op_FALLBACK, op_ILLEGAL,   // 18-1B
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 1C-1F
+
+    // $20-$2F: Branches (all fallback for now)
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 20-23
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 24-27
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 28-2B
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 2C-2F
+
+    // $30-$3F: LEA, PSH, PUL, RTS, ABX, RTI, CWAI, MUL, SWI
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 30-33
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 34-37
+    op_ILLEGAL,  op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 38-3B
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 3C-3F
+
+    // $40-$4F: Inherent A
+    op_NEGA,    op_ILLEGAL, op_ILLEGAL, op_COMA,       // 40-43
+    op_LSRA,    op_ILLEGAL, op_RORA,    op_ASRA,       // 44-47
+    op_ASLA,    op_ROLA,    op_DECA,    op_ILLEGAL,    // 48-4B
+    op_INCA,    op_TSTA,    op_ILLEGAL, op_CLRA,       // 4C-4F
+
+    // $50-$5F: Inherent B
+    op_NEGB,    op_ILLEGAL, op_ILLEGAL, op_COMB,       // 50-53
+    op_LSRB,    op_ILLEGAL, op_RORB,    op_ASRB,       // 54-57
+    op_ASLB,    op_ROLB,    op_DECB,    op_ILLEGAL,    // 58-5B
+    op_INCB,    op_TSTB,    op_ILLEGAL, op_CLRB,       // 5C-5F
+
+    // $60-$6F: Indexed RMW + JMP
+    op_NEG_X,   op_ILLEGAL, op_ILLEGAL, op_COM_X,      // 60-63
+    op_LSR_X,   op_ILLEGAL, op_ROR_X,   op_ASR_X,      // 64-67
+    op_ASL_X,   op_ROL_X,   op_DEC_X,   op_ILLEGAL,    // 68-6B
+    op_INC_X,   op_TST_X,   op_JMP_X,   op_CLR_X,      // 6C-6F
+
+    // $70-$7F: Extended RMW + JMP
+    op_NEG_E,   op_ILLEGAL, op_ILLEGAL, op_COM_E,      // 70-73
+    op_LSR_E,   op_ILLEGAL, op_ROR_E,   op_ASR_E,      // 74-77
+    op_ASL_E,   op_ROL_E,   op_DEC_E,   op_ILLEGAL,    // 78-7B
+    op_INC_E,   op_TST_E,   op_JMP_E,   op_CLR_E,      // 7C-7F
+
+    // $80-$FF: ALU ops (all fallback for now)
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 80-83
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_ILLEGAL,   // 84-87
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 88-8B
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_ILLEGAL,   // 8C-8F
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 90-93
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 94-97
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 98-9B
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // 9C-9F
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // A0-A3
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // A4-A7
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // A8-AB
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // AC-AF
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // B0-B3
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // B4-B7
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // B8-BB
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // BC-BF
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // C0-C3
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_ILLEGAL,   // C4-C7
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // C8-CB
+    op_FALLBACK, op_ILLEGAL,  op_FALLBACK, op_ILLEGAL,   // CC-CF
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // D0-D3
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // D4-D7
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // D8-DB
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // DC-DF
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // E0-E3
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // E4-E7
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // E8-EB
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // EC-EF
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // F0-F3
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // F4-F7
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // F8-FB
+    op_FALLBACK, op_FALLBACK, op_FALLBACK, op_FALLBACK,  // FC-FF
+};
+
 //END Fuction Prototypes-----------------------------------
 void MC6809Init()
 {
@@ -422,9 +521,14 @@ int MC6809Exec(int CycleFor)
 			{
 				// We have a cached block and enough budget to execute it
 				// without being interrupted. Run all instructions in a
-				// tight loop with no interrupt checks.
+				// tight loop with no interrupt checks — dispatch through
+				// handler table instead of the Do_Opcode switch.
+				gCycleFor = CycleFor;
 				for (int i = 0; i < block->num_insns; i++)
-					Do_Opcode(CycleFor);
+				{
+					unsigned char op = MemRead8(pc.Reg++);
+					HandlerTable[op]();
+				}
 
 				if (JS_Ramp_Clock < 0xFFFF)
 					JS_Ramp_Clock += CycleCounter - PrevCycleCount;
@@ -444,8 +548,9 @@ int MC6809Exec(int CycleFor)
 				blockCache.SetCycleStart(CycleCounter);
 			}
 
-			unsigned char opcode = MemRead8(pc.Reg); // peek, don't consume
-			Do_Opcode(CycleFor);
+			unsigned char opcode = MemRead8(pc.Reg++);
+			gCycleFor = CycleFor;
+			HandlerTable[opcode]();
 
 			if (blockCache.IsRecording())
 			{
