@@ -40,6 +40,15 @@
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
     </Link>
   </ItemDefinitionGroup>
+  <PropertyGroup>
+    <RomsDir>D:\roms\</RomsDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <PostBuildEvent>
+      <Command>if not exist "$(OutDir)coco3.rom" if exist "$(RomsDir)*.rom" xcopy /Y /D "$(RomsDir)*.rom" "$(OutDir)"</Command>
+      <Message>Copying ROM files to output directory</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
   <ItemGroup />
 </Project>
 

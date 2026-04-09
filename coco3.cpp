@@ -40,6 +40,7 @@ This file is part of VCC (Virtual Color Computer).
 #include <iostream>
 #include "config.h"
 #include "tcc1014mmu.h"
+#include "EventHeap.h"
 
 
 #if USE_DEBUG_AUDIOTAPE
@@ -97,14 +98,30 @@ static double emulatedCycles;
 double TimeToHSYNCLow = 0;
 double TimeToHSYNCHigh = 0;
 static unsigned char LastMotorState;
+
 static int AudioFreeBlockCount;
 
 static int clipcycle = 1, cyclewait=2000;
-bool codepaste, PasteWithNew = false; 
+bool codepaste, PasteWithNew = false;
 void AudioOut();
 void CassOut();
 void CassIn();
 void (*AudioEvent)()=AudioOut;
+
+//--- Event Heap ---
+static EventHeap eventHeap;
+static int evtTimerInterrupt = -1;
+static int evtAudioSample = -1;
+
+static void OnTimerInterrupt()
+{
+	GimeAssertTimerInterupt();
+}
+
+static void OnAudioSample()
+{
+	AudioEvent();
+}
 void SetMasterTickCounter();
 void (*DrawTopBoarder[4]) (SystemState *)={DrawTopBoarder8,DrawTopBoarder16,DrawTopBoarder24,DrawTopBoarder32};
 void (*DrawBottomBoarder[4]) (SystemState *)={DrawBottomBoarder8,DrawBottomBoarder16,DrawBottomBoarder24,DrawBottomBoarder32};
@@ -418,134 +435,44 @@ _inline void CPUCycle(double NanosToRun)
 	EmuState.Debugger.TraceEmulatorCycle(VCC::TraceEvent::EmulatorCycle, 10, NanosToRun, 0, 0, 0, 0);
 	NanosThisLine += NanosToRun;
 	double emulationCycles = 0, emulationDrift = 0;
+
 	while (NanosThisLine >= 1)
 	{
-		StateSwitch = 0;
-		if ((NanosToInterrupt <= NanosThisLine) & IntEnable)	//Does this iteration need to Timer Interupt
-			StateSwitch = 1;
-		if ((NanosToSoundSample <= NanosThisLine) & SndEnable)//Does it need to collect an Audio sample
-			StateSwitch += 2;
-		switch (StateSwitch)
+		// Fire any already-overdue events before running CPU
+		if (eventHeap.NextDeadline() <= 0)
 		{
-		case 0:		//No interupts this line
-			CyclesThisLine = CycleDrift + (NanosThisLine * CyclesPerLine * OverClock / NanosPerLine);
-			if (CyclesThisLine >= 1)	//Avoid un-needed CPU engine calls
-				CycleDrift = CPUExec((int)floor(CyclesThisLine)) + (CyclesThisLine - floor(CyclesThisLine));
-			else
-				CycleDrift = CyclesThisLine;
-			EmuState.Debugger.TraceEmulatorCycle(VCC::TraceEvent::EmulatorCycle, StateSwitch, NanosThisLine, NanosToInterrupt, NanosToSoundSample, CyclesThisLine, CycleDrift);
-			emulationCycles += CyclesThisLine;
-			emulationDrift += CycleDrift;
-			NanosToInterrupt -= NanosThisLine;
-			NanosToSoundSample -= NanosThisLine;
-			NanosThisLine = 0;
-			break;
-
-		case 1:		//Only Interupting
-			NanosThisLine -= NanosToInterrupt;
-			CyclesThisLine = CycleDrift + (NanosToInterrupt * CyclesPerLine * OverClock / NanosPerLine);
-			if (CyclesThisLine >= 1)
-				CycleDrift = CPUExec((int)floor(CyclesThisLine)) + (CyclesThisLine - floor(CyclesThisLine));
-			else
-				CycleDrift = CyclesThisLine;
-			EmuState.Debugger.TraceEmulatorCycle(VCC::TraceEvent::EmulatorCycle, StateSwitch, NanosThisLine, NanosToInterrupt, NanosToSoundSample, CyclesThisLine, CycleDrift);
-			emulationCycles += CyclesThisLine;
-			emulationDrift += CycleDrift;
-			GimeAssertTimerInterupt();
-			NanosToSoundSample -= NanosToInterrupt;
-			NanosToInterrupt = MasterTickCounter;
-			break;
-
-		case 2:		//Only Sampling
-			NanosThisLine -= NanosToSoundSample;
-			CyclesThisLine = CycleDrift + (NanosToSoundSample * CyclesPerLine * OverClock / NanosPerLine);
-			if (CyclesThisLine >= 1)
-				CycleDrift = CPUExec((int)floor(CyclesThisLine)) + (CyclesThisLine - floor(CyclesThisLine));
-			else
-				CycleDrift = CyclesThisLine;
-			EmuState.Debugger.TraceEmulatorCycle(VCC::TraceEvent::EmulatorCycle, StateSwitch, NanosThisLine, NanosToInterrupt, NanosToSoundSample, CyclesThisLine, CycleDrift);
-			emulationCycles += CyclesThisLine;
-			emulationDrift += CycleDrift;
-			AudioEvent();
-			NanosToInterrupt -= NanosToSoundSample;
-			NanosToSoundSample = SoundInterupt;
-			break;
-
-		case 3:		//Interupting and Sampling
-			if (NanosToSoundSample < NanosToInterrupt)
-			{
-				NanosThisLine -= NanosToSoundSample;
-				CyclesThisLine = CycleDrift + (NanosToSoundSample * CyclesPerLine * OverClock / NanosPerLine);
-				if (CyclesThisLine >= 1)
-					CycleDrift = CPUExec((int)floor(CyclesThisLine)) + (CyclesThisLine - floor(CyclesThisLine));
-				else
-					CycleDrift = CyclesThisLine;
-				EmuState.Debugger.TraceEmulatorCycle(VCC::TraceEvent::EmulatorCycle, 3, NanosThisLine, NanosToInterrupt, NanosToSoundSample, CyclesThisLine, CycleDrift);
-				emulationCycles += CyclesThisLine;
-				emulationDrift += CycleDrift;
-				AudioEvent();
-				NanosToInterrupt -= NanosToSoundSample;
-				NanosToSoundSample = SoundInterupt;
-				NanosThisLine -= NanosToInterrupt;
-
-				CyclesThisLine = CycleDrift + (NanosToInterrupt * CyclesPerLine * OverClock / NanosPerLine);
-				if (CyclesThisLine >= 1)
-					CycleDrift = CPUExec((int)floor(CyclesThisLine)) + (CyclesThisLine - floor(CyclesThisLine));
-				else
-					CycleDrift = CyclesThisLine;
-				EmuState.Debugger.TraceEmulatorCycle(VCC::TraceEvent::EmulatorCycle, 4, NanosThisLine, NanosToInterrupt, NanosToSoundSample, CyclesThisLine, CycleDrift);
-				emulationCycles += CyclesThisLine;
-				emulationDrift += CycleDrift;
-				GimeAssertTimerInterupt();
-				NanosToSoundSample -= NanosToInterrupt;
-				NanosToInterrupt = MasterTickCounter;
-				break;
-			}
-
-			if (NanosToSoundSample > NanosToInterrupt)
-			{
-				NanosThisLine -= NanosToInterrupt;
-				CyclesThisLine = CycleDrift + (NanosToInterrupt * CyclesPerLine * OverClock / NanosPerLine);
-				if (CyclesThisLine >= 1)
-					CycleDrift = CPUExec((int)floor(CyclesThisLine)) + (CyclesThisLine - floor(CyclesThisLine));
-				else
-					CycleDrift = CyclesThisLine;
-				EmuState.Debugger.TraceEmulatorCycle(VCC::TraceEvent::EmulatorCycle, 5, NanosThisLine, NanosToInterrupt, NanosToSoundSample, CyclesThisLine, CycleDrift);
-				emulationCycles += CyclesThisLine;
-				emulationDrift += CycleDrift;
-				GimeAssertTimerInterupt();
-				NanosToSoundSample -= NanosToInterrupt;
-				NanosToInterrupt = MasterTickCounter;
-				NanosThisLine -= NanosToSoundSample;
-				CyclesThisLine = CycleDrift + (NanosToSoundSample * CyclesPerLine * OverClock / NanosPerLine);
-				if (CyclesThisLine >= 1)
-					CycleDrift = CPUExec((int)floor(CyclesThisLine)) + (CyclesThisLine - floor(CyclesThisLine));
-				else
-					CycleDrift = CyclesThisLine;
-				EmuState.Debugger.TraceEmulatorCycle(VCC::TraceEvent::EmulatorCycle, 6, NanosThisLine, NanosToInterrupt, NanosToSoundSample, CyclesThisLine, CycleDrift);
-				emulationCycles += CyclesThisLine;
-				emulationDrift += CycleDrift;
-				AudioEvent();
-				NanosToInterrupt -= NanosToSoundSample;
-				NanosToSoundSample = SoundInterupt;
-				break;
-			}
-			//They are the same (rare)
-			NanosThisLine -= NanosToInterrupt;
-			CyclesThisLine = CycleDrift + (NanosToSoundSample * CyclesPerLine * OverClock / NanosPerLine);
-			if (CyclesThisLine > 1)
-				CycleDrift = CPUExec((int)floor(CyclesThisLine)) + (CyclesThisLine - floor(CyclesThisLine));
-			else
-				CycleDrift = CyclesThisLine;
-			EmuState.Debugger.TraceEmulatorCycle(VCC::TraceEvent::EmulatorCycle, 7, NanosThisLine, NanosToInterrupt, NanosToSoundSample, CyclesThisLine, CycleDrift);
-			emulationCycles += CyclesThisLine;
-			emulationDrift += CycleDrift;
-			GimeAssertTimerInterupt();
-			AudioEvent();
-			NanosToInterrupt = MasterTickCounter;
-			NanosToSoundSample = SoundInterupt;
+			eventHeap.FireExpired(0);
+			continue;
 		}
+
+		// Determine how many nanos to run: either until the next event
+		// or the remaining time, whichever comes first.
+		double nextDeadline = eventHeap.NextDeadline();
+		double nanosToConsume;
+
+		if (nextDeadline <= NanosThisLine)
+			nanosToConsume = nextDeadline;
+		else
+			nanosToConsume = NanosThisLine;
+
+		// Convert nanos to CPU cycles and execute
+		CyclesThisLine = CycleDrift + (nanosToConsume * CyclesPerLine * OverClock / NanosPerLine);
+		if (CyclesThisLine >= 1)
+			CycleDrift = CPUExec((int)floor(CyclesThisLine)) + (CyclesThisLine - floor(CyclesThisLine));
+		else
+			CycleDrift = CyclesThisLine;
+
+		EmuState.Debugger.TraceEmulatorCycle(VCC::TraceEvent::EmulatorCycle, 0,
+			NanosThisLine, nextDeadline, 0, CyclesThisLine, CycleDrift);
+		emulationCycles += CyclesThisLine;
+		emulationDrift += CycleDrift;
+
+		// Advance time and fire any events that have reached their deadline
+		NanosThisLine -= nanosToConsume;
+		eventHeap.AdvanceTime(nanosToConsume);
+		eventHeap.FireExpired(0);
 	}
+
 	EmuState.Debugger.TraceEmulatorCycle(VCC::TraceEvent::EmulatorCycle, 20, 0, 0, 0, emulationCycles, emulationDrift);
 }
 
@@ -576,10 +503,15 @@ void SetMasterTickCounter()
 	double Rate[2]={NANOSECOND/(TARGETFRAMERATE*LINESPERSCREEN),NANOSECOND/COLORBURST};
 	// Master count contains at least one tick. EJJ 10mar25
 	MasterTickCounter = (UnxlatedTickCounter+1) * Rate[TimerClockRate];
-	if (MasterTickCounter != OldMaster)  
+	if (MasterTickCounter != OldMaster)
 	{
 		OldMaster=MasterTickCounter;
 		NanosToInterrupt=MasterTickCounter;
+
+		// Sync event heap: update timer period and reset countdown
+		eventHeap.SetRearmDelta(evtTimerInterrupt, MasterTickCounter);
+		eventHeap.SetDeadline(evtTimerInterrupt, MasterTickCounter);
+		eventHeap.SetEnabled(evtTimerInterrupt, true);
 	}
 	return;
 }
@@ -589,7 +521,7 @@ void MiscReset()
 	HorzInteruptEnabled=0;
 	VertInteruptEnabled=0;
 	TimerInteruptEnabled=0;
-	MasterTimer=0; 
+	MasterTimer=0;
 	TimerClockRate=0;
 	MasterTickCounter=0;
 	UnxlatedTickCounter=0;
@@ -604,6 +536,11 @@ void MiscReset()
 	IntEnable=0;
 	AudioIndex=0;
 	ResetAudio();
+
+	// Initialize event heap with timer and audio events (both disabled at reset)
+	eventHeap.Clear();
+	evtTimerInterrupt = eventHeap.Schedule("GIMETimer", 0, 0, OnTimerInterrupt, false);
+	evtAudioSample = eventHeap.Schedule("AudioSample", 0, 0, OnAudioSample, false);
 	return;
 }
 
@@ -615,12 +552,20 @@ unsigned int SetAudioRate (unsigned int Rate)
 	CycleDrift=0;
 
 	if (Rate==0)
+	{
 		SndEnable=0;
+		eventHeap.SetEnabled(evtAudioSample, false);
+	}
 	else
 	{
 		SoundInterupt=NANOSECOND/Rate;
 		NanosToSoundSample=SoundInterupt;
 		NanosToAudioSample = NANOSECOND/AUDIO_RATE;
+
+		// Sync event heap: set audio sample period and enable
+		eventHeap.SetRearmDelta(evtAudioSample, SoundInterupt);
+		eventHeap.SetDeadline(evtAudioSample, SoundInterupt);
+		eventHeap.SetEnabled(evtAudioSample, true);
 	}
 	SoundRate=Rate;
 	return 0;
