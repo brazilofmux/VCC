@@ -2873,7 +2873,7 @@ void Cmps_M(const DecodedInst* inst)
 
 void Divd_M(const DecodedInst* inst)
 { //118D 6309
-	postbyte = MemRead8(PC_REG++);
+	postbyte = OPERAND_8(inst);
 
 	if (postbyte == 0)
 	{
@@ -2915,8 +2915,7 @@ void Divd_M(const DecodedInst* inst)
 
 void Divq_M(const DecodedInst* inst)
 { //118E 6309
-	postword = MemRead16(PC_REG);
-	PC_REG+=2;
+	postword = OPERAND_16(inst);
 
 	if(postword == 0)
 	{
@@ -2957,12 +2956,11 @@ void Divq_M(const DecodedInst* inst)
 
 void Muld_M(const DecodedInst* inst)
 { //118F Phase 5 6309
-	Q_REG =  (signed short)D_REG * (signed short)IMMADDRESS(PC_REG);
+	Q_REG =  (signed short)D_REG * (signed short)OPERAND_16(inst);
 	cc[C] = 0; 
 	cc[Z] = ZTEST(Q_REG);
 	cc[V] = 0;
 	cc[N] = NTEST32(Q_REG);
-	PC_REG+=2;
 	CycleCounter+=28;
 }
 
