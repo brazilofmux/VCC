@@ -250,8 +250,8 @@ static const bool IsTerminator[256] = {
 // 0x50-0x5F: inherent B ops
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
 // 0x60-0x6F: indexed ops. 0x6E = JMP indexed.
-// 0x61=OIM, 0x62=AIM, 0x65=EIM, 0x6B=TIM: terminators (unconverted PC handling)
-   0,1,1,0,0,1,0,0, 0,0,0,1,0,0,1,0,
+// 0x61=OIM, 0x62=AIM, 0x65=EIM, 0x6B=TIM indexed forms are converted.
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
 // 0x70-0x7F: extended ops. 0x7E = JMP extended.
 // 0x71=OIM, 0x72=AIM, 0x75=EIM, 0x7B=TIM extended forms are converted.
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
@@ -443,9 +443,16 @@ void Neg_D(const DecodedInst* inst)
 
 void Oim_D(const DecodedInst* inst)
 {//1 6309
-	postword = OPERAND_16(inst);
-	postbyte = (unsigned char)(postword >> 8);
-	temp16 = dp.Reg | (postword & 0xFF);
+	if (inst)
+	{
+		postbyte = inst->aux;
+		temp16 = dp.Reg | (inst->operand & 0xFF);
+	}
+	else
+	{
+		postbyte = OPERAND_8(inst);
+		temp16 = DPAGE_ADDR(inst);
+	}
 	postbyte|= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
 	cc[N] = NTEST8(postbyte);
@@ -456,9 +463,16 @@ void Oim_D(const DecodedInst* inst)
 
 void Aim_D(const DecodedInst* inst)
 {//2 Phase 2 6309
-	postword = OPERAND_16(inst);
-	postbyte = (unsigned char)(postword >> 8);
-	temp16 = dp.Reg | (postword & 0xFF);
+	if (inst)
+	{
+		postbyte = inst->aux;
+		temp16 = dp.Reg | (inst->operand & 0xFF);
+	}
+	else
+	{
+		postbyte = OPERAND_8(inst);
+		temp16 = DPAGE_ADDR(inst);
+	}
 	postbyte&= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
 	cc[N] = NTEST8(postbyte);
@@ -494,9 +508,16 @@ void Lsr_D(const DecodedInst* inst)
 
 void Eim_D(const DecodedInst* inst)
 { //05 6309 Untested
-	postword = OPERAND_16(inst);
-	postbyte = (unsigned char)(postword >> 8);
-	temp16 = dp.Reg | (postword & 0xFF);
+	if (inst)
+	{
+		postbyte = inst->aux;
+		temp16 = dp.Reg | (inst->operand & 0xFF);
+	}
+	else
+	{
+		postbyte = OPERAND_8(inst);
+		temp16 = DPAGE_ADDR(inst);
+	}
 	postbyte^= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
 	cc[N] = NTEST8(postbyte);
@@ -570,9 +591,16 @@ void Dec_D(const DecodedInst* inst)
 
 void Tim_D(const DecodedInst* inst)
 {	//B 6309 Untested wcreate
-	postword = OPERAND_16(inst);
-	postbyte = (unsigned char)(postword >> 8);
-	temp8 = MemRead8(dp.Reg | (postword & 0xFF));
+	if (inst)
+	{
+		postbyte = inst->aux;
+		temp8 = MemRead8(dp.Reg | (inst->operand & 0xFF));
+	}
+	else
+	{
+		postbyte = OPERAND_8(inst);
+		temp8 = MemRead8(DPAGE_ADDR(inst));
+	}
 	postbyte&=temp8;
 	cc[N] = NTEST8(postbyte);
 	cc[Z] = ZTEST(postbyte);
@@ -4549,8 +4577,16 @@ void Neg_X(const DecodedInst* inst)
 
 void Oim_X(const DecodedInst* inst)
 { //61 6309 DONE
-	postbyte=MemRead8(PC_REG++);
-	temp16=CalculateEA(MemRead8(PC_REG++)); // OIM: can't use INDEXED_EA (extra imm byte)
+	if (inst)
+	{
+		postbyte = inst->aux;
+		temp16 = INDEXED_EA(inst);
+	}
+	else
+	{
+		postbyte = OPERAND_8(inst);
+		temp16 = CalculateEA(MemRead8(PC_REG++)); // OIM: can't use INDEXED_EA (extra imm byte)
+	}
 	postbyte |= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
 	cc[N] = NTEST8(postbyte);
@@ -4561,8 +4597,16 @@ void Oim_X(const DecodedInst* inst)
 
 void Aim_X(const DecodedInst* inst)
 { //62 6309
-	postbyte=MemRead8(PC_REG++);
-	temp16=CalculateEA(MemRead8(PC_REG++)); // AIM: can't use INDEXED_EA (extra imm byte)
+	if (inst)
+	{
+		postbyte = inst->aux;
+		temp16 = INDEXED_EA(inst);
+	}
+	else
+	{
+		postbyte = OPERAND_8(inst);
+		temp16 = CalculateEA(MemRead8(PC_REG++)); // AIM: can't use INDEXED_EA (extra imm byte)
+	}
 	postbyte &= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
 	cc[N] = NTEST8(postbyte);
@@ -4598,8 +4642,16 @@ void Lsr_X(const DecodedInst* inst)
 
 void Eim_X(const DecodedInst* inst)
 { //65 6309 Untested TESTED NITRO
-	postbyte=MemRead8(PC_REG++);
-	temp16=CalculateEA(MemRead8(PC_REG++)); // EIM: can't use INDEXED_EA (extra imm byte)
+	if (inst)
+	{
+		postbyte = inst->aux;
+		temp16 = INDEXED_EA(inst);
+	}
+	else
+	{
+		postbyte = OPERAND_8(inst);
+		temp16 = CalculateEA(MemRead8(PC_REG++)); // EIM: can't use INDEXED_EA (extra imm byte)
+	}
 	postbyte ^= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
 	cc[N] = NTEST8(postbyte);
@@ -4674,8 +4726,16 @@ void Dec_X(const DecodedInst* inst)
 
 void Tim_X(const DecodedInst* inst)
 { //6B 6309
-	postbyte=MemRead8(PC_REG++);
-	temp8=MemRead8(CalculateEA(MemRead8(PC_REG++))); // TIM: can't use INDEXED_EA (extra imm byte)
+	if (inst)
+	{
+		postbyte = inst->aux;
+		temp8 = MemRead8(INDEXED_EA(inst));
+	}
+	else
+	{
+		postbyte = OPERAND_8(inst);
+		temp8 = MemRead8(CalculateEA(MemRead8(PC_REG++))); // TIM: can't use INDEXED_EA (extra imm byte)
+	}
 	postbyte&=temp8;
 	cc[N] = NTEST8(postbyte);
 	cc[Z] = ZTEST(postbyte);
@@ -4737,7 +4797,7 @@ void Oim_E(const DecodedInst* inst)
 { //71 6309 Phase 2
 	if (inst)
 	{
-		postbyte = inst->ea_info;
+		postbyte = inst->aux;
 		temp16 = EXTENDED_ADDR(inst);
 	}
 	else
@@ -4758,7 +4818,7 @@ void Aim_E(const DecodedInst* inst)
 { //72 6309 Untested CHECK NITRO
 	if (inst)
 	{
-		postbyte = inst->ea_info;
+		postbyte = inst->aux;
 		temp16 = EXTENDED_ADDR(inst);
 	}
 	else
@@ -4804,7 +4864,7 @@ void Eim_E(const DecodedInst* inst)
 { //75 6309 Untested CHECK NITRO
 	if (inst)
 	{
-		postbyte = inst->ea_info;
+		postbyte = inst->aux;
 		temp16 = EXTENDED_ADDR(inst);
 	}
 	else
@@ -4889,7 +4949,7 @@ void Tim_E(const DecodedInst* inst)
 { //7B 6309 NITRO 
 	if (inst)
 	{
-		postbyte = inst->ea_info;
+		postbyte = inst->aux;
 		temp16 = EXTENDED_ADDR(inst);
 	}
 	else

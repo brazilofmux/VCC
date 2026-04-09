@@ -41,8 +41,11 @@ struct DecodedInst
                                 // direct-page offset, extended address,
                                 // signed branch offset, indexed offset,
                                 // or pre-computed PC-relative address
+    uint8_t     aux;            // optional secondary payload byte for
+                                // instructions that carry both an immediate
+                                // byte and a decoded address/offset
     uint8_t     ea_info;        // indexed mode: bits 0-5 = EAMode index,
                                 // bits 6-7 = register index (0 if N/A)
     uint8_t     length;         // total instruction length in bytes
 };
-// sizeof(DecodedInst) = 8 bytes on x86 (4+2+1+1)
+// sizeof(DecodedInst) = 12 bytes on x86 due to alignment.

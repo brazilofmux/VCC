@@ -377,6 +377,7 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
     {
         uint8_t opcode = MemRead8(pc);
         DecodedInst& inst = out[i];
+        inst.aux = 0;
 
         if (opcode == 0x10)
         {
@@ -397,14 +398,12 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
                 uint8_t reg;
                 uint16_t operand = 0;
                 if (base >= 3)
-                    operand = MemRead8(pc + 2);  // immediate byte before postbyte
+                    inst.aux = MemRead8(pc + 2);  // immediate byte before postbyte
 
                 DecodeIndexedPostbyte(pb, pc + pbOffset, mode, reg, operand);
                 inst.ea_info = MAKE_EA_INFO(mode, reg);
                 inst.length = (uint8_t)(1 + base + IndexedExtraBytes(pb));
-
-                if (base < 3)
-                    inst.operand = operand;
+                inst.operand = operand;
             }
             else
             {
@@ -531,9 +530,9 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
                 // For base>=3 (OIM etc.), the immediate byte is the operand;
                 // preserve it and let the indexed decode only set offset.
                 if (base >= 3)
-                    operand = MemRead8(pc + 1);  // immediate byte for OIM/AIM/EIM/TIM
+                    inst.aux = MemRead8(pc + 1);  // immediate byte for OIM/AIM/EIM/TIM
 
-                int extra = DecodeIndexedPostbyte(pb, pc + pbOffset, mode, reg, operand);
+                DecodeIndexedPostbyte(pb, pc + pbOffset, mode, reg, operand);
                 // For base>=3, operand was overwritten by DecodeIndexedPostbyte
                 // for modes that have offset bytes. For modes without offset
                 // bytes, operand still has the immediate byte. That's correct
@@ -544,14 +543,12 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
                 // most modes. For modes with offsets, the operand is correctly
                 // set by DecodeIndexedPostbyte. This is fine because OIM etc.
                 // are not yet converted to use pre-decoded EA.
-                (void)extra;
+                (void)operand;
 
                 inst.ea_info = MAKE_EA_INFO(mode, reg);
                 inst.length = (uint8_t)(base + IndexedExtraBytes(pb));
 
-                // For regular indexed (base=2), store the indexed operand
-                if (base < 3)
-                    inst.operand = operand;
+                inst.operand = operand;
             }
             else if (lenEntry == 0)
             {
@@ -566,10 +563,16 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
                 inst.length = lenEntry;
                 inst.ea_info = 0;
 
-                if (opcode == 0x71 || opcode == 0x72 || opcode == 0x75 || opcode == 0x7B)
+                if (opcode == 0x01 || opcode == 0x02 || opcode == 0x05 || opcode == 0x0B)
+                {
+                    // OIM/AIM/EIM/TIM direct: imm8 then dp8
+                    inst.aux = MemRead8(pc + 1);
+                    inst.operand = MemRead8(pc + 2);
+                }
+                else if (opcode == 0x71 || opcode == 0x72 || opcode == 0x75 || opcode == 0x7B)
                 {
                     // OIM/AIM/EIM/TIM extended: imm8 then ext16
-                    inst.ea_info = MemRead8(pc + 1);
+                    inst.aux = MemRead8(pc + 1);
                     inst.operand = MemRead16(pc + 2);
                 }
                 else
