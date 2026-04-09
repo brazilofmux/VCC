@@ -53,16 +53,23 @@ This file is part of VCC (Virtual Color Computer).
 // Block path (inst != nullptr): reads from DecodedInst, avoids MemRead.
 // Non-block path (inst == nullptr): reads from memory as before.
 // Caller must advance PC_REG separately after using these.
-#define OPERAND_8(inst)   ((inst) ? (unsigned char)(inst)->operand : MemRead8(PC_REG))
-#define OPERAND_16(inst)  ((inst) ? (unsigned short)(inst)->operand : IMMADDRESS(PC_REG))
+// Pre-decoded operand access macros.
+// Block path (inst != nullptr): returns pre-decoded value, NO PC advancement.
+// Non-block path (inst == nullptr): reads from memory AND advances PC.
+// Handlers must NOT advance PC explicitly — the block loop handles it,
+// and these macros handle it for the non-block path.
+#define OPERAND_8(inst)   ((inst) ? (unsigned char)(inst)->operand : MemRead8(PC_REG++))
+#define OPERAND_16(inst)  ((inst) ? (unsigned short)(inst)->operand : (PC_REG += 2, MemRead16(PC_REG - 2)))
 #define DPAGE_ADDR(inst)  (dp.Reg | OPERAND_8(inst))
 
 // Forward declaration — defined after CalculateEA with the EA function table
 static inline unsigned short CalcEA_PreDecoded(const DecodedInst* inst);
 
-// Indexed EA: pre-decoded table dispatch (block path) or CalculateEA (non-block)
+// Indexed EA: pre-decoded table dispatch (block path) or CalculateEA (non-block).
+// Block path: no PC advancement (block loop handles it).
+// Non-block path: CalculateEA reads postbyte + offset bytes, advancing PC.
 #define INDEXED_EA(inst) \
-    ((inst) ? (PC_REG += (inst)->length - 1, CalcEA_PreDecoded(inst)) \
+    ((inst) ? CalcEA_PreDecoded(inst) \
             : INDADDRESS(PC_REG++))
 
 #define M65		0
@@ -226,8 +233,9 @@ static void HD6309BlockInvalidateAll() {
 
 // Block terminator table for page 1 opcodes.
 static const bool IsTerminator[256] = {
-// 0x00-0x0F: direct page ops. 0x0E = JMP direct
-   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
+// 0x00-0x0F: direct page ops. 0x0E = JMP direct.
+// 0x01=OIM, 0x02=AIM, 0x05=EIM, 0x0B=TIM: terminators (unconverted PC handling)
+   0,1,1,0,0,1,0,0, 0,0,0,1,0,0,1,0,
 // 0x10-0x1F: 0x10=Page2(term), 0x11=Page3(term), 0x13=SYNC, 0x15=HALT,
 //            0x16=LBRA, 0x17=LBSR, 0x1E=EXG(can target PC), 0x1F=TFR(can target PC)
    1,1,0,1,0,1,1,1, 0,0,0,0,0,0,1,1,
@@ -240,10 +248,12 @@ static const bool IsTerminator[256] = {
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
 // 0x50-0x5F: inherent B ops
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
-// 0x60-0x6F: indexed ops. 0x6E = JMP indexed
-   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
-// 0x70-0x7F: extended ops. 0x7E = JMP extended
-   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
+// 0x60-0x6F: indexed ops. 0x6E = JMP indexed.
+// 0x61=OIM, 0x62=AIM, 0x65=EIM, 0x6B=TIM: terminators (unconverted PC handling)
+   0,1,1,0,0,1,0,0, 0,0,0,1,0,0,1,0,
+// 0x70-0x7F: extended ops. 0x7E = JMP extended.
+// 0x71=OIM, 0x72=AIM, 0x75=EIM, 0x7B=TIM: terminators (unconverted PC handling)
+   0,1,1,0,0,1,0,0, 0,0,0,1,0,0,1,0,
 // 0x80-0x8F: immediate ops. 0x8D = BSR
    0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
 // 0x90-0x9F: direct ops. 0x9D = JSR direct
@@ -252,8 +262,8 @@ static const bool IsTerminator[256] = {
    0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
 // 0xB0-0xBF: extended ops. 0xBD = JSR extended
    0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
-// 0xC0-0xFF: no terminators
-   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+// 0xC0-0xCF: 0xCD=LDQ(term, unconverted PC handling)
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,1,0,0,
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
@@ -419,7 +429,7 @@ void HD6309SetTraceTriggers(const std::vector<unsigned short>& triggers)
 
 void Neg_D(const DecodedInst* inst)
 { //0
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	postbyte = MemRead8(temp16);
 	temp8 = 0 - postbyte;
 	cc[C] = temp8 > 0;
@@ -456,7 +466,7 @@ void Aim_D(const DecodedInst* inst)
 
 void Com_D(const DecodedInst* inst)
 { //03
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	temp8=MemRead8(temp16);
 	temp8=0xFF-temp8;
 	cc[Z] = ZTEST(temp8);
@@ -469,7 +479,7 @@ void Com_D(const DecodedInst* inst)
 
 void Lsr_D(const DecodedInst* inst)
 { //04 S2
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	temp8 = MemRead8(temp16);
 	cc[C] = temp8 & 1;
 	temp8 = temp8 >>1;
@@ -493,7 +503,7 @@ void Eim_D(const DecodedInst* inst)
 
 void Ror_D(const DecodedInst* inst)
 { //06 S2
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	temp8=MemRead8(temp16);
 	postbyte= cc[C]<<7;
 	cc[C] = temp8 & 1;
@@ -506,7 +516,7 @@ void Ror_D(const DecodedInst* inst)
 
 void Asr_D(const DecodedInst* inst)
 { //7
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	temp8=MemRead8(temp16);
 	cc[C] = temp8 & 1;
 	temp8 = (temp8 & 0x80) | (temp8 >>1);
@@ -518,7 +528,7 @@ void Asr_D(const DecodedInst* inst)
 
 void Asl_D(const DecodedInst* inst)
 { //8 
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	temp8=MemRead8(temp16);
 	cc[C] = (temp8 & 0x80) >>7;
 	cc[V] = cc[C] ^ ((temp8 & 0x40) >> 6);
@@ -531,7 +541,7 @@ void Asl_D(const DecodedInst* inst)
 
 void Rol_D(const DecodedInst* inst)
 {	//9
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	temp8 = MemRead8(temp16);
 	postbyte=cc[C];
 	cc[C] =(temp8 & 0x80)>>7;
@@ -545,7 +555,7 @@ void Rol_D(const DecodedInst* inst)
 
 void Dec_D(const DecodedInst* inst)
 { //A
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	temp8 = MemRead8(temp16)-1;
 	cc[Z] = ZTEST(temp8);
 	cc[N] = NTEST8(temp8);
@@ -567,7 +577,7 @@ void Tim_D(const DecodedInst* inst)
 
 void Inc_D(const DecodedInst* inst)
 { //C
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	temp8 = MemRead8(temp16)+1;
 	cc[Z] = ZTEST(temp8);
 	cc[V] = temp8==0x80;
@@ -578,7 +588,7 @@ void Inc_D(const DecodedInst* inst)
 
 void Tst_D(const DecodedInst* inst)
 { //D
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	temp8 = MemRead8(temp16);
 	cc[Z] = ZTEST(temp8);
 	cc[N] = NTEST8(temp8);
@@ -594,7 +604,7 @@ void Jmp_D(const DecodedInst* inst)
 
 void Clr_D(const DecodedInst* inst)
 {	//F
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	MemWrite8(0,temp16);
 	cc[Z] = 1;
 	cc[N] = 0;
@@ -3778,7 +3788,7 @@ void Daa_I(const DecodedInst* inst)
 
 void Orcc_M(const DecodedInst* inst)
 { //1A
-	postbyte=MemRead8(PC_REG++);
+	postbyte=OPERAND_8(inst);
 	temp8=getcc();
 	temp8 = (temp8 | postbyte);
 	setcc(temp8);
@@ -3787,7 +3797,7 @@ void Orcc_M(const DecodedInst* inst)
 
 void Andcc_M(const DecodedInst* inst)
 { //1C
-	postbyte=MemRead8(PC_REG++);
+	postbyte=OPERAND_8(inst);
 	temp8=getcc();
 	temp8 = (temp8 & postbyte);
 	setcc(temp8);
@@ -4062,7 +4072,7 @@ void Leau_X(const DecodedInst* inst)
 
 void Pshs_M(const DecodedInst* inst)
 { //34
-	postbyte=MemRead8(PC_REG++);
+	postbyte=OPERAND_8(inst);
 	if (postbyte & 0x80)
 	{
 		MemWrite8( pc.B.lsb,--S_REG);
@@ -4163,7 +4173,7 @@ void Puls_M(const DecodedInst* inst)
 
 void Pshu_M(const DecodedInst* inst)
 { //36
-	postbyte=MemRead8(PC_REG++);
+	postbyte=OPERAND_8(inst);
 	if (postbyte & 0x80)
 	{
 		MemWrite8( pc.B.lsb,--U_REG);
@@ -4759,7 +4769,6 @@ void Neg_E(const DecodedInst* inst)
 	cc[N] = NTEST8(temp8);
 	cc[Z] = ZTEST(temp8);
 	MemWrite8(temp8,temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
@@ -4799,7 +4808,6 @@ void Com_E(const DecodedInst* inst)
 	cc[C] = 1;
 	cc[V] = 0;
 	MemWrite8(temp8,temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
@@ -4812,7 +4820,6 @@ void Lsr_E(const DecodedInst* inst)
 	cc[Z] = ZTEST(temp8);
 	cc[N] = 0;
 	MemWrite8(temp8,temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
@@ -4839,7 +4846,6 @@ void Ror_E(const DecodedInst* inst)
 	cc[Z] = ZTEST(temp8);
 	cc[N] = NTEST8(temp8);
 	MemWrite8(temp8,temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
@@ -4852,7 +4858,6 @@ void Asr_E(const DecodedInst* inst)
 	cc[Z] = ZTEST(temp8);
 	cc[N] = NTEST8(temp8);
 	MemWrite8(temp8,temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
@@ -4866,7 +4871,6 @@ void Asl_E(const DecodedInst* inst)
 	cc[N] = NTEST8(temp8);
 	cc[Z] = ZTEST(temp8);
 	MemWrite8(temp8,temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
@@ -4881,7 +4885,6 @@ void Rol_E(const DecodedInst* inst)
 	cc[Z] = ZTEST(temp8);
 	cc[N] = NTEST8(temp8);
 	MemWrite8(temp8,temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
@@ -4894,7 +4897,6 @@ void Dec_E(const DecodedInst* inst)
 	cc[N] = NTEST8(temp8);
 	cc[V] = temp8==0x7F;
 	MemWrite8(temp8,temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
@@ -4919,14 +4921,12 @@ void Inc_E(const DecodedInst* inst)
 	cc[V] = temp8==0x80;
 	cc[N] = NTEST8(temp8);
 	MemWrite8(temp8,temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles76;
 }
 
 void Tst_E(const DecodedInst* inst)
 { //7D
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	temp8=MemRead8(temp16);
 	cc[Z] = ZTEST(temp8);
 	cc[N] = NTEST8(temp8);
@@ -4943,7 +4943,6 @@ void Jmp_E(const DecodedInst* inst)
 void Clr_E(const DecodedInst* inst)
 { //7F
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	MemWrite8(0,temp16);
 	cc[C] = 0;
 	cc[N] = 0;
@@ -4954,7 +4953,7 @@ void Clr_E(const DecodedInst* inst)
 
 void Suba_M(const DecodedInst* inst)
 { //80
-	postbyte=OPERAND_8(inst); PC_REG++;
+	postbyte=OPERAND_8(inst);
 	temp16 = A_REG - postbyte;
 	cc[C] = (temp16 & 0x100)>>8; 
 	cc[V] = OVERFLOW8(cc[C],postbyte,temp16,A_REG);
@@ -4966,7 +4965,7 @@ void Suba_M(const DecodedInst* inst)
 
 void Cmpa_M(const DecodedInst* inst)
 { //81
-	postbyte=OPERAND_8(inst); PC_REG++;
+	postbyte=OPERAND_8(inst);
 	temp8= A_REG-postbyte;
 	cc[C] = temp8 > A_REG;
 	cc[V] = OVERFLOW8(cc[C],postbyte,temp8,A_REG);
@@ -4977,7 +4976,7 @@ void Cmpa_M(const DecodedInst* inst)
 
 void Sbca_M(const DecodedInst* inst)
 {  //82
-	postbyte=OPERAND_8(inst); PC_REG++;
+	postbyte=OPERAND_8(inst);
 	temp16=A_REG-postbyte-cc[C];
 	cc[C] = (temp16 & 0x100)>>8;
 	cc[V] = OVERFLOW8(cc[C],postbyte,temp16,A_REG);
@@ -4996,13 +4995,12 @@ void Subd_M(const DecodedInst* inst)
 	D_REG = temp32;
 	cc[Z] = ZTEST(D_REG);
 	cc[N] = NTEST16(D_REG);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles43;
 }
 
 void Anda_M(const DecodedInst* inst)
 { //84
-	A_REG = A_REG & OPERAND_8(inst); PC_REG++;
+	A_REG = A_REG & OPERAND_8(inst);
 	cc[N] = NTEST8(A_REG);
 	cc[Z] = ZTEST(A_REG);
 	cc[V] = 0;
@@ -5011,7 +5009,7 @@ void Anda_M(const DecodedInst* inst)
 
 void Bita_M(const DecodedInst* inst)
 { //85
-	temp8 = A_REG & OPERAND_8(inst); PC_REG++;
+	temp8 = A_REG & OPERAND_8(inst);
 	cc[N] = NTEST8(temp8);
 	cc[Z] = ZTEST(temp8);
 	cc[V] = 0;
@@ -5020,7 +5018,7 @@ void Bita_M(const DecodedInst* inst)
 
 void Lda_M(const DecodedInst* inst)
 { //86
-	A_REG = OPERAND_8(inst); PC_REG++;
+	A_REG = OPERAND_8(inst);
 	cc[Z] = ZTEST(A_REG);
 	cc[N] = NTEST8(A_REG);
 	cc[V] = 0;
@@ -5029,7 +5027,7 @@ void Lda_M(const DecodedInst* inst)
 
 void Eora_M(const DecodedInst* inst)
 { //88
-	A_REG = A_REG ^ OPERAND_8(inst); PC_REG++;
+	A_REG = A_REG ^ OPERAND_8(inst);
 	cc[N] = NTEST8(A_REG);
 	cc[Z] = ZTEST(A_REG);
 	cc[V] = 0;
@@ -5038,7 +5036,7 @@ void Eora_M(const DecodedInst* inst)
 
 void Adca_M(const DecodedInst* inst)
 { //89
-	postbyte=OPERAND_8(inst); PC_REG++;
+	postbyte=OPERAND_8(inst);
 	temp16= A_REG + postbyte + cc[C];
 	cc[C] = (temp16 & 0x100)>>8;
 	cc[V] = OVERFLOW8(cc[C],postbyte,temp16,A_REG);
@@ -5051,7 +5049,7 @@ void Adca_M(const DecodedInst* inst)
 
 void Ora_M(const DecodedInst* inst)
 { //8A
-	A_REG = A_REG | OPERAND_8(inst); PC_REG++;
+	A_REG = A_REG | OPERAND_8(inst);
 	cc[N] = NTEST8(A_REG);
 	cc[Z] = ZTEST(A_REG);
 	cc[V] = 0;
@@ -5060,7 +5058,7 @@ void Ora_M(const DecodedInst* inst)
 
 void Adda_M(const DecodedInst* inst)
 { //8B
-	postbyte=OPERAND_8(inst); PC_REG++;
+	postbyte=OPERAND_8(inst);
 	temp16=A_REG+postbyte;
 	cc[C] =(temp16 & 0x100)>>8;
 	cc[H] = ((A_REG ^ postbyte ^ temp16) & 0x10)>>4;
@@ -5079,7 +5077,6 @@ void Cmpx_M(const DecodedInst* inst)
 	cc[V] = OVERFLOW16(cc[C],postword,temp16,X_REG);
 	cc[N] = NTEST16(temp16);
 	cc[Z] = ZTEST(temp16);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles43;
 }
 
@@ -5099,13 +5096,12 @@ void Ldx_M(const DecodedInst* inst)
 	cc[Z] = ZTEST(X_REG);
 	cc[N] = NTEST16(X_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=3;
 }
 
 void Suba_D(const DecodedInst* inst)
 { //90
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	postbyte=MemRead8(temp16);
 	temp16 = A_REG - postbyte;
 	cc[C] = (temp16 & 0x100)>>8;
@@ -5118,7 +5114,7 @@ void Suba_D(const DecodedInst* inst)
 
 void Cmpa_D(const DecodedInst* inst)
 { //91
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	postbyte=MemRead8(temp16);
 	temp8 = A_REG-postbyte;
 	cc[C] = temp8 > A_REG;
@@ -5130,7 +5126,7 @@ void Cmpa_D(const DecodedInst* inst)
 
 void Scba_D(const DecodedInst* inst)
 { //92
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	postbyte=MemRead8(temp16);
 	temp16=A_REG-postbyte-cc[C];
 	cc[C] = (temp16 & 0x100)>>8;
@@ -5143,7 +5139,7 @@ void Scba_D(const DecodedInst* inst)
 
 void Subd_D(const DecodedInst* inst)
 { //93
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	temp16= MemRead16(temp16);
 	temp32= D_REG-temp16;
 	cc[C] = (temp32 & 0x10000)>>16;
@@ -5156,7 +5152,7 @@ void Subd_D(const DecodedInst* inst)
 
 void Anda_D(const DecodedInst* inst)
 { //94
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	A_REG = A_REG & MemRead8(temp16);
 	cc[N] = NTEST8(A_REG);
 	cc[Z] = ZTEST(A_REG);
@@ -5166,7 +5162,7 @@ void Anda_D(const DecodedInst* inst)
 
 void Bita_D(const DecodedInst* inst)
 { //95
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	temp8 = A_REG & MemRead8(temp16);
 	cc[N] = NTEST8(temp8);
 	cc[Z] = ZTEST(temp8);
@@ -5176,7 +5172,7 @@ void Bita_D(const DecodedInst* inst)
 
 void Lda_D(const DecodedInst* inst)
 { //96
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	A_REG = MemRead8(temp16);
 	cc[Z] = ZTEST(A_REG);
 	cc[N] = NTEST8(A_REG);
@@ -5186,7 +5182,7 @@ void Lda_D(const DecodedInst* inst)
 
 void Sta_D(const DecodedInst* inst)
 { //97
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	MemWrite8(A_REG,temp16);
 	cc[Z] = ZTEST(A_REG);
 	cc[N] = NTEST8(A_REG);
@@ -5196,7 +5192,7 @@ void Sta_D(const DecodedInst* inst)
 
 void Eora_D(const DecodedInst* inst)
 { //98
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	A_REG= A_REG ^ MemRead8(temp16);
 	cc[N] = NTEST8(A_REG);
 	cc[Z] = ZTEST(A_REG);
@@ -5206,7 +5202,7 @@ void Eora_D(const DecodedInst* inst)
 
 void Adca_D(const DecodedInst* inst)
 { //99
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	postbyte=MemRead8(temp16);
 	temp16= A_REG + postbyte + cc[C];
 	cc[C] = (temp16 & 0x100)>>8;
@@ -5220,7 +5216,7 @@ void Adca_D(const DecodedInst* inst)
 
 void Ora_D(const DecodedInst* inst)
 { //9A
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	A_REG = A_REG | MemRead8(temp16);
 	cc[N] = NTEST8(A_REG);
 	cc[Z] = ZTEST(A_REG);
@@ -5230,7 +5226,7 @@ void Ora_D(const DecodedInst* inst)
 
 void Adda_D(const DecodedInst* inst)
 { //9B
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	postbyte=MemRead8(temp16);
 	temp16=A_REG+postbyte;
 	cc[C] =(temp16 & 0x100)>>8;
@@ -5244,7 +5240,7 @@ void Adda_D(const DecodedInst* inst)
 
 void Cmpx_D(const DecodedInst* inst)
 { //9C
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	postword=MemRead16(temp16);
 	temp16= X_REG - postword ;
 	cc[C] = temp16 > X_REG;
@@ -5256,7 +5252,7 @@ void Cmpx_D(const DecodedInst* inst)
 
 void Jsr_D(const DecodedInst* inst)
 { //9D
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	S_REG--;
 	MemWrite8(pc.B.lsb,S_REG--);
 	MemWrite8(pc.B.msb,S_REG);
@@ -5266,7 +5262,7 @@ void Jsr_D(const DecodedInst* inst)
 
 void Ldx_D(const DecodedInst* inst)
 { //9E
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	X_REG=MemRead16(temp16);
 	cc[Z] = ZTEST(X_REG);
 	cc[N] = NTEST16(X_REG);
@@ -5276,7 +5272,7 @@ void Ldx_D(const DecodedInst* inst)
 
 void Stx_D(const DecodedInst* inst)
 { //9F
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	MemWrite16(X_REG,temp16);
 	cc[Z] = ZTEST(X_REG);
 	cc[N] = NTEST16(X_REG);
@@ -5453,7 +5449,6 @@ void Stx_X(const DecodedInst* inst)
 void Suba_E(const DecodedInst* inst)
 { //B0
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	postbyte=MemRead8(temp16);
 	temp16 = A_REG - postbyte;
 	cc[C] = (temp16 & 0x100)>>8;
@@ -5467,7 +5462,6 @@ void Suba_E(const DecodedInst* inst)
 void Cmpa_E(const DecodedInst* inst)
 { //B1
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	postbyte=MemRead8(temp16);
 	temp8= A_REG-postbyte;
 	cc[C] = temp8 > A_REG;
@@ -5480,7 +5474,6 @@ void Cmpa_E(const DecodedInst* inst)
 void Sbca_E(const DecodedInst* inst)
 { //B2
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	postbyte=MemRead8(temp16);
 	temp16=A_REG-postbyte-cc[C];
 	cc[C] = (temp16 & 0x100)>>8;
@@ -5494,7 +5487,6 @@ void Sbca_E(const DecodedInst* inst)
 void Subd_E(const DecodedInst* inst)
 { //B3
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	temp16=MemRead16(temp16);
 	temp32=D_REG-temp16;
 	cc[C] = (temp32 & 0x10000)>>16;
@@ -5508,7 +5500,6 @@ void Subd_E(const DecodedInst* inst)
 void Anda_E(const DecodedInst* inst)
 { //B4
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	postbyte=MemRead8(temp16);
 	A_REG = A_REG & postbyte;
 	cc[N] = NTEST8(A_REG);
@@ -5520,7 +5511,6 @@ void Anda_E(const DecodedInst* inst)
 void Bita_E(const DecodedInst* inst)
 { //B5
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	temp8 = A_REG & MemRead8(temp16);
 	cc[N] = NTEST8(temp8);
 	cc[Z] = ZTEST(temp8);
@@ -5531,7 +5521,6 @@ void Bita_E(const DecodedInst* inst)
 void Lda_E(const DecodedInst* inst)
 { //B6
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	A_REG= MemRead8(temp16);
 	cc[Z] = ZTEST(A_REG);
 	cc[N] = NTEST8(A_REG);
@@ -5542,7 +5531,6 @@ void Lda_E(const DecodedInst* inst)
 void Sta_E(const DecodedInst* inst)
 { //B7
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	MemWrite8(A_REG,temp16);
 	cc[Z] = ZTEST(A_REG);
 	cc[N] = NTEST8(A_REG);
@@ -5553,7 +5541,6 @@ void Sta_E(const DecodedInst* inst)
 void Eora_E(const DecodedInst* inst)
 {  //B8
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	A_REG = A_REG ^ MemRead8(temp16);
 	cc[N] = NTEST8(A_REG);
 	cc[Z] = ZTEST(A_REG);
@@ -5564,7 +5551,6 @@ void Eora_E(const DecodedInst* inst)
 void Adca_E(const DecodedInst* inst)
 { //B9
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	postbyte=MemRead8(temp16);
 	temp16= A_REG + postbyte + cc[C];
 	cc[C] = (temp16 & 0x100)>>8;
@@ -5579,7 +5565,6 @@ void Adca_E(const DecodedInst* inst)
 void Ora_E(const DecodedInst* inst)
 { //BA
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	A_REG = A_REG | MemRead8(temp16);
 	cc[N] = NTEST8(A_REG);
 	cc[Z] = ZTEST(A_REG);
@@ -5590,7 +5575,6 @@ void Ora_E(const DecodedInst* inst)
 void Adda_E(const DecodedInst* inst)
 { //BB
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	postbyte=MemRead8(temp16);
 	temp16=A_REG+postbyte;
 	cc[C] = (temp16 & 0x100)>>8;
@@ -5605,7 +5589,6 @@ void Adda_E(const DecodedInst* inst)
 void Cmpx_E(const DecodedInst* inst)
 { //BC
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	postword=MemRead16(temp16);
 	temp16 = X_REG-postword;
 	cc[C] = temp16 > X_REG;
@@ -5618,7 +5601,6 @@ void Cmpx_E(const DecodedInst* inst)
 void Bsr_E(const DecodedInst* inst)
 { //BD
 	postword=OPERAND_16(inst);
-	PC_REG+=2;
 	S_REG--;
 	MemWrite8(pc.B.lsb,S_REG--);
 	MemWrite8(pc.B.msb,S_REG);
@@ -5629,7 +5611,6 @@ void Bsr_E(const DecodedInst* inst)
 void Ldx_E(const DecodedInst* inst)
 { //BE
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	X_REG=MemRead16(temp16);
 	cc[Z] = ZTEST(X_REG);
 	cc[N] = NTEST16(X_REG);
@@ -5640,7 +5621,6 @@ void Ldx_E(const DecodedInst* inst)
 void Stx_E(const DecodedInst* inst)
 { //BF
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	MemWrite16(X_REG,temp16);
 	cc[Z] = ZTEST(X_REG);
 	cc[N] = NTEST16(X_REG);
@@ -5650,7 +5630,7 @@ void Stx_E(const DecodedInst* inst)
 
 void Subb_M(const DecodedInst* inst)
 { //C0
-	postbyte=OPERAND_8(inst); PC_REG++;
+	postbyte=OPERAND_8(inst);
 	temp16 = B_REG - postbyte;
 	cc[C] = (temp16 & 0x100)>>8; 
 	cc[V] = OVERFLOW8(cc[C],postbyte,temp16,B_REG);
@@ -5662,7 +5642,7 @@ void Subb_M(const DecodedInst* inst)
 
 void Cmpb_M(const DecodedInst* inst)
 { //C1
-	postbyte=OPERAND_8(inst); PC_REG++;
+	postbyte=OPERAND_8(inst);
 	temp8= B_REG-postbyte;
 	cc[C] = temp8 > B_REG;
 	cc[V] = OVERFLOW8(cc[C],postbyte,temp8,B_REG);
@@ -5673,7 +5653,7 @@ void Cmpb_M(const DecodedInst* inst)
 
 void Sbcb_M(const DecodedInst* inst)
 { //C2
-	postbyte=OPERAND_8(inst); PC_REG++;
+	postbyte=OPERAND_8(inst);
 	temp16=B_REG-postbyte-cc[C];
 	cc[C] = (temp16 & 0x100)>>8;
 	cc[V] = OVERFLOW8(cc[C],postbyte,temp16,B_REG);
@@ -5692,13 +5672,12 @@ void Addd_M(const DecodedInst* inst)
 	D_REG= temp32;
 	cc[Z] = ZTEST(D_REG);
 	cc[N] = NTEST16(D_REG);
-	PC_REG+=2;
 	CycleCounter+=NatEmuCycles43;
 }
 
 void Andb_M(const DecodedInst* inst)
 { //C4 LOOK
-	B_REG = B_REG & OPERAND_8(inst); PC_REG++;
+	B_REG = B_REG & OPERAND_8(inst);
 	cc[N] = NTEST8(B_REG);
 	cc[Z] = ZTEST(B_REG);
 	cc[V] = 0;
@@ -5707,7 +5686,7 @@ void Andb_M(const DecodedInst* inst)
 
 void Bitb_M(const DecodedInst* inst)
 { //C5
-	temp8 = B_REG & OPERAND_8(inst); PC_REG++;
+	temp8 = B_REG & OPERAND_8(inst);
 	cc[N] = NTEST8(temp8);
 	cc[Z] = ZTEST(temp8);
 	cc[V] = 0;
@@ -5716,7 +5695,7 @@ void Bitb_M(const DecodedInst* inst)
 
 void Ldb_M(const DecodedInst* inst)
 { //C6
-	B_REG=OPERAND_8(inst); PC_REG++;
+	B_REG=OPERAND_8(inst);
 	cc[Z] = ZTEST(B_REG);
 	cc[N] = NTEST8(B_REG);
 	cc[V] = 0;
@@ -5725,7 +5704,7 @@ void Ldb_M(const DecodedInst* inst)
 
 void Eorb_M(const DecodedInst* inst)
 { //C8
-	B_REG = B_REG ^ OPERAND_8(inst); PC_REG++;
+	B_REG = B_REG ^ OPERAND_8(inst);
 	cc[N] =NTEST8(B_REG);
 	cc[Z] =ZTEST(B_REG);
 	cc[V] = 0;
@@ -5734,7 +5713,7 @@ void Eorb_M(const DecodedInst* inst)
 
 void Adcb_M(const DecodedInst* inst)
 { //C9
-	postbyte=OPERAND_8(inst); PC_REG++;
+	postbyte=OPERAND_8(inst);
 	temp16= B_REG + postbyte + cc[C];
 	cc[C] = (temp16 & 0x100)>>8;
 	cc[V] = OVERFLOW8(cc[C],postbyte,temp16,B_REG);
@@ -5747,7 +5726,7 @@ void Adcb_M(const DecodedInst* inst)
 
 void Orb_M(const DecodedInst* inst)
 { //CA
-	B_REG= B_REG | OPERAND_8(inst); PC_REG++;
+	B_REG= B_REG | OPERAND_8(inst);
 	cc[N] = NTEST8(B_REG);
 	cc[Z] = ZTEST(B_REG);
 	cc[V] = 0;
@@ -5756,7 +5735,7 @@ void Orb_M(const DecodedInst* inst)
 
 void Addb_M(const DecodedInst* inst)
 { //CB
-	postbyte=OPERAND_8(inst); PC_REG++;
+	postbyte=OPERAND_8(inst);
 	temp16=B_REG+postbyte;
 	cc[C] =(temp16 & 0x100)>>8;
 	cc[H] = ((B_REG ^ postbyte ^ temp16) & 0x10)>>4;
@@ -5773,7 +5752,6 @@ void Ldd_M(const DecodedInst* inst)
 	cc[Z] = ZTEST(D_REG);
 	cc[N] = NTEST16(D_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=3;
 }
 
@@ -5793,13 +5771,12 @@ void Ldu_M(const DecodedInst* inst)
 	cc[Z] = ZTEST(U_REG);
 	cc[N] = NTEST16(U_REG);
 	cc[V] = 0;
-	PC_REG+=2;
 	CycleCounter+=3;
 }
 
 void Subb_D(const DecodedInst* inst)
 { //D0
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	postbyte=MemRead8(temp16);
 	temp16 = B_REG - postbyte;
 	cc[C] =(temp16 & 0x100)>>8;
@@ -5812,7 +5789,7 @@ void Subb_D(const DecodedInst* inst)
 
 void Cmpb_D(const DecodedInst* inst)
 { //D1
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	postbyte=MemRead8(temp16);
 	temp8= B_REG-postbyte;
 	cc[C] = temp8 > B_REG;
@@ -5824,7 +5801,7 @@ void Cmpb_D(const DecodedInst* inst)
 
 void Sbcb_D(const DecodedInst* inst)
 { //D2
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	postbyte=MemRead8(temp16);
 	temp16=B_REG-postbyte-cc[C];
 	cc[C] = (temp16 & 0x100)>>8;
@@ -5837,7 +5814,7 @@ void Sbcb_D(const DecodedInst* inst)
 
 void Addd_D(const DecodedInst* inst)
 { //D3
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	temp16=MemRead16(temp16);
 	temp32= D_REG+ temp16;
 	cc[C] =(temp32 & 0x10000)>>16;
@@ -5850,7 +5827,7 @@ void Addd_D(const DecodedInst* inst)
 
 void Andb_D(const DecodedInst* inst)
 { //D4 
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	B_REG = B_REG & MemRead8(temp16);
 	cc[N] =NTEST8(B_REG);
 	cc[Z] =ZTEST(B_REG);
@@ -5860,7 +5837,7 @@ void Andb_D(const DecodedInst* inst)
 
 void Bitb_D(const DecodedInst* inst)
 { //D5
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	temp8 = B_REG & MemRead8(temp16);
 	cc[N] = NTEST8(temp8);
 	cc[Z] =ZTEST(temp8);
@@ -5870,7 +5847,7 @@ void Bitb_D(const DecodedInst* inst)
 
 void Ldb_D(const DecodedInst* inst)
 { //D6
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	B_REG= MemRead8(temp16);
 	cc[Z] = ZTEST(B_REG);
 	cc[N] = NTEST8(B_REG);
@@ -5880,7 +5857,7 @@ void Ldb_D(const DecodedInst* inst)
 
 void Stb_D(const DecodedInst* inst)
 { //D7
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	MemWrite8(B_REG,temp16);
 	cc[Z] = ZTEST(B_REG);
 	cc[N] = NTEST8(B_REG);
@@ -5890,7 +5867,7 @@ void Stb_D(const DecodedInst* inst)
 
 void Eorb_D(const DecodedInst* inst)
 { //D8	
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	B_REG = B_REG ^ MemRead8(temp16);
 	cc[N] = NTEST8(B_REG);
 	cc[Z] = ZTEST(B_REG);
@@ -5900,7 +5877,7 @@ void Eorb_D(const DecodedInst* inst)
 
 void Adcb_D(const DecodedInst* inst)
 { //D9
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	postbyte=MemRead8(temp16);
 	temp16= B_REG + postbyte + cc[C];
 	cc[C] = (temp16 & 0x100)>>8;
@@ -5914,7 +5891,7 @@ void Adcb_D(const DecodedInst* inst)
 
 void Orb_D(const DecodedInst* inst)
 { //DA
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	B_REG = B_REG | MemRead8(temp16);
 	cc[N] = NTEST8(B_REG);
 	cc[Z] = ZTEST(B_REG);
@@ -5924,7 +5901,7 @@ void Orb_D(const DecodedInst* inst)
 
 void Addb_D(const DecodedInst* inst)
 { //DB
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	postbyte=MemRead8(temp16);
 	temp16= B_REG+postbyte;
 	cc[C] = (temp16 & 0x100)>>8;
@@ -5938,7 +5915,7 @@ void Addb_D(const DecodedInst* inst)
 
 void Ldd_D(const DecodedInst* inst)
 { //DC
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	D_REG = MemRead16(temp16);
 	cc[Z] = ZTEST(D_REG);
 	cc[N] = NTEST16(D_REG);
@@ -5948,7 +5925,7 @@ void Ldd_D(const DecodedInst* inst)
 
 void Std_D(const DecodedInst* inst)
 { //DD
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	MemWrite16(D_REG,temp16);
 	cc[Z] = ZTEST(D_REG);
 	cc[N] = NTEST16(D_REG);
@@ -5958,7 +5935,7 @@ void Std_D(const DecodedInst* inst)
 
 void Ldu_D(const DecodedInst* inst)
 { //DE
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	U_REG = MemRead16(temp16);
 	cc[Z] = ZTEST(U_REG);
 	cc[N] = NTEST16(U_REG);
@@ -5968,7 +5945,7 @@ void Ldu_D(const DecodedInst* inst)
 
 void Stu_D(const DecodedInst* inst)
 { //DF
-	temp16 = DPAGE_ADDR(inst); PC_REG++;
+	temp16 = DPAGE_ADDR(inst);
 	MemWrite16(U_REG,temp16);
 	cc[Z] = ZTEST(U_REG);
 	cc[N] = NTEST16(U_REG);
@@ -6142,7 +6119,6 @@ void Stu_X(const DecodedInst* inst)
 void Subb_E(const DecodedInst* inst)
 { //F0
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	postbyte=MemRead8(temp16);
 	temp16 = B_REG - postbyte;
 	cc[C] = (temp16 & 0x100)>>8;
@@ -6156,7 +6132,6 @@ void Subb_E(const DecodedInst* inst)
 void Cmpb_E(const DecodedInst* inst)
 { //F1
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	postbyte=MemRead8(temp16);
 	temp8= B_REG-postbyte;
 	cc[C] = temp8 > B_REG;
@@ -6169,7 +6144,6 @@ void Cmpb_E(const DecodedInst* inst)
 void Sbcb_E(const DecodedInst* inst)
 { //F2
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	postbyte=MemRead8(temp16);
 	temp16=B_REG-postbyte-cc[C];
 	cc[C] = (temp16 & 0x100)>>8;
@@ -6183,7 +6157,6 @@ void Sbcb_E(const DecodedInst* inst)
 void Addd_E(const DecodedInst* inst)
 { //F3
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	temp16=MemRead16(temp16);
 	temp32= D_REG+ temp16;
 	cc[C] =(temp32 & 0x10000)>>16;
@@ -6197,7 +6170,6 @@ void Addd_E(const DecodedInst* inst)
 void Andb_E(const DecodedInst* inst)
 {  //F4
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	B_REG = B_REG & MemRead8(temp16);
 	cc[N] = NTEST8(B_REG);
 	cc[Z] = ZTEST(B_REG);
@@ -6208,7 +6180,6 @@ void Andb_E(const DecodedInst* inst)
 void Bitb_E(const DecodedInst* inst)
 { //F5
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	temp8 = B_REG & MemRead8(temp16);
 	cc[N] = NTEST8(temp8);
 	cc[Z] = ZTEST(temp8);
@@ -6219,7 +6190,6 @@ void Bitb_E(const DecodedInst* inst)
 void Ldb_E(const DecodedInst* inst)
 { //F6
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	B_REG=MemRead8(temp16);
 	cc[Z] = ZTEST(B_REG);
 	cc[N] = NTEST8(B_REG);
@@ -6230,7 +6200,6 @@ void Ldb_E(const DecodedInst* inst)
 void Stb_E(const DecodedInst* inst)
 { //F7
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	MemWrite8(B_REG,temp16);
 	cc[Z] = ZTEST(B_REG);
 	cc[N] = NTEST8(B_REG);
@@ -6241,7 +6210,6 @@ void Stb_E(const DecodedInst* inst)
 void Eorb_E(const DecodedInst* inst)
 { //F8
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	B_REG = B_REG ^ MemRead8(temp16);
 	cc[N] = NTEST8(B_REG);
 	cc[Z] = ZTEST(B_REG);
@@ -6252,7 +6220,6 @@ void Eorb_E(const DecodedInst* inst)
 void Adcb_E(const DecodedInst* inst)
 { //F9
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	postbyte=MemRead8(temp16);
 	temp16= B_REG + postbyte + cc[C];
 	cc[C] = (temp16 & 0x100)>>8;
@@ -6267,7 +6234,6 @@ void Adcb_E(const DecodedInst* inst)
 void Orb_E(const DecodedInst* inst)
 { //FA
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	B_REG = B_REG | MemRead8(temp16);
 	cc[N] = NTEST8(B_REG);
 	cc[Z] = ZTEST(B_REG);
@@ -6278,7 +6244,6 @@ void Orb_E(const DecodedInst* inst)
 void Addb_E(const DecodedInst* inst)
 { //FB
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	postbyte=MemRead8(temp16);
 	temp16=B_REG+postbyte;
 	cc[C] =(temp16 & 0x100)>>8;
@@ -6293,7 +6258,6 @@ void Addb_E(const DecodedInst* inst)
 void Ldd_E(const DecodedInst* inst)
 { //FC
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	D_REG=MemRead16(temp16);
 	cc[Z] = ZTEST(D_REG);
 	cc[N] = NTEST16(D_REG);
@@ -6304,7 +6268,6 @@ void Ldd_E(const DecodedInst* inst)
 void Std_E(const DecodedInst* inst)
 { //FD
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	MemWrite16(D_REG,temp16);
 	cc[Z] = ZTEST(D_REG);
 	cc[N] = NTEST16(D_REG);
@@ -6315,7 +6278,6 @@ void Std_E(const DecodedInst* inst)
 void Ldu_E(const DecodedInst* inst)
 { //FE
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	U_REG= MemRead16(temp16);
 	cc[Z] = ZTEST(U_REG);
 	cc[N] = NTEST16(U_REG);
@@ -6326,7 +6288,6 @@ void Ldu_E(const DecodedInst* inst)
 void Stu_E(const DecodedInst* inst)
 { //FF
 	temp16=OPERAND_16(inst);
-	PC_REG+=2;
 	MemWrite16(U_REG,temp16);
 	cc[Z] = ZTEST(U_REG);
 	cc[N] = NTEST16(U_REG);
@@ -7187,8 +7148,8 @@ int HD6309Exec(int CycleFor)
 				const DecodedInst* insns = block->insns;
 				for (int i = 0; i < block->num_insns; i++)
 				{
-					PC_REG++;  // skip opcode byte (handler reads operands from PC)
 					insns[i].handler(&insns[i]);
+					PC_REG += insns[i].length;
 				}
 
 				if (JS_Ramp_Clock < 0xFFFF)
