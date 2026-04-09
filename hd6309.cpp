@@ -7007,12 +7007,58 @@ void StepIns() {
 		JmpVec1[MemRead8(PC_REG++)]();
 }
 
+// Returns true if the debugger needs per-instruction attention.
+static inline bool DebuggerActive()
+{
+	return EmuState.Debugger.IsHalted()
+		|| EmuState.Debugger.IsStepping()
+		|| HaltedInsPending
+		|| !CPUBreakpoints.empty()
+		|| EmuState.Debugger.IsTracingEnabled();
+}
+
 int HD6309Exec(int CycleFor)
 {
     extern int JS_Ramp_Clock;
 	int PrevCycleCount = 0;
 	CycleCounter = 0;
 	gCycleFor = CycleFor;
+
+	if (DebuggerActive())
+		goto debugger_path;
+
+	// Fast path: no debugger overhead
+	while (CycleCounter < CycleFor) {
+
+		LatchInterrupts();
+
+		if (NMI())
+			cpu_nmi();
+		else if (FIRQ() && !CC(F))
+			cpu_firq();
+		else if (IRQ() && !CC(I))
+			cpu_irq();
+
+		if (SyncWaiting == 1)
+			return 0;
+
+		JmpVec1[MemRead8(PC_REG++)]();
+
+		if (JS_Ramp_Clock < 0xFFFF) {
+			JS_Ramp_Clock += CycleCounter-PrevCycleCount;
+		}
+		PrevCycleCount = CycleCounter;
+
+		// Check if debugger became active (e.g., HALT opcode executed)
+		if (HaltedInsPending)
+			goto debugger_path;
+
+	} // End fast instruction loop
+
+	return(CycleFor-CycleCounter);
+
+debugger_path:
+	// Slow path: full debugger support
 	while (CycleCounter < CycleFor) {
 
 		// CPU is halted.
@@ -7047,11 +7093,10 @@ int HD6309Exec(int CycleFor)
 		else if (IRQ() && !CC(I))
 			cpu_irq();
 
-		if (SyncWaiting == 1)	//Abort the run nothing happens asyncronously from the CPU
-			return 0; // WDZ - Experimental SyncWaiting should still return used cycles (and not zero) by breaking from loop
+		if (SyncWaiting == 1)
+			return 0;
 
-
-		// ANy CPU Breakpoints set?
+		// Any CPU Breakpoints set?
 		if (!EmuState.Debugger.IsStepping() && !CPUBreakpoints.empty())
 		{
 			if(find(CPUBreakpoints.begin(), CPUBreakpoints.end(), pc.Reg) != CPUBreakpoints.end())
@@ -7064,7 +7109,6 @@ int HD6309Exec(int CycleFor)
 		// Is the execution trace enabled - but currently not running?
 		if (EmuState.Debugger.IsTracingEnabled() && !EmuState.Debugger.IsTracing())
 		{
-			// Only Start Tracing when we hit a start trigger.
 			if (!CPUTraceTriggers.empty())
 			{
 				if (find(CPUTraceTriggers.begin(), CPUTraceTriggers.end(), pc.Reg) != CPUTraceTriggers.end())
@@ -7074,7 +7118,6 @@ int HD6309Exec(int CycleFor)
 			}
 			else
 			{
-				// Otherwise start right away.
 				EmuState.Debugger.TraceStart();
 			}
 		}
@@ -7085,7 +7128,7 @@ int HD6309Exec(int CycleFor)
 			EmuState.Debugger.TraceCaptureBefore(CycleCounter, HD6309GetState());
 		}
 
-		JmpVec1[MemRead8(PC_REG++)](); // Execute instruction pointed to by PC_REG
+		JmpVec1[MemRead8(PC_REG++)]();
 
 		if (EmuState.Debugger.IsTracing())
 		{

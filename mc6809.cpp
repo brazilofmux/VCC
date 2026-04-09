@@ -329,6 +329,16 @@ static void MC6809WriteTfrExgRegister(uint8_t reg, uint16_t value)
 
 
 
+// Returns true if the debugger needs per-instruction attention.
+static inline bool DebuggerActive()
+{
+	return EmuState.Debugger.IsHalted()
+		|| EmuState.Debugger.IsStepping()
+		|| HaltedInsPending
+		|| !CPUBreakpoints.empty()
+		|| EmuState.Debugger.IsTracingEnabled();
+}
+
 // Do instructions for CycleFor cycles. Return number cycles over.
 int MC6809Exec(int CycleFor)
 {
@@ -336,7 +346,41 @@ int MC6809Exec(int CycleFor)
 	int PrevCycleCount = 0;
 	CycleCounter=0;
 
-	// Instruction Loop
+	if (DebuggerActive())
+		goto debugger_path;
+
+	// Fast path: no debugger overhead
+	while (CycleCounter<CycleFor) {
+
+		LatchInterrupts();
+
+		if (NMI())
+			cpu_nmi();
+		else if (FIRQ() && !cc[F])
+			cpu_firq();
+		else if (IRQ() && !cc[I])
+			cpu_irq();
+
+		if (SyncWaiting==1)
+			return 0;
+
+		Do_Opcode(CycleFor);
+
+		if (JS_Ramp_Clock < 0xFFFF) {
+			JS_Ramp_Clock += CycleCounter-PrevCycleCount;
+		}
+		PrevCycleCount = CycleCounter;
+
+		// Check if debugger became active (e.g., HALT opcode executed)
+		if (HaltedInsPending)
+			goto debugger_path;
+
+	} // End fast instruction loop
+
+	return(CycleFor-CycleCounter);
+
+debugger_path:
+	// Slow path: full debugger support
 	while (CycleCounter<CycleFor) {
 
 		// CPU is halted.
@@ -368,7 +412,7 @@ int MC6809Exec(int CycleFor)
 			cpu_irq();
 
 		// Wait for Sync
-		if (SyncWaiting==1)	// Note: Assert interrupt clears sync waiting
+		if (SyncWaiting==1)
 			return 0;
 
 		// Any CPU Breakpoints set?
@@ -383,14 +427,12 @@ int MC6809Exec(int CycleFor)
 		// Is the execution trace enabled - but currently not running?
 		if (EmuState.Debugger.IsTracingEnabled() && !EmuState.Debugger.IsTracing())
 		{
-			// Only Start Tracing when we hit a start trigger.
 			if (!CPUTraceTriggers.empty())
 			{
 				if (find(CPUTraceTriggers.begin(), CPUTraceTriggers.end(), pc.Reg) != CPUTraceTriggers.end()) {
 					EmuState.Debugger.TraceStart();
 				}
 			} else {
-				// Otherwise start right away.
 				EmuState.Debugger.TraceStart();
 			}
 		}
@@ -400,21 +442,18 @@ int MC6809Exec(int CycleFor)
 			EmuState.Debugger.TraceCaptureBefore(CycleCounter, MC6809GetState());
 		}
 
-		// Do an instruction
 		Do_Opcode(CycleFor);
 
-		// After instruction trace capture
 		if (EmuState.Debugger.IsTracing()) {
 			EmuState.Debugger.TraceCaptureAfter(CycleCounter, MC6809GetState());
 		}
-		// Advance the JoyStick Ramp timer
+
 		if (JS_Ramp_Clock < 0xFFFF) {
 			JS_Ramp_Clock += CycleCounter-PrevCycleCount;
 		}
-
 		PrevCycleCount = CycleCounter;
 
-	} // End instruction loop
+	} // End debugger instruction loop
 
 	return(CycleFor-CycleCounter);
 
