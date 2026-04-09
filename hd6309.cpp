@@ -7124,14 +7124,30 @@ int HD6309Exec(int CycleFor)
 	// Fast path: no debugger overhead, with block execution
 	while (CycleCounter < CycleFor) {
 
+		bool interrupted = false;
+
 		LatchInterrupts();
 
 		if (NMI())
+		{
 			cpu_nmi();
+			interrupted = true;
+		}
 		else if (FIRQ() && !CC(F))
+		{
 			cpu_firq();
+			interrupted = true;
+		}
 		else if (IRQ() && !CC(I))
+		{
 			cpu_irq();
+			interrupted = true;
+		}
+
+		// An interrupt breaks straight-line execution, so abandon any
+		// in-progress block recording before executing the ISR stream.
+		if (interrupted && blockCache.IsRecording())
+			blockCache.CancelRecord();
 
 		if (SyncWaiting == 1)
 			return 0;
