@@ -792,7 +792,7 @@ void Addr(const DecodedInst* inst)
 { //1030 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
-	temp8 = MemRead8(PC_REG++);
+	temp8 = OPERAND_8(inst);
 	Source = temp8 >> 4;
 	Dest = temp8 & 15;
 
@@ -863,7 +863,7 @@ void Adcr(const DecodedInst* inst)
 { //1031 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
-	temp8 = MemRead8(PC_REG++);
+	temp8 = OPERAND_8(inst);
 	Source = temp8 >> 4;
 	Dest = temp8 & 15;
 
@@ -931,7 +931,7 @@ void Subr(const DecodedInst* inst)
 { //1032 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
-	temp8 = MemRead8(PC_REG++);
+	temp8 = OPERAND_8(inst);
 	Source = temp8 >> 4;
 	Dest = temp8 & 15;
 
@@ -1000,7 +1000,7 @@ void Sbcr(const DecodedInst* inst)
 { //1033 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
-	temp8 = MemRead8(PC_REG++);
+	temp8 = OPERAND_8(inst);
 	Source = temp8 >> 4;
 	Dest = temp8 & 15;
 
@@ -1069,7 +1069,7 @@ void Andr(const DecodedInst* inst)
 { //1034 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
-	temp8 = MemRead8(PC_REG++);
+	temp8 = OPERAND_8(inst);
 	Source = temp8 >> 4;
 	Dest = temp8 & 15;
 
@@ -1135,7 +1135,7 @@ void Orr(const DecodedInst* inst)
 { //1035 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
-	temp8 = MemRead8(PC_REG++);
+	temp8 = OPERAND_8(inst);
 	Source = temp8 >> 4;
 	Dest = temp8 & 15;
 
@@ -1201,7 +1201,7 @@ void Eorr(const DecodedInst* inst)
 { //1036 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
-	temp8 = MemRead8(PC_REG++);
+	temp8 = OPERAND_8(inst);
 	Source = temp8 >> 4;
 	Dest = temp8 & 15;
 
@@ -1267,7 +1267,7 @@ void Cmpr(const DecodedInst* inst)
 { //1037 6309 - WallyZ 2019
 	unsigned char dest8, source8;
 	unsigned short dest16, source16;
-	temp8 = MemRead8(PC_REG++);
+	temp8 = OPERAND_8(inst);
 	Source = temp8 >> 4;
 	Dest = temp8 & 15;
 
