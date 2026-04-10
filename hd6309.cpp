@@ -244,12 +244,8 @@ static void HD6309BlockInvalidateAll() {
 // insert the resulting CachedBlock into the cache.
 static void HD6309PrePopulateBlockCache()
 {
-	unsigned int fingerprint = GetInternalRomFingerprint();
-	if (fingerprint == 0)
-		return;
-
-	const VCC::RomBlockStoreEntry* entry = VCC::GetRomBlockStore().Lookup(fingerprint);
-	if (!entry)
+	VCC::RomBlockStore& store = VCC::GetRomBlockStore();
+	if (store.Size() == 0)
 		return;
 
 	// Ensure the full internal ROM is mapped before we re-decode blocks.
@@ -266,62 +262,81 @@ static void HD6309PrePopulateBlockCache()
 
 	// Estimate cycles per instruction. Real 6809 instructions average
 	// ~5 cycles; this is good enough for the dispatch budget check.
-	// We can refine later with a per-opcode table if needed.
 	constexpr int kEstimatedCyclesPerInsn = 5;
 
-	// Sort the pre-built blocks shortest-first so the longest block in
-	// any 12-bit cache-slot collision wins (the cache uses last-write-wins
-	// semantics, so the LAST block inserted into a slot is the one that
-	// survives). With 15K candidate blocks and 4K slots, ~3-4 blocks
-	// collide per slot; biasing toward longer blocks maximizes
-	// instructions-per-dispatch when the slot is hit at runtime.
-	std::vector<VCC::PrebuiltBlock> sorted_blocks = entry->blocks;
-	std::sort(sorted_blocks.begin(), sorted_blocks.end(),
-		[](const VCC::PrebuiltBlock& a, const VCC::PrebuiltBlock& b) {
-			return a.num_insns < b.num_insns;
-		});
+	// Process the internal ROM first so cartridge ROM blocks (which live
+	// in the same $C000-$DFFF address range, just under a different MMU
+	// mapping) win on cache-slot collisions. The cache uses last-write-wins
+	// semantics, so processing cartridge ROMs LAST means their blocks
+	// survive when the cartridge is the active mapping at runtime.
+	const unsigned int internal_fp = GetInternalRomFingerprint();
 
-	int inserted = 0;
-	int skipped  = 0;
-	for (const VCC::PrebuiltBlock& pb : sorted_blocks)
+	auto process_entry = [&](unsigned int fingerprint,
+	                         const VCC::RomBlockStoreEntry& entry) {
+		// Sort the pre-built blocks shortest-first so the longest block in
+		// any 12-bit cache-slot collision wins (last-write-wins). With 15K
+		// candidate blocks and 4K slots, ~3-4 blocks collide per slot;
+		// biasing toward longer blocks maximizes instructions-per-dispatch.
+		std::vector<VCC::PrebuiltBlock> sorted_blocks = entry.blocks;
+		std::sort(sorted_blocks.begin(), sorted_blocks.end(),
+			[](const VCC::PrebuiltBlock& a, const VCC::PrebuiltBlock& b) {
+				return a.num_insns < b.num_insns;
+			});
+
+		int inserted = 0;
+		int skipped  = 0;
+		for (const VCC::PrebuiltBlock& pb : sorted_blocks)
+		{
+			if (pb.num_insns == 0 || pb.num_insns > BlockCache::MAX_BLOCK_INSNS)
+			{
+				++skipped;
+				continue;
+			}
+
+			uint16_t start_pc = (uint16_t)(entry.rom_base + pb.start_offset);
+
+			CachedBlock cb {};
+			cb.start_pc     = start_pc;
+			cb.end_pc       = (uint16_t)(start_pc + pb.byte_length);
+			cb.num_insns    = pb.num_insns;
+			cb.total_cycles = (uint8_t)(pb.num_insns * kEstimatedCyclesPerInsn);
+
+			// Re-run the runtime decoder against live memory. If the
+			// expected ROM isn't mapped at this address right now (e.g.,
+			// a cartridge ROM whose slot isn't currently selected), the
+			// length check below will reject the block and we move on.
+			uint16_t decoded_end = DecodeBlock(start_pc, pb.num_insns, cb.insns);
+			if (decoded_end != cb.end_pc)
+			{
+				++skipped;
+				continue;
+			}
+
+			blockCache.InsertPrebuiltBlock(cb);
+			++inserted;
+		}
+
+		char dbg[160];
+		snprintf(dbg, sizeof(dbg),
+			"[PREPOPULATE] crc=0x%08X candidate=%u inserted=%d skipped=%d\n",
+			fingerprint, (unsigned)entry.blocks.size(), inserted, skipped);
+		OutputDebugStringA(dbg);
+	};
+
+	// Pass 1: internal ROM (if registered).
+	if (internal_fp != 0)
 	{
-		if (pb.num_insns == 0 || pb.num_insns > BlockCache::MAX_BLOCK_INSNS)
-		{
-			++skipped;
-			continue;
-		}
-
-		uint16_t start_pc = (uint16_t)(entry->rom_base + pb.start_offset);
-
-		CachedBlock cb {};
-		cb.start_pc     = start_pc;
-		cb.end_pc       = (uint16_t)(start_pc + pb.byte_length);
-		cb.num_insns    = pb.num_insns;
-		cb.total_cycles = (uint8_t)(pb.num_insns * kEstimatedCyclesPerInsn);
-
-		// Re-run the runtime decoder against live memory. The ROM is
-		// already mapped at its base address by this point (HD6309Reset
-		// runs after MmuInit/LoadRom), so MemFetch8 inside DecodeBlock
-		// returns the same bytes the analyzer saw.
-		uint16_t decoded_end = DecodeBlock(start_pc, pb.num_insns, cb.insns);
-		if (decoded_end != cb.end_pc)
-		{
-			// Length mismatch - the runtime decoder disagrees with the
-			// analyzer. Skip this block to be safe; the runtime recorder
-			// will rebuild it on first encounter if needed.
-			++skipped;
-			continue;
-		}
-
-		blockCache.InsertPrebuiltBlock(cb);
-		++inserted;
+		if (const VCC::RomBlockStoreEntry* entry = store.Lookup(internal_fp))
+			process_entry(internal_fp, *entry);
 	}
 
-	char dbg[160];
-	snprintf(dbg, sizeof(dbg),
-		"[PREPOPULATE] crc=0x%08X candidate=%u inserted=%d skipped=%d\n",
-		fingerprint, (unsigned)entry->blocks.size(), inserted, skipped);
-	OutputDebugStringA(dbg);
+	// Pass 2: every other ROM in the store (cartridge ROMs).
+	for (const auto& kv : store)
+	{
+		if (kv.first == internal_fp)
+			continue;
+		process_entry(kv.first, kv.second);
+	}
 }
 
 // Block terminator table for page 1 opcodes.

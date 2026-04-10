@@ -348,7 +348,8 @@ multipak_cartridge::mount_status_type multipak_cartridge::mount_cartridge(
 		gHostCallbacks->assert_interrupt_,
 		assert_cartridge_line_thunk,
 		gHostCallbacks->write_memory_byte_,
-		gHostCallbacks->read_memory_byte_//,
+		gHostCallbacks->read_memory_byte_,
+		gHostCallbacks->register_rom_blocks_
 	};
 	
 	DLOG_C("%3d %p %p %p %p %p\n",mpi_slot,cpak_callbacks);

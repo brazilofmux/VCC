@@ -85,5 +85,7 @@ private:
 			(slot_id_type, bool) {};
 	PakAssertInteruptHostCallback assert_interrupt_ = []
 			(slot_id_type, Interrupt, InterruptSource) {};
+	PakRegisterRomBlocksHostCallback register_rom_blocks_ = []
+			(slot_id_type, uint32_t, uint16_t, const VCC::PrebuiltBlock*, std::size_t) {};
 };
 

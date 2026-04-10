@@ -35,6 +35,7 @@
 #include <vcc/util/logger.h>
 #include <vcc/util/FileOps.h>
 #include <vcc/util/DialogOps.h>
+#include <vcc/util/RomBlockStore.h>
 #include <fstream>
 #include <Windows.h>
 #include <commdlg.h>
@@ -108,6 +109,23 @@ static unsigned char PakReadMemoryByte(slot_id_type /*SlotId*/, unsigned short a
 static void PakAssertInterupt(slot_id_type /*SlotId*/, Interrupt interrupt, InterruptSource source)
 {
 	PakAssertInterupt(interrupt, source);
+}
+
+// Cartridge DLLs cannot reach the host EXE's RomBlockStore singleton
+// directly because libcommon is statically linked - they each have their
+// own private instance. This callback copies the analyzed block list into
+// the host's store, where HD6309PrePopulateBlockCache picks it up at
+// reset time.
+static void PakRegisterRomBlocks(slot_id_type /*SlotId*/,
+                                 uint32_t fingerprint,
+                                 uint16_t rom_base,
+                                 const VCC::PrebuiltBlock* blocks,
+                                 std::size_t count)
+{
+	if (blocks == nullptr || count == 0)
+		return;
+	std::vector<VCC::PrebuiltBlock> copy(blocks, blocks + count);
+	VCC::GetRomBlockStore().AddRomBlocks(fingerprint, rom_base, std::move(copy));
 }
 
 void PakTimer()
@@ -271,7 +289,8 @@ static cartridge_loader_status load_any_cartridge(const char *filename, const ch
 		PakAssertInterupt,
 		PakAssertCartrigeLine,
 		PakWriteMemoryByte,
-		PakReadMemoryByte
+		PakReadMemoryByte,
+		PakRegisterRomBlocks
 	};
 
 	slot_id_type SlotId = 0;

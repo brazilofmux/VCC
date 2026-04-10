@@ -79,8 +79,14 @@ public:
     // Number of distinct ROMs in the store.
     size_t Size() const { return entries_.size(); }
 
+    // Iterate over all (fingerprint, entry) pairs. Used by the CPU
+    // engine to drain every registered ROM into the live block cache.
+    using map_type = std::unordered_map<uint32_t, RomBlockStoreEntry>;
+    map_type::const_iterator begin() const { return entries_.begin(); }
+    map_type::const_iterator end()   const { return entries_.end(); }
+
 private:
-    std::unordered_map<uint32_t, RomBlockStoreEntry> entries_;
+    map_type entries_;
 };
 
 // Process-wide singleton accessor. The store is shared across the main

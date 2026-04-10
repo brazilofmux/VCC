@@ -40,6 +40,9 @@
 #include <vcc/util/DialogOps.h>
 #include <vcc/util/logger.h>
 #include <vcc/util/RomDatabase.h>
+#include <vcc/util/RomAnalyzer.h>
+#include <vcc/util/RomBlockStore.h>
+#include <set>
 // Three includes added for PakGetMenuItem
 #include <vcc/bus/cartridge_menu.h>
 #include <vcc/bus/cartridge_messages.h>
@@ -68,6 +71,7 @@ static char RomFileName[MAX_PATH]="";
 static char TempRomFileName[MAX_PATH]="";
 slot_id_type gSlotId {};
 PakAssertInteruptHostCallback AssertInt = nullptr;
+static PakRegisterRomBlocksHostCallback gRegisterRomBlocks = nullptr;
 unsigned char PhysicalDriveA=0,PhysicalDriveB=0,OldPhysicalDriveA=0,OldPhysicalDriveB=0;
 static unsigned char *RomPointer[3]={ExternalRom,DiskRom,RGBDiskRom};
 static unsigned char SelectRom=0;
@@ -143,6 +147,7 @@ extern "C"
 		gSlotId = SlotId;
 		gVccWnd = hVccWnd;
 		AssertInt = callbacks->assert_interrupt;
+		gRegisterRomBlocks = callbacks->register_rom_blocks;
 //      Must create settings object before LoadConfig
 		gpSettings = new VCC::Util::settings(configuration_path);
 		RealDisks = InitController();
@@ -795,6 +800,31 @@ unsigned char LoadExtRom( unsigned char RomType,const char *FilePath)	//Returns 
 			RomTypeName[RomType < 3 ? RomType : 0], info.name,
 			(unsigned)info.size, info.fingerprint, FilePath);
 		OutputDebugStringA(dbg);
+
+		// Run the ROM analyzer and hand the resulting pre-built blocks
+		// to the host EXE via the register_rom_blocks callback. We can't
+		// call VCC::GetRomBlockStore() locally - libcommon is statically
+		// linked, so the DLL has its own private singleton instance that
+		// the host's HD6309PrePopulateBlockCache never sees.
+		const uint16_t kRomBase = 0xC000;
+		auto sweep = VCC::AnalyzeRomLinearSweep(ThisRom[RomType], index, kRomBase);
+		auto blocks = VCC::BuildPrebuiltBlocks(ThisRom[RomType], index,
+		                                       kRomBase, sweep.entry_offsets);
+
+		if (gRegisterRomBlocks != nullptr && !blocks.empty())
+		{
+			gRegisterRomBlocks(gSlotId, info.fingerprint, kRomBase,
+			                   blocks.data(), blocks.size());
+		}
+
+		char dbg2[160];
+		snprintf(dbg2, sizeof(dbg2),
+			"[ANALYZE] FD502/%s: sweep=%u prebuilt=%u registered=%d\n",
+			RomTypeName[RomType < 3 ? RomType : 0],
+			(unsigned)sweep.entry_offsets.size(),
+			(unsigned)blocks.size(),
+			gRegisterRomBlocks != nullptr ? 1 : 0);
+		OutputDebugStringA(dbg2);
 	}
 
 	return RetVal;

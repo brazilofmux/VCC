@@ -73,6 +73,7 @@ extern "C"
 		gHostCallbacks->write_memory_byte_ = callbacks->write_memory_byte;
 		gHostCallbacks->assert_interrupt_ = callbacks->assert_interrupt;
 		gHostCallbacks->assert_cartridge_line_ = callbacks->assert_cartridge_line;
+		gHostCallbacks->register_rom_blocks_ = callbacks->register_rom_blocks;
 		gMultiPakInterface.start();
 	}
 
