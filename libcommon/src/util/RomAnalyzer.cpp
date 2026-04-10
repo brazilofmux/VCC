@@ -407,21 +407,36 @@ std::vector<PrebuiltBlock> BuildPrebuiltBlocks(
 // through garbage bytes treating them as instructions and report
 // hundreds of bogus entry points.
 //
-// The check is intentionally conservative: a region of 8 consecutive
-// identical bytes is almost certainly not code. Real instruction streams
-// have far more byte variety.
+// Heuristic: count distinct byte values in the first 16 bytes. Real
+// instruction streams have lots of variety - typical 6809 code mixes
+// opcodes, postbytes, immediate values, and addresses, so 8+ distinct
+// bytes in any 16-byte window is normal. Uninitialized regions are
+// dominated by 0x00 or 0xFF runs and rarely exceed 2-3 distinct bytes.
+// Require at least 4 distinct bytes to consider it code - that catches
+// the "0x00 then 0xFF" boundary case that the simpler "all-identical"
+// check missed, while still being permissive enough for legitimate
+// code with repeated immediates.
 static bool LooksLikeRomCode(const uint8_t* rom_bytes, size_t rom_size, uint16_t off)
 {
-    if ((size_t)off + 8 > rom_size)
+    constexpr int kWindow = 16;
+    constexpr int kMinDistinct = 4;
+
+    if ((size_t)off + kWindow > rom_size)
         return false;
 
-    uint8_t first = rom_bytes[off];
-    for (int i = 1; i < 8; i++)
+    bool seen[256] = {};
+    int distinct = 0;
+    for (int i = 0; i < kWindow; i++)
     {
-        if (rom_bytes[off + i] != first)
-            return true;
+        uint8_t b = rom_bytes[off + i];
+        if (!seen[b])
+        {
+            seen[b] = true;
+            if (++distinct >= kMinDistinct)
+                return true;
+        }
     }
-    return false;  // 8 identical bytes in a row - very unlikely to be code
+    return false;
 }
 
 RomAnalysisResult AnalyzeRomLinearSweep(
