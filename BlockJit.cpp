@@ -41,6 +41,8 @@ static uint32_t           g_blocks_emitted = 0;
 static uint32_t           g_emit_failures  = 0;
 static uint32_t           g_insns_called   = 0;
 static uint32_t           g_insns_inlined  = 0;
+static uint32_t           g_pc_writes_emitted = 0;
+static uint32_t           g_pc_writes_skipped = 0;
 
 void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers)
 {
@@ -61,6 +63,8 @@ void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers)
     g_emit_failures = 0;
     g_insns_called = 0;
     g_insns_inlined = 0;
+    g_pc_writes_emitted = 0;
+    g_pc_writes_skipped = 0;
 }
 
 void Reset()
@@ -70,6 +74,8 @@ void Reset()
     g_emit_failures = 0;
     g_insns_called = 0;
     g_insns_inlined = 0;
+    g_pc_writes_emitted = 0;
+    g_pc_writes_skipped = 0;
 }
 
 // ---------- low-level x86 emitter helpers ----------
@@ -135,34 +141,63 @@ static void EmitAddEsp4(uint8_t*& p)
     p += 3;
 }
 
+// movzx eax, byte ptr [imm32]   - 7 bytes (0F B6 05 <addr32>)
+static void EmitMovzxEaxMem8(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0x0F;
+    p[1] = 0xB6;
+    p[2] = 0x05;
+    std::memcpy(p + 3, &addr_imm, 4);
+    p += 7;
+}
+
+// add dword ptr [imm32], eax    - 6 bytes (01 05 <addr32>)
+static void EmitAddMem32Eax(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0x01;
+    p[1] = 0x05;
+    std::memcpy(p + 2, &addr_imm, 4);
+    p += 6;
+}
+
+// Add a runtime cycle byte (e.g., NatEmuCycles21) into CycleCounter.
+// 13 bytes total (movzx eax, [addr]; add [cycle_counter], eax).
+static void EmitAddCyclesRuntime(uint8_t*& p, const void* nat_cycles_addr)
+{
+    EmitMovzxEaxMem8(p, nat_cycles_addr);
+    EmitAddMem32Eax(p, g_addrs.cycle_counter);
+}
+
 // ---------- size constants ----------
 
-// Always-emitted PC write before each instruction:
-//   mov word ptr [PC], local_pc   = 9 bytes
+//   mov word ptr [PC], local_pc      = 9 bytes
 static constexpr size_t kPcWriteBytes = 9;
 
-// Level-1 call sequence:
+// Level-1 call sequence (after PC write):
 //   push imm32 + call rel32 + add esp, 4   = 13 bytes
 static constexpr size_t kCallSeqBytes = 5 + 5 + 3;
 
-// Level-2 inline sizes (worst case for any registered handler):
-//   8-bit immediate load (LDA #imm / LDB #imm):
-//     mov [reg], imm8       7
-//     mov [cc[N]], imm8     7
-//     mov [cc[Z]], imm8     7
-//     mov [cc[V]], 0        7
-//     add [cycles], 2       7
-//     ----------------------- 35
-//   16-bit immediate load (LDD/LDX/LDU #imm16):
-//     mov word [reg], imm16 9
-//     mov [cc[N]], imm8     7
-//     mov [cc[Z]], imm8     7
-//     mov [cc[V]], 0        7
-//     add [cycles], 3       7
-//     ----------------------- 37
-// Use 40 as a safe per-instruction upper bound including the PC write.
-static constexpr size_t kMaxBytesPerInsn = kPcWriteBytes + 40;
-static constexpr size_t kEpilogueBytes = 1;  // ret
+// Worst-case inline body across all level-2 handlers. CLRA/CLRB are
+// the largest at:
+//   mov [reg], 0          7
+//   mov [cc[C]], 0        7
+//   mov [cc[V]], 0        7
+//   mov [cc[Z]], 1        7
+//   mov [cc[N]], 0        7
+//   movzx eax, [cycles21] 7
+//   add [cycles], eax     6
+//   --------------------- 48
+// PC-write skipping means inlined ops do NOT prepend a PC write, so
+// the per-instruction budget for an inlined op is just the body size.
+// For called ops the budget is kPcWriteBytes + kCallSeqBytes = 22.
+// Use 56 as a safe upper bound that covers either case plus headroom.
+static constexpr size_t kMaxBytesPerInsn = 56;
+
+// Block epilogue: 1 byte ret + up to 9 bytes for the final PC flush
+// when the last instruction in the block was inlined.
+static constexpr size_t kEpilogueBytes = 1 + kPcWriteBytes;
 
 // ---------- inline emitters ----------
 
@@ -180,11 +215,10 @@ static void EmitInlineLd8Imm(uint8_t*& p, const DecodedInst& insn,
     EmitAddMem32Imm8(p, g_addrs.cycle_counter, 2);
 }
 
-// LDD/LDX/LDU #imm16. Same shape as the 8-bit version, just a 16-bit
-// destination and a 16-bit operand. cc[N] tests the high bit of the
-// 16-bit value.
-static void EmitInlineLd16Imm(uint8_t*& p, const DecodedInst& insn,
-                              uint16_t* reg_addr, int8_t cycles)
+// LDD/LDX/LDU #imm16: 16-bit destination, constant cycle cost. cc[N]
+// tests the high bit of the 16-bit value.
+static void EmitInlineLd16ImmConstCycles(uint8_t*& p, const DecodedInst& insn,
+                                         uint16_t* reg_addr, int8_t cycles)
 {
     const uint16_t imm = insn.operand;
     EmitMovMem16Imm16(p, reg_addr,      imm);
@@ -194,16 +228,49 @@ static void EmitInlineLd16Imm(uint8_t*& p, const DecodedInst& insn,
     EmitAddMem32Imm8(p, g_addrs.cycle_counter, cycles);
 }
 
+// LDY/LDS #imm16: same as the const-cycles 16-bit version, but the
+// cycle cost lives in a runtime byte (NatEmuCycles54) that flips when
+// the CPU mode changes. We read it via movzx + add.
+static void EmitInlineLd16ImmRuntimeCycles(uint8_t*& p, const DecodedInst& insn,
+                                           uint16_t* reg_addr,
+                                           const void* nat_cycles_addr)
+{
+    const uint16_t imm = insn.operand;
+    EmitMovMem16Imm16(p, reg_addr,      imm);
+    EmitMovMem8Imm8(p, g_addrs.cc + 3,  (imm & 0x8000) ? 1 : 0);
+    EmitMovMem8Imm8(p, g_addrs.cc + 2,  (imm == 0)     ? 1 : 0);
+    EmitMovMem8Imm8(p, g_addrs.cc + 1,  0);
+    EmitAddCyclesRuntime(p, nat_cycles_addr);
+}
+
+// CLRA/CLRB: store 0 to the target register and set CC to a fixed
+// pattern (C=0, V=0, Z=1, N=0). Touches cc[C] which the load
+// emitters do NOT, so this is its own emitter rather than reusing
+// the load shape. Cycle cost is the runtime NatEmuCycles21 byte.
+static void EmitInlineClr8(uint8_t*& p, uint8_t* reg_addr)
+{
+    EmitMovMem8Imm8(p, reg_addr,        0);
+    EmitMovMem8Imm8(p, g_addrs.cc + 0,  0);  // C
+    EmitMovMem8Imm8(p, g_addrs.cc + 1,  0);  // V
+    EmitMovMem8Imm8(p, g_addrs.cc + 2,  1);  // Z = 1
+    EmitMovMem8Imm8(p, g_addrs.cc + 3,  0);  // N
+    EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
+}
+
 // Returns true and emits if the handler matches a registered inlineable
 // handler; returns false otherwise so the caller emits the call sequence.
 static bool TryEmitInline(uint8_t*& p, const DecodedInst& insn)
 {
     const InstHandler h = insn.handler;
-    if (h == g_inlines.lda_m) { EmitInlineLd8Imm (p, insn, g_addrs.a); return true; }
-    if (h == g_inlines.ldb_m) { EmitInlineLd8Imm (p, insn, g_addrs.b); return true; }
-    if (h == g_inlines.ldd_m) { EmitInlineLd16Imm(p, insn, g_addrs.d, 3); return true; }
-    if (h == g_inlines.ldx_m) { EmitInlineLd16Imm(p, insn, g_addrs.x, 3); return true; }
-    if (h == g_inlines.ldu_m) { EmitInlineLd16Imm(p, insn, g_addrs.u, 3); return true; }
+    if (h == g_inlines.lda_m)  { EmitInlineLd8Imm             (p, insn, g_addrs.a);                          return true; }
+    if (h == g_inlines.ldb_m)  { EmitInlineLd8Imm             (p, insn, g_addrs.b);                          return true; }
+    if (h == g_inlines.ldd_m)  { EmitInlineLd16ImmConstCycles (p, insn, g_addrs.d, 3);                       return true; }
+    if (h == g_inlines.ldx_m)  { EmitInlineLd16ImmConstCycles (p, insn, g_addrs.x, 3);                       return true; }
+    if (h == g_inlines.ldu_m)  { EmitInlineLd16ImmConstCycles (p, insn, g_addrs.u, 3);                       return true; }
+    if (h == g_inlines.lds_i)  { EmitInlineLd16ImmConstCycles (p, insn, g_addrs.s, 4);                       return true; }
+    if (h == g_inlines.ldy_m)  { EmitInlineLd16ImmRuntimeCycles(p, insn, g_addrs.y, g_addrs.nat_cycles_54);  return true; }
+    if (h == g_inlines.clra_i) { EmitInlineClr8               (p, g_addrs.a);                                return true; }
+    if (h == g_inlines.clrb_i) { EmitInlineClr8               (p, g_addrs.b);                                return true; }
     return false;
 }
 
@@ -224,32 +291,56 @@ NativeEntry EmitBlock(const CachedBlock& slot)
     uint8_t* const entry = g_arena_base + g_arena_used;
     uint8_t* p = entry;
 
+    // PC-skipping state. The dispatcher arranges PC_REG == slot.start_pc
+    // before calling native_entry, so PC matches the "current" position
+    // until we either run a called handler (which needs the post-insn
+    // PC pre-set) or finish the block (which needs PC pointing past
+    // the last instruction so the outer loop's next-block lookup
+    // works). For sequences of inlined ops we just track the running
+    // local_pc and skip the writes; the next call OR the block tail
+    // flushes whatever's pending.
     uint16_t local_pc = slot.start_pc;
+    bool     pc_dirty = false;
 
     for (int i = 0; i < (int)slot.num_insns; ++i)
     {
         const DecodedInst& insn = slot.insns[i];
         local_pc = (uint16_t)(local_pc + insn.length);
 
-        // Always pre-set PC_REG to the post-instruction value before
-        // emitting the body. Inlined ops don't read PC themselves, but
-        // keeping the write per-insn matches the interpreter loop's
-        // observable state at every dispatch boundary - we can elide
-        // it for inlined sequences in level-3.
-        EmitMovMem16Imm16(p, g_addrs.pc, local_pc);
-
         if (TryEmitInline(p, insn))
         {
+            // Inlined ops don't read PC, so skip the per-insn PC
+            // write. Just remember PC is now stale relative to local_pc.
+            pc_dirty = true;
+            ++g_pc_writes_skipped;
             ++g_insns_inlined;
         }
         else
         {
-            // Level-1 fallback: __cdecl call into the interpreter handler.
+            // Called handler: must pre-set PC to local_pc (the post-
+            // this-instruction value) so the handler sees the same
+            // state the interpreter loop would have set up.
+            EmitMovMem16Imm16(p, g_addrs.pc, local_pc);
+            ++g_pc_writes_emitted;
+            pc_dirty = false;
+
             EmitPushImm32(p, (uint32_t)(uintptr_t)&insn);
             EmitCallRel32(p, (const void*)insn.handler);
             EmitAddEsp4(p);
             ++g_insns_called;
         }
+    }
+
+    // If the block ended on an inlined op, flush PC so the outer
+    // dispatcher's "look up next block at PC_REG" sees the right
+    // address. Terminator-ending blocks always end on a called
+    // handler (we don't inline branches/jumps/returns), so this
+    // flush only fires for blocks that hit MAX_BLOCK_INSNS with
+    // an inlined non-terminator at the end.
+    if (pc_dirty)
+    {
+        EmitMovMem16Imm16(p, g_addrs.pc, local_pc);
+        ++g_pc_writes_emitted;
     }
 
     // ret
@@ -264,12 +355,14 @@ NativeEntry EmitBlock(const CachedBlock& slot)
 Stats GetStats()
 {
     Stats s;
-    s.arena_size     = kArenaSize;
-    s.arena_used     = g_arena_used;
-    s.blocks_emitted = g_blocks_emitted;
-    s.emit_failures  = g_emit_failures;
-    s.insns_called   = g_insns_called;
-    s.insns_inlined  = g_insns_inlined;
+    s.arena_size        = kArenaSize;
+    s.arena_used        = g_arena_used;
+    s.blocks_emitted    = g_blocks_emitted;
+    s.emit_failures     = g_emit_failures;
+    s.insns_called      = g_insns_called;
+    s.insns_inlined     = g_insns_inlined;
+    s.pc_writes_emitted = g_pc_writes_emitted;
+    s.pc_writes_skipped = g_pc_writes_skipped;
     return s;
 }
 

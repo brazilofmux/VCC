@@ -354,17 +354,24 @@ static void HD6309PrePopulateBlockCache()
 	uint32_t total_insns = js.insns_called + js.insns_inlined;
 	double inline_pct = (total_insns > 0)
 		? 100.0 * (double)js.insns_inlined / (double)total_insns : 0.0;
-	char dbg[256];
+	uint32_t total_pc = js.pc_writes_emitted + js.pc_writes_skipped;
+	double skipped_pct = (total_pc > 0)
+		? 100.0 * (double)js.pc_writes_skipped / (double)total_pc : 0.0;
+	char dbg[320];
 	snprintf(dbg, sizeof(dbg),
 		"[JIT] arena %u/%u bytes (%.1f%%) blocks=%u failures=%u "
-		"insns=%u inlined=%u (%.1f%%)\n",
+		"insns=%u inlined=%u (%.1f%%) "
+		"pc_skipped=%u/%u (%.1f%%)\n",
 		(unsigned)js.arena_used, (unsigned)js.arena_size,
 		100.0 * (double)js.arena_used / (double)js.arena_size,
 		(unsigned)js.blocks_emitted,
 		(unsigned)js.emit_failures,
 		(unsigned)total_insns,
 		(unsigned)js.insns_inlined,
-		inline_pct);
+		inline_pct,
+		(unsigned)js.pc_writes_skipped,
+		(unsigned)total_pc,
+		skipped_pct);
 	OutputDebugStringA(dbg);
 }
 
@@ -522,6 +529,10 @@ void Ldb_M(const DecodedInst* inst);
 void Ldd_M(const DecodedInst* inst);
 void Ldx_M(const DecodedInst* inst);
 void Ldu_M(const DecodedInst* inst);
+void Ldy_M(const DecodedInst* inst);
+void Lds_I(const DecodedInst* inst);
+void Clra_I(const DecodedInst* inst);
+void Clrb_I(const DecodedInst* inst);
 
 void HD6309Init()
 {	//Call this first or RESET will core!
@@ -534,22 +545,29 @@ void HD6309Init()
 	// inline (currently the immediate-load family).
 	{
 		BlockJit::CpuAddrs addrs;
-		addrs.pc            = &PC_REG;
-		addrs.a             = &A_REG;
-		addrs.b             = &B_REG;
-		addrs.d             = &D_REG;
-		addrs.x             = &X_REG;
-		addrs.y             = &Y_REG;
-		addrs.u             = &U_REG;
-		addrs.cc            = cc;
-		addrs.cycle_counter = &CycleCounter;
+		addrs.pc             = &PC_REG;
+		addrs.a              = &A_REG;
+		addrs.b              = &B_REG;
+		addrs.d              = &D_REG;
+		addrs.x              = &X_REG;
+		addrs.y              = &Y_REG;
+		addrs.u              = &U_REG;
+		addrs.s              = &S_REG;
+		addrs.cc             = cc;
+		addrs.cycle_counter  = &CycleCounter;
+		addrs.nat_cycles_21  = &NatEmuCycles21;
+		addrs.nat_cycles_54  = &NatEmuCycles54;
 
 		BlockJit::InlineableHandlers inlines;
-		inlines.lda_m = &Lda_M;
-		inlines.ldb_m = &Ldb_M;
-		inlines.ldd_m = &Ldd_M;
-		inlines.ldx_m = &Ldx_M;
-		inlines.ldu_m = &Ldu_M;
+		inlines.lda_m  = &Lda_M;
+		inlines.ldb_m  = &Ldb_M;
+		inlines.ldd_m  = &Ldd_M;
+		inlines.ldx_m  = &Ldx_M;
+		inlines.ldu_m  = &Ldu_M;
+		inlines.ldy_m  = &Ldy_M;
+		inlines.lds_i  = &Lds_I;
+		inlines.clra_i = &Clra_I;
+		inlines.clrb_i = &Clrb_I;
 
 		BlockJit::Init(addrs, inlines);
 	}

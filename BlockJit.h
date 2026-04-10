@@ -56,10 +56,17 @@ namespace BlockJit
         uint8_t*  b;              // B_REG
         uint16_t* d;              // D_REG (overlays A:B as a 16-bit value)
         uint16_t* x;              // X_REG
-        uint16_t* y;              // Y_REG (reserved)
+        uint16_t* y;              // Y_REG
         uint16_t* u;              // U_REG
-        uint8_t*  cc;             // base of cc[8] - cc[N], cc[Z], cc[V] live here
+        uint16_t* s;              // S_REG
+        uint8_t*  cc;             // base of cc[8] - cc[C/V/Z/N] are bytes 0..3
         int*      cycle_counter;  // CycleCounter
+        // Runtime cycle-cost bytes: NatEmuCyclesNN gets updated by the
+        // mode-switch path when the CPU flips between 6809 emulation
+        // mode and 6309 native mode. Inlined handlers that use these
+        // costs read the live byte at runtime via movzx + add.
+        uint8_t*  nat_cycles_21;  // NatEmuCycles21 (used by CLRA/CLRB and others)
+        uint8_t*  nat_cycles_54;  // NatEmuCycles54 (used by LDY/LDS #imm)
     };
 
     // Handler addresses the level-2 emitter knows how to inline. The
@@ -71,11 +78,15 @@ namespace BlockJit
     // emit it.
     struct InlineableHandlers
     {
-        InstHandler lda_m;        // LDA #imm  (op 0x86, length 2, +2 cycles)
-        InstHandler ldb_m;        // LDB #imm  (op 0xC6, length 2, +2 cycles)
-        InstHandler ldd_m;        // LDD #imm  (op 0xCC, length 3, +3 cycles)
-        InstHandler ldx_m;        // LDX #imm  (op 0x8E, length 3, +3 cycles)
-        InstHandler ldu_m;        // LDU #imm  (op 0xCE, length 3, +3 cycles)
+        InstHandler lda_m;        // LDA #imm   (op 0x86, +2 cycles - constant)
+        InstHandler ldb_m;        // LDB #imm   (op 0xC6, +2 cycles - constant)
+        InstHandler ldd_m;        // LDD #imm   (op 0xCC, +3 cycles - constant)
+        InstHandler ldx_m;        // LDX #imm   (op 0x8E, +3 cycles - constant)
+        InstHandler ldu_m;        // LDU #imm   (op 0xCE, +3 cycles - constant)
+        InstHandler lds_i;        // LDS #imm   (op 0x10CE, +4 cycles - constant)
+        InstHandler ldy_m;        // LDY #imm   (op 0x108E, +NatEmuCycles54 runtime)
+        InstHandler clra_i;       // CLRA       (op 0x4F, +NatEmuCycles21 runtime)
+        InstHandler clrb_i;       // CLRB       (op 0x5F, +NatEmuCycles21 runtime)
     };
 
     // Set up the code arena and remember the addresses the emitter
@@ -106,8 +117,10 @@ namespace BlockJit
         size_t  arena_used;
         uint32_t blocks_emitted;
         uint32_t emit_failures;
-        uint32_t insns_called;     // emitted as a __cdecl handler call
-        uint32_t insns_inlined;    // emitted as a level-2 inline body
+        uint32_t insns_called;       // emitted as a __cdecl handler call
+        uint32_t insns_inlined;      // emitted as a level-2 inline body
+        uint32_t pc_writes_emitted;  // emit count of "mov [PC], imm16"
+        uint32_t pc_writes_skipped;  // PC writes elided thanks to inlining
     };
     Stats GetStats();
 }
