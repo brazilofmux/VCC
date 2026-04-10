@@ -140,6 +140,10 @@ static const uint8_t Page1InsLen[256] = {
 // Page 2 (0x10 prefix) instruction lengths. These are the length of the
 // instruction AFTER the prefix byte (so total = 1 + this value).
 // The structure mirrors page 1 but with different opcodes valid.
+//
+// IMPORTANT: any entry here must agree with what JmpVec2[op2]'s handler
+// actually consumes. Mismatches cause the block decoder to walk wrong byte
+// boundaries and produce gibberish for subsequent instructions in the block.
 static const uint8_t Page2InsLen[256] = {
 // 0x00-0x0F: all illegal (use 1 as safe default — the prefix already consumed 1)
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
@@ -159,31 +163,42 @@ static const uint8_t Page2InsLen[256] = {
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
 // 0x70-0x7F: all illegal
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
-// 0x80-0x8F: immediate ops
-// 83=CMPD(3), 8C=CMPY(3), 8E=LDY(3), others illegal
-   1, 1, 1, 3, 1, 1, 1, 1,  1, 1, 1, 1, 3, 1, 3, 1,
-// 0x90-0x9F: direct ops
-// 93=CMPD(2), 9C=CMPY(2), 9E=LDY(2), 9F=STY(2), others illegal
-   1, 1, 1, 2, 1, 1, 1, 1,  1, 1, 1, 1, 2, 1, 2, 2,
-// 0xA0-0xAF: indexed ops
-// A3=CMPD, AC=CMPY, AE=LDY, AF=STY — IDX_BASE(2), others illegal
-   1, 1, 1, IDX_BASE(2), 1, 1, 1, 1,
-   1, 1, 1, 1, IDX_BASE(2), 1, IDX_BASE(2), IDX_BASE(2),
-// 0xB0-0xBF: extended ops
-// B3=CMPD(3), BC=CMPY(3), BE=LDY(3), BF=STY(3), others illegal
-   1, 1, 1, 3, 1, 1, 1, 1,  1, 1, 1, 1, 3, 1, 3, 3,
+// 0x80-0x8F: immediate ops (all 3 bytes after prefix: opcode + 16-bit imm)
+// 80=SUBW, 81=CMPW, 82=SBCD, 83=CMPD, 84=ANDD, 85=BITD, 86=LDW,
+// 87=illegal, 88=EORD, 89=ADCD, 8A=ORD, 8B=ADDW, 8C=CMPY, 8D=illegal,
+// 8E=LDY, 8F=illegal
+   3, 3, 3, 3, 3, 3, 3, 1,  3, 3, 3, 3, 3, 1, 3, 1,
+// 0x90-0x9F: direct ops (all 2 bytes after prefix: opcode + DP byte)
+// 90=SUBW, 91=CMPW, 92=SBCD, 93=CMPD, 94=ANDD, 95=BITD, 96=LDW, 97=STW,
+// 98=EORD, 99=ADCD, 9A=ORD, 9B=ADDW, 9C=CMPY, 9D=illegal,
+// 9E=LDY, 9F=STY
+   2, 2, 2, 2, 2, 2, 2, 2,  2, 2, 2, 2, 2, 1, 2, 2,
+// 0xA0-0xAF: indexed ops (IDX_BASE(2): opcode + postbyte + extras)
+// A0=SUBW, A1=CMPW, A2=SBCD, A3=CMPD, A4=ANDD, A5=BITD, A6=LDW, A7=STW,
+// A8=EORD, A9=ADCD, AA=ORD, AB=ADDW, AC=CMPY, AD=illegal, AE=LDY, AF=STY
+   IDX_BASE(2), IDX_BASE(2), IDX_BASE(2), IDX_BASE(2),
+   IDX_BASE(2), IDX_BASE(2), IDX_BASE(2), IDX_BASE(2),
+   IDX_BASE(2), IDX_BASE(2), IDX_BASE(2), IDX_BASE(2),
+   IDX_BASE(2), 1, IDX_BASE(2), IDX_BASE(2),
+// 0xB0-0xBF: extended ops (all 3 bytes after prefix: opcode + 16-bit addr)
+// B0=SUBW, B1=CMPW, B2=SBCD, B3=CMPD, B4=ANDD, B5=BITD, B6=LDW, B7=STW,
+// B8=EORD, B9=ADCD, BA=ORD, BB=ADDW, BC=CMPY, BD=illegal, BE=LDY, BF=STY
+   3, 3, 3, 3, 3, 3, 3, 3,  3, 3, 3, 3, 3, 1, 3, 3,
 // 0xC0-0xCF: CE=LDS imm(3), others illegal
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 3, 1,
-// 0xD0-0xDF: DC=LDMD(2), DE=LDS(2), DF=STS(2), others illegal
-   1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 2, 1, 2, 2,
-// 0xE0-0xEF: EC=??, EE=LDS, EF=STS indexed
+// 0xD0-0xDF: DC=LDQ direct(2), DD=STQ direct(2), DE=LDS direct(2), DF=STS direct(2)
+   1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 2, 2, 2, 2,
+// 0xE0-0xEF: EC=LDQ idx, ED=STQ idx, EE=LDS idx, EF=STS idx (all IDX_BASE(2))
    1, 1, 1, 1, 1, 1, 1, 1,
-   1, 1, 1, 1, 1, 1, IDX_BASE(2), IDX_BASE(2),
-// 0xF0-0xFF: FE=LDS(3), FF=STS(3), others illegal
-   1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 3, 3,
+   1, 1, 1, 1, IDX_BASE(2), IDX_BASE(2), IDX_BASE(2), IDX_BASE(2),
+// 0xF0-0xFF: FC=LDQ ext(3), FD=STQ ext(3), FE=LDS ext(3), FF=STS ext(3)
+   1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 3, 3, 3, 3,
 };
 
 // Page 3 (0x11 prefix) instruction lengths (after the prefix byte).
+//
+// IMPORTANT: any entry here must agree with what JmpVec3[op3]'s handler
+// actually consumes. See Page2InsLen comment for the same warning.
 static const uint8_t Page3InsLen[256] = {
 // 0x00-0x2F: all illegal
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
@@ -191,20 +206,31 @@ static const uint8_t Page3InsLen[256] = {
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
 // 0x30-0x3F: 30-37 bit ops(3), 38-3B TFM(2), 3C=BITMD(2), 3D=LDMD(2), 3F=SWI3(1)
    3, 3, 3, 3, 3, 3, 3, 3,  2, 2, 2, 2, 2, 2, 1, 1,
-// 0x40-0x7F: all illegal
+// 0x40-0x7F: 6309 inherent E/F ops (1 byte each); others illegal (also 1)
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
    1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
-// 0x80-0x8F: 83=CMPU(3), 8C=CMPS(3), others illegal
-   1, 1, 1, 3, 1, 1, 1, 1,  1, 1, 1, 1, 3, 1, 1, 1,
-// 0x90-0x9F: 93=CMPU(2), 9C=CMPS(2), others illegal
-   1, 1, 1, 2, 1, 1, 1, 1,  1, 1, 1, 1, 2, 1, 1, 1,
-// 0xA0-0xAF: A3=CMPU indexed, AC=CMPS indexed
-   1, 1, 1, IDX_BASE(2), 1, 1, 1, 1,
-   1, 1, 1, 1, IDX_BASE(2), 1, 1, 1,
-// 0xB0-0xBF: B3=CMPU(3), BC=CMPS(3), others illegal
-   1, 1, 1, 3, 1, 1, 1, 1,  1, 1, 1, 1, 3, 1, 1, 1,
+// 0x80-0x8F: immediate ops
+// 80=SUBE imm8(2), 81=CMPE imm8(2), 83=CMPU imm16(3), 86=LDE imm8(2),
+// 8B=ADDE imm8(2), 8C=CMPS imm16(3), 8D=DIVD imm8(2), 8E=DIVQ imm16(3),
+// 8F=MULD imm16(3); others illegal
+   2, 2, 1, 3, 1, 1, 2, 1,  1, 1, 1, 2, 3, 2, 3, 3,
+// 0x90-0x9F: direct ops (2 bytes if valid: opcode + DP)
+// 90=SUBE, 91=CMPE, 93=CMPU, 96=LDE, 97=STE, 9B=ADDE, 9C=CMPS,
+// 9D=DIVD, 9E=DIVQ, 9F=MULD
+   2, 2, 1, 2, 1, 1, 2, 2,  1, 1, 1, 2, 2, 2, 2, 2,
+// 0xA0-0xAF: indexed ops (IDX_BASE(2) if valid)
+// A0=SUBE, A1=CMPE, A3=CMPU, A6=LDE, A7=STE, AB=ADDE, AC=CMPS,
+// AD=DIVD, AE=DIVQ, AF=MULD
+   IDX_BASE(2), IDX_BASE(2), 1, IDX_BASE(2),
+   1, 1, IDX_BASE(2), IDX_BASE(2),
+   1, 1, 1, IDX_BASE(2),
+   IDX_BASE(2), IDX_BASE(2), IDX_BASE(2), IDX_BASE(2),
+// 0xB0-0xBF: extended ops (3 bytes if valid: opcode + 16-bit addr)
+// B0=SUBE, B1=CMPE, B3=CMPU, B6=LDE, B7=STE, BB=ADDE, BC=CMPS,
+// BD=DIVD, BE=DIVQ, BF=MULD
+   3, 3, 1, 3, 1, 1, 3, 3,  1, 1, 1, 3, 3, 3, 3, 3,
 // 0xC0-0xCF: F-register immediate ops.
 // C0/C1/C6/CB use imm8 (2 bytes after prefix), others illegal.
    2, 2, 1, 1, 1, 1, 2, 1,  1, 1, 1, 2, 1, 1, 1, 1,
