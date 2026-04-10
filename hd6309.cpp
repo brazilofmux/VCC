@@ -7284,9 +7284,22 @@ int HD6309Exec(int CycleFor)
 
 			if (block && block->total_cycles <= remaining)
 			{
+				// CRITICAL: if a recording is in progress, end it HERE before
+				// the cached sub-block dispatches. The recording's instructions
+				// up to this point are sequential from rec_start_pc_, so the
+				// decoder will produce correct contents. If we let the cached
+				// sub-block run inside an active recording, the recording will
+				// continue counting instructions that are NOT sequential from
+				// start_pc (the sub-block can branch anywhere), and the decoder
+				// will later walk a byte sequence that has no relationship to
+				// what was actually executed.
+				if (blockCache.IsRecording())
+					blockCache.EndRecord(PC_REG, CycleCounter);
+
 				// Cached block fits within budget. Execute all instructions
 				// in a tight loop using pre-decoded handlers.
 				blockCache.RecordBlockHit(block->num_insns);
+
 				const DecodedInst* ip = block->insns;
 				const DecodedInst* end = ip + block->num_insns;
 				unsigned short local_pc = PC_REG;
