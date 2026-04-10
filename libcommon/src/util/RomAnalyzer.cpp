@@ -421,18 +421,29 @@ static bool LooksLikeRomCode(const uint8_t* rom_bytes, size_t rom_size, uint16_t
     constexpr int kWindow = 16;
     constexpr int kMinDistinct = 4;
 
-    if ((size_t)off + kWindow > rom_size)
+    if ((size_t)off >= rom_size)
         return false;
+
+    size_t remaining = rom_size - (size_t)off;
+    int window = (remaining < (size_t)kWindow) ? (int)remaining : kWindow;
+
+    // Very short tails can legitimately hold vector stubs or one- to
+    // three-byte entry sequences. The old fixed-16-byte window rejected
+    // them outright; for short windows, fall back to "not obviously bad"
+    // and let the decoder decide if the target is sane.
+    if (window <= 4)
+        return true;
 
     bool seen[256] = {};
     int distinct = 0;
-    for (int i = 0; i < kWindow; i++)
+    int min_distinct = (window < kMinDistinct) ? window : kMinDistinct;
+    for (int i = 0; i < window; i++)
     {
         uint8_t b = rom_bytes[off + i];
         if (!seen[b])
         {
             seen[b] = true;
-            if (++distinct >= kMinDistinct)
+            if (++distinct >= min_distinct)
                 return true;
         }
     }

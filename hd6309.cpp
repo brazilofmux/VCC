@@ -315,6 +315,11 @@ static void HD6309PrePopulateBlockCache()
 			}
 
 			CachedBlock* slot = blockCache.InsertPrebuiltBlock(cb);
+			if (slot == nullptr)
+			{
+				++skipped;
+				continue;
+			}
 			// Emit the level-1 JIT thunk against the SLOT's stable
 			// address. The thunk bakes &slot->insns[i] as immediates,
 			// so we can't emit against cb (which is on the stack).
@@ -513,6 +518,11 @@ void HD6309Reset()
 	SyncWaiting=0;
 	PC_REG=MemRead16(VRESET);	//PC gets its reset vector
 	SetMapType(0);	//shouldn't be here
+	// The live block cache is rebuilt on every CPU reset, so the JIT arena
+	// must be reset with it. Otherwise repeated soft resets keep consuming
+	// arena space for stale thunks that are no longer reachable from the
+	// freshly-cleared cache.
+	BlockJit::Reset();
 	blockCache.Clear();
 	gBlockInvalidate = HD6309BlockInvalidate;
 	gBlockInvalidateAll = HD6309BlockInvalidateAll;

@@ -213,6 +213,13 @@ public:
     // stack and goes away.
     CachedBlock* InsertPrebuiltBlock(const CachedBlock& block)
     {
+        if (!ValidateDecodedBlock(block.start_pc, block.num_insns,
+                                  block.insns, block.end_pc))
+        {
+            stats_.rejected_blocks++;
+            return nullptr;
+        }
+
         CachedBlock& slot = blocks_[block.start_pc & CACHE_MASK];
 
         // If we're replacing a stale entry from before our generation,
