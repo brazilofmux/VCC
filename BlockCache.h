@@ -50,6 +50,13 @@ struct CachedBlock
     uint8_t  total_cycles;  // total cycle cost of the block
     uint32_t generation;    // generation when this block was cached
 
+    // Optional level-1 JIT thunk: a small chunk of native x86 that
+    // replaces the per-instruction dispatch loop with a straight
+    // sequence of __cdecl handler calls. Set by BlockJit::EmitBlock
+    // after this slot is committed; nullptr means "use the interpreter
+    // dispatch loop." See BlockJit.h.
+    void (*native_entry)(void);
+
     // Pre-decoded instructions for this block. Filled by DecodeBlock()
     // when the block is first cached. Handlers are called with a pointer
     // to the corresponding DecodedInst, allowing incremental conversion
@@ -200,7 +207,11 @@ public:
     // replaces it. Pre-population runs at reset when the cache is empty,
     // so collisions only happen when multiple pre-built blocks hash to
     // the same slot - "later block wins" is fine for that case.
-    void InsertPrebuiltBlock(const CachedBlock& block)
+    // Returns the slot the block landed in. The JIT emitter needs the
+    // slot's stable address to bake &slot.insns[i] as immediates - it
+    // cannot use the caller's temporary CachedBlock, which is on the
+    // stack and goes away.
+    CachedBlock* InsertPrebuiltBlock(const CachedBlock& block)
     {
         CachedBlock& slot = blocks_[block.start_pc & CACHE_MASK];
 
@@ -225,6 +236,7 @@ public:
             SetPageBit(last_byte);
 
         stats_.blocks_recorded++;
+        return &slot;
     }
 
     // Invalidate a cache entry by PC.
@@ -361,6 +373,13 @@ private:
             old.num_insns = (uint8_t)rec_insn_count_;
             old.total_cycles = (uint8_t)total_cycles;
             old.generation = generation_;
+            // Recorded blocks aren't JIT'd at level-1; the slot may
+            // still hold a stale thunk pointer from a previously
+            // pre-populated ROM block that landed in this slot. Clear
+            // it so the dispatch loop falls through to the interpreter
+            // path instead of jumping into a thunk that bakes the
+            // OLD block's insn pointers.
+            old.native_entry = nullptr;
             memcpy(old.insns, decoded, sizeof(decoded));
 
             SetReverseMap(rec_start_pc_, decode_end_pc);

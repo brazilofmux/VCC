@@ -26,6 +26,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "hd6309defs.h"
 #include "tcc1014mmu.h"
 #include "BlockCache.h"
+#include "BlockJit.h"
 #include "DecodedInst.h"
 #include <vcc/util/logger.h>
 #include <vcc/util/RomBlockStore.h>
@@ -300,6 +301,7 @@ static void HD6309PrePopulateBlockCache()
 			cb.end_pc       = (uint16_t)(start_pc + pb.byte_length);
 			cb.num_insns    = pb.num_insns;
 			cb.total_cycles = (uint8_t)(pb.num_insns * kEstimatedCyclesPerInsn);
+			cb.native_entry = nullptr;  // patched in after the slot is committed
 
 			// Re-run the runtime decoder against live memory. If the
 			// expected ROM isn't mapped at this address right now (e.g.,
@@ -312,7 +314,14 @@ static void HD6309PrePopulateBlockCache()
 				continue;
 			}
 
-			blockCache.InsertPrebuiltBlock(cb);
+			CachedBlock* slot = blockCache.InsertPrebuiltBlock(cb);
+			// Emit the level-1 JIT thunk against the SLOT's stable
+			// address. The thunk bakes &slot->insns[i] as immediates,
+			// so we can't emit against cb (which is on the stack).
+			// EmitBlock returns nullptr if the arena is exhausted; in
+			// that case the slot just keeps native_entry == nullptr
+			// and the dispatch loop falls back to the interpreter.
+			slot->native_entry = BlockJit::EmitBlock(*slot);
 			++inserted;
 		}
 
@@ -337,6 +346,19 @@ static void HD6309PrePopulateBlockCache()
 			continue;
 		process_entry(kv.first, kv.second);
 	}
+
+	// Snapshot JIT arena state after this pre-population pass so we
+	// can verify the arena sizing assumptions and notice if anything
+	// fell back to the interpreter due to exhaustion.
+	BlockJit::Stats js = BlockJit::GetStats();
+	char dbg[200];
+	snprintf(dbg, sizeof(dbg),
+		"[JIT] arena %u/%u bytes (%.1f%%) blocks_emitted=%u emit_failures=%u\n",
+		(unsigned)js.arena_used, (unsigned)js.arena_size,
+		100.0 * (double)js.arena_used / (double)js.arena_size,
+		(unsigned)js.blocks_emitted,
+		(unsigned)js.emit_failures);
+	OutputDebugStringA(dbg);
 }
 
 // Block terminator table for page 1 opcodes.
@@ -486,6 +508,11 @@ void HD6309Reset()
 
 void HD6309Init()
 {	//Call this first or RESET will core!
+	// One-time setup for the level-1 JIT code arena. The emitter needs
+	// the address of PC_REG so it can bake mov instructions that
+	// pre-set PC before each handler call.
+	BlockJit::Init(&PC_REG);
+
 	// reg pointers for TFR and EXG and LEA ops
 	xfreg16[0] = &D_REG;
 	xfreg16[1] = &X_REG;
@@ -597,6 +624,7 @@ void HD6309SetTraceTriggers(const std::vector<unsigned short>& triggers)
 void HD6309GetBlockStatsText(char* buf, int bufsize)
 {
 	BlockCacheStats s = blockCache.GetAndResetStats();
+	BlockJit::Stats js = BlockJit::GetStats();
 	uint64_t total_insns = s.block_insns + s.single_steps;
 	double hit_pct = 0.0;
 	double avg_block = 0.0;
@@ -604,12 +632,17 @@ void HD6309GetBlockStatsText(char* buf, int bufsize)
 		hit_pct = 100.0 * s.block_insns / total_insns;
 	if (s.block_hits > 0)
 		avg_block = (double)s.block_insns / s.block_hits;
-	snprintf(buf, bufsize, "Blk:%.0f%% %.1fi/b %llurec %llurej %llucan %lluinv",
+	// Arena fraction shown as a percentage of the 16 MB JIT arena.
+	double jit_arena_pct = 100.0 * (double)js.arena_used / (double)js.arena_size;
+	snprintf(buf, bufsize,
+		"Blk:%.0f%% %.1fi/b %llurec %llurej %llucan %lluinv  JIT:%u/%.0f%%",
 		hit_pct, avg_block,
 		(unsigned long long)s.blocks_recorded,
 		(unsigned long long)s.rejected_blocks,
 		(unsigned long long)s.record_cancels,
-		(unsigned long long)s.invalidations);
+		(unsigned long long)s.invalidations,
+		(unsigned)js.blocks_emitted,
+		jit_arena_pct);
 }
 
 void Neg_D(const DecodedInst* inst)
@@ -7410,15 +7443,26 @@ int HD6309Exec(int CycleFor)
 				// in a tight loop using pre-decoded handlers.
 				blockCache.RecordBlockHit(block->num_insns);
 
-				const DecodedInst* ip = block->insns;
-				const DecodedInst* end = ip + block->num_insns;
-				unsigned short local_pc = PC_REG;
-				while (ip < end)
+				if (block->native_entry)
 				{
-					local_pc += ip->length;
-					PC_REG = local_pc;
-					ip->handler(ip);
-					ip++;
+					// Level-1 JIT path: a single call into the emitted
+					// thunk runs the whole block. The thunk pre-sets
+					// PC_REG before each handler call and uses
+					// __cdecl, exactly matching the loop below.
+					block->native_entry();
+				}
+				else
+				{
+					const DecodedInst* ip = block->insns;
+					const DecodedInst* end = ip + block->num_insns;
+					unsigned short local_pc = PC_REG;
+					while (ip < end)
+					{
+						local_pc += ip->length;
+						PC_REG = local_pc;
+						ip->handler(ip);
+						ip++;
+					}
 				}
 
 				if (JS_Ramp_Clock < 0xFFFF)

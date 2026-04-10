@@ -140,6 +140,7 @@
     <ClCompile Include="DirectDrawInterface.cpp" />
     <ClCompile Include="Disassembler.cpp" />
     <ClCompile Include="ExecutionTrace.cpp" />
+    <ClCompile Include="BlockJit.cpp" />
     <ClCompile Include="hd6309.cpp" />
     <ClCompile Include="iobus.cpp" />
     <ClCompile Include="joystickinput.cpp" />

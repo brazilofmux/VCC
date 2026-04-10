@@ -19,6 +19,9 @@
     <ClCompile Include="DirectDrawInterface.cpp">
       <Filter>Source</Filter>
     </ClCompile>
+    <ClCompile Include="BlockJit.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
     <ClCompile Include="hd6309.cpp">
       <Filter>Source</Filter>
     </ClCompile>
