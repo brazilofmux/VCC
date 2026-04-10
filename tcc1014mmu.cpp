@@ -28,6 +28,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "pakinterface.h"
 #include <vcc/util/logger.h>
 #include <vcc/util/RomDatabase.h>
+#include "RomAnalyzer.h"
 #include "hd6309.h"
 #include <vcc/util/FileOps.h>
 
@@ -275,6 +276,41 @@ void LoadRom()
 		snprintf(dbg, sizeof(dbg),
 			"[ROM] internal: %s size=%u crc=0x%08X path=%s\n",
 			info.name, (unsigned)info.size, info.fingerprint, RomPath);
+		OutputDebugStringA(dbg);
+	}
+
+	// Reachability analysis: trace the ROM from its standard 6809 vectors
+	// to discover every reachable instruction-start offset. The CoCo3
+	// internal ROM is mapped at logical $8000-$FFFF, so the vectors at
+	// $FFF0-$FFFF land at offsets ($size-16)..($size-1) inside the ROM.
+	if (index == 0x8000)  // 32KB ROM is the only one whose vectors live in-ROM
+	{
+		const uint16_t kRomBase = 0x8000;
+
+		// Static trace from vectors: high-confidence reachable code.
+		auto seeds = VCC::ReadStandardVectors(InternalRomBuffer, index, kRomBase);
+		auto staticResult = VCC::AnalyzeRom(InternalRomBuffer, index, kRomBase, seeds);
+
+		// Linear sweep: every byte that decodes as a valid instruction
+		// in the natural decode chain. Catches everything behind dispatch
+		// tables but may include some data-as-code false positives.
+		auto sweepResult = VCC::AnalyzeRomLinearSweep(InternalRomBuffer, index, kRomBase);
+
+		// Combined coverage: union of both sets.
+		size_t combined = sweepResult.entry_offsets.size();
+		for (uint16_t off : staticResult.entry_offsets)
+			if (sweepResult.entry_offsets.find(off) == sweepResult.entry_offsets.end())
+				combined++;
+
+		char dbg[320];
+		snprintf(dbg, sizeof(dbg),
+			"[ANALYZE] internal: static=%u (seeds=%u branches=%d unresolved=%d) "
+			"sweep=%u (resyncs=%d) union=%u/%u\n",
+			(unsigned)staticResult.entry_offsets.size(), (unsigned)seeds.size(),
+			staticResult.branches_followed, staticResult.unresolved_terminators,
+			(unsigned)sweepResult.entry_offsets.size(),
+			sweepResult.unresolved_terminators,
+			(unsigned)combined, (unsigned)index);
 		OutputDebugStringA(dbg);
 	}
 

@@ -49,6 +49,9 @@
     <ClCompile Include="quickload.cpp">
       <Filter>Source</Filter>
     </ClCompile>
+    <ClCompile Include="RomAnalyzer.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
     <ClCompile Include="tcc1014registers.cpp">
       <Filter>Source</Filter>
     </ClCompile>
@@ -169,6 +172,12 @@
       <Filter>Headers</Filter>
     </ClInclude>
     <ClInclude Include="quickload.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="InsnLengths.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="RomAnalyzer.h">
       <Filter>Headers</Filter>
     </ClInclude>
     <ClInclude Include="Vcc.h">
