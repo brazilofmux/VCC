@@ -237,9 +237,9 @@ static const bool IsTerminator[256] = {
 // 0x00-0x0F: direct page ops. 0x0E = JMP direct.
 // 0x01=OIM, 0x02=AIM, 0x05=EIM, 0x0B=TIM direct forms are converted.
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,1,0,
-// 0x10-0x1F: 0x10=Page2(term), 0x11=Page3(term), 0x13=SYNC, 0x15=HALT,
+// 0x10-0x1F: 0x10=Page2(prefix), 0x11=Page3(prefix), 0x13=SYNC, 0x15=HALT,
 //            0x16=LBRA, 0x17=LBSR, 0x1E=EXG(can target PC), 0x1F=TFR(can target PC)
-   1,1,0,1,0,1,1,1, 0,0,0,0,0,0,1,1,
+   0,0,0,1,0,1,1,1, 0,0,0,0,0,0,1,1,
 // 0x20-0x2F: all branches are terminators
    1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,
 // 0x30-0x3F: 0x35=PULS(term, can pull PC), 0x37=PULU(term, can pull PC),
@@ -269,6 +269,64 @@ static const bool IsTerminator[256] = {
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
 };
+
+// Page-2 block terminators, indexed by the opcode after the 0x10 prefix.
+// 16 rows of 16 entries = 256 total. DO NOT ADD MORE ROWS.
+static const bool IsPage2Terminator[256] = {
+// 0x00-0x1F: all non-terminating/illegal for block purposes
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+// 0x20-0x2F: long branches are terminators
+   1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,
+// 0x30-0x3F: SWI2 is a terminator; the rest are not
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,1,
+// 0x40-0xFF: all currently non-terminating for block purposes
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+};
+
+// Page-3 block terminators, indexed by the opcode after the 0x11 prefix.
+// 16 rows of 16 entries = 256 total. DO NOT ADD MORE ROWS.
+static const bool IsPage3Terminator[256] = {
+// 0x00-0x2F: all non-terminating/illegal for block purposes
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+// 0x30-0x3F: TFM repeats the current instruction; SWI3 is a terminator
+   0,0,0,0,0,0,0,0, 1,1,1,1,0,0,0,1,
+// 0x40-0xFF: all currently non-terminating for block purposes
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+   0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+};
+
+static inline bool IsBlockTerminator(uint16_t pc, uint8_t opcode)
+{
+	if (opcode == 0x10)
+		return IsPage2Terminator[MemRead8(pc + 1)];
+	if (opcode == 0x11)
+		return IsPage3Terminator[MemRead8(pc + 1)];
+	return IsTerminator[opcode];
+}
 
 //END Global variables for CPU Emulation-------------------
 
@@ -7258,17 +7316,18 @@ int HD6309Exec(int CycleFor)
 
 			blockCache.RecordSingleStep();
 			unsigned char opcode = MemRead8(PC_REG); // peek, don't consume
+			bool is_terminator = IsBlockTerminator(PC_REG, opcode);
 			JmpVec1[MemRead8(PC_REG++)](nullptr);
 
 			if (blockCache.IsRecording())
 			{
-				if (IsTerminator[opcode])
-				{
-					blockCache.EndRecord(PC_REG, CycleCounter);
-				}
-				else if (!blockCache.RecordInstruction(PC_REG, CycleCounter))
+				if (!blockCache.RecordInstruction(PC_REG, CycleCounter))
 				{
 					// Max block size reached
+				}
+				else if (is_terminator)
+				{
+					blockCache.EndRecord(PC_REG, CycleCounter);
 				}
 			}
 		}
