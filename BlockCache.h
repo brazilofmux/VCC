@@ -328,10 +328,15 @@ private:
             SetReverseMap(rec_start_pc_, decode_end_pc);
             stats_.blocks_recorded++;
 
-            // Mark page bitmap for all pages this block spans
-            for (uint16_t a = rec_start_pc_; a < decode_end_pc; a += 256)
-                SetPageBit(a);
-            SetPageBit((uint16_t)(decode_end_pc - 1));  // catch last page if block spans boundary
+            // Mark page bitmap. Block lengths are bounded so a block
+            // spans either 1 or 2 256-byte pages. The previous form
+            // (for a = start; a < end; a += 256) had a uint16_t wrap
+            // bug for blocks straddling the top of the address space:
+            // a += 256 wraps and a < end remains true forever.
+            SetPageBit(rec_start_pc_);
+            uint16_t last_byte = (uint16_t)(decode_end_pc - 1);
+            if ((last_byte & 0xFF00) != (rec_start_pc_ & 0xFF00))
+                SetPageBit(last_byte);
         }
     }
 };
