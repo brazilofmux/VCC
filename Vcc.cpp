@@ -874,10 +874,15 @@ void SoftReset()
 {
 	mc6883_reset();
 	PiaReset();
-	CPUReset();
 	GimeReset();
 	MmuReset();
 	LoadRom();
+	// CPUReset must run AFTER MmuReset/LoadRom so that:
+	//   (1) it reads VRESET out of the freshly-mapped ROM, and
+	//   (2) HD6309PrePopulateBlockCache populates the block cache
+	//       AFTER MmuReset's invalidations (otherwise MmuReset's
+	//       generation bump marks all our pre-built blocks stale).
+	CPUReset();
 	ResetBus();
 	SetCPUMultiplyerFlag(0);
 	EmuState.TurboSpeedFlag=1;
