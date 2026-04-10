@@ -28,6 +28,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "pakinterface.h"
 #include <vcc/util/logger.h>
 #include "hd6309.h"
+#include "RomDatabase.h"
 #include <vcc/util/FileOps.h>
 
 
@@ -257,7 +258,21 @@ void LoadRom()
 				"Close this then\n"
 				"check ROM path.\n",
 				"Error", MB_TASKMODAL | MB_TOPMOST | MB_SETFOREGROUND);
+		return;
 	}
+
+	// Identify the loaded ROM by content fingerprint and log the result.
+	// Unknown ROMs are still usable - identification is currently just for
+	// observability and as the key for the future block analyzer.
+	{
+		VCC::RomInfo info = VCC::IdentifyRom(InternalRomBuffer, index);
+		char dbg[256];
+		snprintf(dbg, sizeof(dbg),
+			"[ROM] internal: %s size=%u crc=0x%08X path=%s\n",
+			info.name, (unsigned)info.size, info.fingerprint, RomPath);
+		OutputDebugStringA(dbg);
+	}
+
 	return;
 }
 
