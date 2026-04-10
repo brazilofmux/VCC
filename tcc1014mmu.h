@@ -109,6 +109,13 @@ typedef void (*BlockInvalidateAllFunc)();
 extern BlockInvalidateFunc gBlockInvalidate;       // per-address, called from MemWrite8
 extern BlockInvalidateAllFunc gBlockInvalidateAll;  // full flush, called on MMU changes
 
+// Identification of the currently-loaded internal ROM. Set by LoadRom()
+// after fingerprinting; consumed by the CPU engine when populating the
+// block cache from RomBlockStore at reset time. Zero if no ROM is loaded.
+unsigned int  GetInternalRomFingerprint();
+unsigned short GetInternalRomBase();
+unsigned int  GetInternalRomSize();
+
 // FIXME: These need to be turned into an enum and the signature of functions
 // that use them updated.
 #define _128K	0

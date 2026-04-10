@@ -109,6 +109,7 @@
     <ClCompile Include="src\util\logger.cpp" />
     <ClCompile Include="src\util\fileutil.cpp" />
     <ClCompile Include="src\util\RomDatabase.cpp" />
+    <ClCompile Include="src\util\RomBlockStore.cpp" />
     <ClCompile Include="src\devices\cloud9.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -133,6 +134,7 @@
     <ClInclude Include="include\vcc\util\filesystem.h" />
     <ClInclude Include="include\vcc\util\winapi.h" />
     <ClInclude Include="include\vcc\util\RomDatabase.h" />
+    <ClInclude Include="include\vcc\util\RomBlockStore.h" />
     <ClInclude Include="include\vcc\devices\cloud9.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

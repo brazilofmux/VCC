@@ -189,6 +189,44 @@ public:
         return s;
     }
 
+    // Insert a fully-decoded block. Used by the ROM block pre-populator
+    // to seed the cache from offline analysis results before runtime
+    // recording would otherwise discover the same blocks. The caller is
+    // responsible for filling in start_pc, end_pc, num_insns,
+    // total_cycles, and the insns[] array; this method handles the
+    // generation tag and cache slot bookkeeping.
+    //
+    // If a slot already holds a different valid block, the new entry
+    // replaces it. Pre-population runs at reset when the cache is empty,
+    // so collisions only happen when multiple pre-built blocks hash to
+    // the same slot - "later block wins" is fine for that case.
+    void InsertPrebuiltBlock(const CachedBlock& block)
+    {
+        CachedBlock& slot = blocks_[block.start_pc & CACHE_MASK];
+
+        // If we're replacing a stale entry from before our generation,
+        // its reverse-map entries are already invisible (generation
+        // mismatch); no cleanup needed.
+        if (slot.generation == generation_)
+            ClearReverseMap(slot.start_pc, slot.end_pc);
+
+        slot = block;
+        slot.generation = generation_;
+
+        SetReverseMap(slot.start_pc, slot.end_pc);
+        // Mark the page bitmap. Block lengths are bounded by
+        // MAX_BLOCK_INSNS * max_insn_length, well under 256 bytes, so
+        // a block spans either 1 or 2 256-byte pages - never more.
+        // Mark the start page; if the last byte is on a different
+        // page, mark that one too.
+        SetPageBit(slot.start_pc);
+        uint16_t last_byte = (uint16_t)(slot.end_pc - 1);
+        if ((last_byte & 0xFF00) != (slot.start_pc & 0xFF00))
+            SetPageBit(last_byte);
+
+        stats_.blocks_recorded++;
+    }
+
     // Invalidate a cache entry by PC.
     void Invalidate(uint16_t pc)
     {

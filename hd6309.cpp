@@ -20,6 +20,7 @@ This file is part of VCC (Virtual Color Computer).
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <algorithm>
 #include "defines.h"
 #include "hd6309.h"
 #include "hd6309defs.h"
@@ -27,6 +28,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "BlockCache.h"
 #include "DecodedInst.h"
 #include <vcc/util/logger.h>
+#include <vcc/util/RomBlockStore.h>
 #include "string.h"
 #include "OpDecoder.h"
 #include "Disassembler.h"
@@ -232,6 +234,96 @@ static void HD6309BlockInvalidateAll() {
 	blockCache.InvalidateAll();
 }
 
+// Drain RomBlockStore into the live BlockCache for the currently-loaded
+// internal ROM. Called from HD6309Reset after the cache is cleared, so
+// the cache is warm before the first instruction executes.
+//
+// For each PrebuiltBlock the store has for this ROM, we re-run DecodeBlock
+// over the live memory at the corresponding logical address (which is the
+// ROM mapped at its base) to fill in a fresh DecodedInst array, then
+// insert the resulting CachedBlock into the cache.
+static void HD6309PrePopulateBlockCache()
+{
+	unsigned int fingerprint = GetInternalRomFingerprint();
+	if (fingerprint == 0)
+		return;
+
+	const VCC::RomBlockStoreEntry* entry = VCC::GetRomBlockStore().Lookup(fingerprint);
+	if (!entry)
+		return;
+
+	// Ensure the full internal ROM is mapped before we re-decode blocks.
+	// At MmuReset time RomMap=0 ("16K Internal + 16K External") so the
+	// upper 16KB of a 32KB CoCo3 ROM is NOT mapped at $C000-$FFFF -
+	// pre-populated blocks in that range would read wrong bytes via
+	// MemFetch8 and get skipped. The CoCo3 BASIC reset code does this
+	// switch (LDA #$0A; STA $FF90) within its first few instructions
+	// anyway, so doing it here is not a behavioral change. SetRomMap
+	// is now idempotent so the BASIC code's later write is a no-op
+	// instead of invalidating our just-populated blocks.
+	if (GetInternalRomSize() == 0x8000)
+		SetRomMap(2);
+
+	// Estimate cycles per instruction. Real 6809 instructions average
+	// ~5 cycles; this is good enough for the dispatch budget check.
+	// We can refine later with a per-opcode table if needed.
+	constexpr int kEstimatedCyclesPerInsn = 5;
+
+	// Sort the pre-built blocks shortest-first so the longest block in
+	// any 12-bit cache-slot collision wins (the cache uses last-write-wins
+	// semantics, so the LAST block inserted into a slot is the one that
+	// survives). With 15K candidate blocks and 4K slots, ~3-4 blocks
+	// collide per slot; biasing toward longer blocks maximizes
+	// instructions-per-dispatch when the slot is hit at runtime.
+	std::vector<VCC::PrebuiltBlock> sorted_blocks = entry->blocks;
+	std::sort(sorted_blocks.begin(), sorted_blocks.end(),
+		[](const VCC::PrebuiltBlock& a, const VCC::PrebuiltBlock& b) {
+			return a.num_insns < b.num_insns;
+		});
+
+	int inserted = 0;
+	int skipped  = 0;
+	for (const VCC::PrebuiltBlock& pb : sorted_blocks)
+	{
+		if (pb.num_insns == 0 || pb.num_insns > BlockCache::MAX_BLOCK_INSNS)
+		{
+			++skipped;
+			continue;
+		}
+
+		uint16_t start_pc = (uint16_t)(entry->rom_base + pb.start_offset);
+
+		CachedBlock cb {};
+		cb.start_pc     = start_pc;
+		cb.end_pc       = (uint16_t)(start_pc + pb.byte_length);
+		cb.num_insns    = pb.num_insns;
+		cb.total_cycles = (uint8_t)(pb.num_insns * kEstimatedCyclesPerInsn);
+
+		// Re-run the runtime decoder against live memory. The ROM is
+		// already mapped at its base address by this point (HD6309Reset
+		// runs after MmuInit/LoadRom), so MemFetch8 inside DecodeBlock
+		// returns the same bytes the analyzer saw.
+		uint16_t decoded_end = DecodeBlock(start_pc, pb.num_insns, cb.insns);
+		if (decoded_end != cb.end_pc)
+		{
+			// Length mismatch - the runtime decoder disagrees with the
+			// analyzer. Skip this block to be safe; the runtime recorder
+			// will rebuild it on first encounter if needed.
+			++skipped;
+			continue;
+		}
+
+		blockCache.InsertPrebuiltBlock(cb);
+		++inserted;
+	}
+
+	char dbg[160];
+	snprintf(dbg, sizeof(dbg),
+		"[PREPOPULATE] crc=0x%08X candidate=%u inserted=%d skipped=%d\n",
+		fingerprint, (unsigned)entry->blocks.size(), inserted, skipped);
+	OutputDebugStringA(dbg);
+}
+
 // Block terminator table for page 1 opcodes.
 static const bool IsTerminator[256] = {
 // 0x00-0x0F: direct page ops. 0x0E = JMP direct.
@@ -373,6 +465,7 @@ void HD6309Reset()
 	blockCache.Clear();
 	gBlockInvalidate = HD6309BlockInvalidate;
 	gBlockInvalidateAll = HD6309BlockInvalidateAll;
+	HD6309PrePopulateBlockCache();
 	return;
 }
 

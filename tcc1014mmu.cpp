@@ -21,6 +21,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "stdio.h"
 #include "stdlib.h"
 #include "string.h"
+#include <set>
 #include "tcc1014mmu.h"
 #include "iobus.h"
 #include "config.h"
@@ -28,6 +29,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "pakinterface.h"
 #include <vcc/util/logger.h>
 #include <vcc/util/RomDatabase.h>
+#include <vcc/util/RomBlockStore.h>
 #include "RomAnalyzer.h"
 #include "hd6309.h"
 #include <vcc/util/FileOps.h>
@@ -36,6 +38,17 @@ This file is part of VCC (Virtual Color Computer).
 // Block cache invalidation callbacks (set by active CPU engine)
 BlockInvalidateFunc gBlockInvalidate = nullptr;
 BlockInvalidateAllFunc gBlockInvalidateAll = nullptr;
+
+// Identification of the loaded internal ROM. Filled by LoadRom() after
+// fingerprinting and read by the CPU engine to look up pre-built blocks
+// in RomBlockStore at reset time.
+static unsigned int   g_internal_rom_fingerprint = 0;
+static unsigned short g_internal_rom_base        = 0x8000;  // CoCo3 internal ROM base
+static unsigned int   g_internal_rom_size        = 0;
+
+unsigned int   GetInternalRomFingerprint() { return g_internal_rom_fingerprint; }
+unsigned short GetInternalRomBase()        { return g_internal_rom_base; }
+unsigned int   GetInternalRomSize()        { return g_internal_rom_size; }
 
 // Fast instruction-fetch cache. See tcc1014mmu.h for the docs.
 // gFetchPageMask = 0xFFFFFFFF is a sentinel that no real address matches,
@@ -282,8 +295,8 @@ void LoadRom()
 	// Identify the loaded ROM by content fingerprint and log the result.
 	// Unknown ROMs are still usable - identification is currently just for
 	// observability and as the key for the future block analyzer.
+	VCC::RomInfo info = VCC::IdentifyRom(InternalRomBuffer, index);
 	{
-		VCC::RomInfo info = VCC::IdentifyRom(InternalRomBuffer, index);
 		char dbg[256];
 		snprintf(dbg, sizeof(dbg),
 			"[ROM] internal: %s size=%u crc=0x%08X path=%s\n",
@@ -291,38 +304,45 @@ void LoadRom()
 		OutputDebugStringA(dbg);
 	}
 
+	// Stash the fingerprint and base so the CPU engine can look up
+	// pre-built blocks for this ROM at reset time.
+	g_internal_rom_fingerprint = info.fingerprint;
+	g_internal_rom_base        = 0x8000;
+	g_internal_rom_size        = (unsigned int)index;
+
 	// Reachability analysis: trace the ROM from its standard 6809 vectors
-	// to discover every reachable instruction-start offset. The CoCo3
-	// internal ROM is mapped at logical $8000-$FFFF, so the vectors at
-	// $FFF0-$FFFF land at offsets ($size-16)..($size-1) inside the ROM.
+	// AND linear-sweep every byte. The union becomes pre-built blocks in
+	// RomBlockStore, ready for the CPU engine to drain into the live
+	// block cache at reset.
 	if (index == 0x8000)  // 32KB ROM is the only one whose vectors live in-ROM
 	{
 		const uint16_t kRomBase = 0x8000;
 
-		// Static trace from vectors: high-confidence reachable code.
 		auto seeds = VCC::ReadStandardVectors(InternalRomBuffer, index, kRomBase);
 		auto staticResult = VCC::AnalyzeRom(InternalRomBuffer, index, kRomBase, seeds);
+		auto sweepResult  = VCC::AnalyzeRomLinearSweep(InternalRomBuffer, index, kRomBase);
 
-		// Linear sweep: every byte that decodes as a valid instruction
-		// in the natural decode chain. Catches everything behind dispatch
-		// tables but may include some data-as-code false positives.
-		auto sweepResult = VCC::AnalyzeRomLinearSweep(InternalRomBuffer, index, kRomBase);
-
-		// Combined coverage: union of both sets.
-		size_t combined = sweepResult.entry_offsets.size();
+		// Union the two entry sets.
+		std::set<uint16_t> unionEntries = sweepResult.entry_offsets;
 		for (uint16_t off : staticResult.entry_offsets)
-			if (sweepResult.entry_offsets.find(off) == sweepResult.entry_offsets.end())
-				combined++;
+			unionEntries.insert(off);
+
+		// Build PrebuiltBlock descriptors from each entry offset and
+		// stash them in the store keyed by ROM fingerprint. The CPU
+		// engine looks them up at reset and rehydrates them via
+		// DecodeBlock into the live BlockCache.
+		auto blocks = VCC::BuildPrebuiltBlocks(InternalRomBuffer, index,
+		                                       kRomBase, unionEntries);
+		VCC::GetRomBlockStore().AddRomBlocks(info.fingerprint, kRomBase,
+		                                     std::move(blocks));
 
 		char dbg[320];
 		snprintf(dbg, sizeof(dbg),
-			"[ANALYZE] internal: static=%u (seeds=%u branches=%d unresolved=%d) "
-			"sweep=%u (resyncs=%d) union=%u/%u\n",
-			(unsigned)staticResult.entry_offsets.size(), (unsigned)seeds.size(),
-			staticResult.branches_followed, staticResult.unresolved_terminators,
+			"[ANALYZE] internal: static=%u sweep=%u union=%u/%u prebuilt=%u\n",
+			(unsigned)staticResult.entry_offsets.size(),
 			(unsigned)sweepResult.entry_offsets.size(),
-			sweepResult.unresolved_terminators,
-			(unsigned)combined, (unsigned)index);
+			(unsigned)unionEntries.size(), (unsigned)index,
+			(unsigned)VCC::GetRomBlockStore().Lookup(info.fingerprint)->blocks.size());
 		OutputDebugStringA(dbg);
 	}
 

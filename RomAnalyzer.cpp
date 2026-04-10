@@ -328,6 +328,76 @@ RomAnalysisResult AnalyzeRom(
     return result;
 }
 
+// Cap on instructions per pre-built block. Must match BlockCache's
+// MAX_BLOCK_INSNS. Hardcoded here to avoid pulling BlockCache.h into
+// the analyzer (which would drag in the runtime memory subsystem).
+static constexpr int kPrebuiltMaxInsns = 12;
+
+// Walk forward from `start_off` to produce a single PrebuiltBlock. The
+// block ends at the same kinds of terminators the runtime recorder
+// uses, or after kPrebuiltMaxInsns instructions, whichever comes first.
+// Returns a block with num_insns == 0 if the start offset doesn't
+// decode (caller skips it).
+static PrebuiltBlock BuildOneBlock(const uint8_t* rom, size_t rom_size,
+                                    uint16_t rom_base, uint16_t start_off)
+{
+    PrebuiltBlock pb {};
+    pb.start_offset = start_off;
+    pb.num_insns    = 0;
+    pb.byte_length  = 0;
+
+    uint16_t off = start_off;
+    int insn_count = 0;
+    int total_bytes = 0;
+
+    while (insn_count < kPrebuiltMaxInsns)
+    {
+        int len = InstructionLengthAt(rom, rom_size, off);
+        if (len <= 0 || (size_t)(off + len) > rom_size)
+            break;
+
+        // Use ClassifyFlow to detect terminators - same logic the
+        // analyzer uses for tracing.
+        FlowInfo flow = ClassifyFlow(rom, rom_size, off, rom_base, len);
+
+        ++insn_count;
+        total_bytes += len;
+        off = (uint16_t)(off + len);
+
+        // Stop after the terminator instruction so it's part of the block.
+        // Branches and subroutine calls also terminate, matching the runtime
+        // recorder's behavior. (The runtime ends a block when it sees an
+        // instruction that's known to be a terminator; we replicate that.)
+        if (flow.kind == FlowKind::BranchTaken
+            || flow.kind == FlowKind::BranchConditional
+            || flow.kind == FlowKind::SubroutineCall
+            || flow.kind == FlowKind::Terminator)
+            break;
+    }
+
+    pb.num_insns   = (uint8_t)insn_count;
+    pb.byte_length = (uint8_t)total_bytes;
+    return pb;
+}
+
+std::vector<PrebuiltBlock> BuildPrebuiltBlocks(
+    const uint8_t* rom_bytes,
+    size_t rom_size,
+    uint16_t rom_base,
+    const std::set<uint16_t>& entry_offsets)
+{
+    std::vector<PrebuiltBlock> result;
+    result.reserve(entry_offsets.size());
+
+    for (uint16_t off : entry_offsets)
+    {
+        PrebuiltBlock pb = BuildOneBlock(rom_bytes, rom_size, rom_base, off);
+        if (pb.num_insns > 0)
+            result.push_back(pb);
+    }
+    return result;
+}
+
 // Heuristic: does the byte region at this offset look like real 6809
 // code, or is it uninitialized data (a run of 0x00 or 0xFF)?
 //

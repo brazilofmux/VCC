@@ -40,6 +40,7 @@ This file is part of VCC (Virtual Color Computer).
 #include <cstdint>
 #include <set>
 #include <vector>
+#include <vcc/util/RomBlockStore.h>
 
 namespace VCC
 {
@@ -102,5 +103,19 @@ RomAnalysisResult AnalyzeRomLinearSweep(
     const uint8_t* rom_bytes,
     size_t rom_size,
     uint16_t rom_base);
+
+// Walk forward from each entry offset and produce a PrebuiltBlock
+// describing the resulting block (start_offset, num_insns, byte_length).
+// Each block ends at the same terminators the runtime recorder uses
+// (branch / JSR / RTS / etc.), or at MAX_BLOCK_INSNS, whichever comes
+// first.
+//
+// `entry_offsets` is typically the union of static-trace and linear-
+// sweep results. The output is suitable for stashing in RomBlockStore.
+std::vector<PrebuiltBlock> BuildPrebuiltBlocks(
+    const uint8_t* rom_bytes,
+    size_t rom_size,
+    uint16_t rom_base,
+    const std::set<uint16_t>& entry_offsets);
 
 } // namespace VCC
