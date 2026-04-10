@@ -496,9 +496,11 @@ void HD6309GetBlockStatsText(char* buf, int bufsize)
 		hit_pct = 100.0 * s.block_insns / total_insns;
 	if (s.block_hits > 0)
 		avg_block = (double)s.block_insns / s.block_hits;
-	snprintf(buf, bufsize, "Blk:%.0f%% %.1fi/b %llurec %lluinv",
+	snprintf(buf, bufsize, "Blk:%.0f%% %.1fi/b %llurec %llurej %llucan %lluinv",
 		hit_pct, avg_block,
 		(unsigned long long)s.blocks_recorded,
+		(unsigned long long)s.rejected_blocks,
+		(unsigned long long)s.record_cancels,
 		(unsigned long long)s.invalidations);
 }
 
@@ -7328,12 +7330,24 @@ int HD6309Exec(int CycleFor)
 			}
 
 			blockCache.RecordSingleStep();
-			unsigned char opcode = MemRead8(PC_REG); // peek, don't consume
-			bool is_terminator = IsBlockTerminator(PC_REG, opcode);
+			uint16_t insn_pc = PC_REG;
+			unsigned char opcode = MemRead8(insn_pc); // peek, don't consume
+			bool is_terminator = IsBlockTerminator(insn_pc, opcode);
+			uint16_t expected_next_pc = (uint16_t)(insn_pc + GetInstructionLengthAt(insn_pc));
 			JmpVec1[MemRead8(PC_REG++)](nullptr);
 
 			if (blockCache.IsRecording())
 			{
+				// A non-terminating instruction in a recording must fall through
+				// to its statically decoded next PC. If it does not, some hidden
+				// control flow or decode-table mismatch exists; drop the recording
+				// rather than caching a block that cannot be replayed safely.
+				if (!is_terminator && PC_REG != expected_next_pc)
+				{
+					blockCache.CancelRecord();
+					continue;
+				}
+
 				if (!blockCache.RecordInstruction(PC_REG, CycleCounter))
 				{
 					// Max block size reached

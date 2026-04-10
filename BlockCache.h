@@ -63,6 +63,8 @@ struct BlockCacheStats
     uint64_t block_insns;       // total instructions in those blocks
     uint64_t single_steps;      // instructions executed one-at-a-time
     uint64_t blocks_recorded;   // new blocks committed to cache
+    uint64_t record_cancels;    // in-progress recordings abandoned
+    uint64_t rejected_blocks;   // decoded recordings rejected before caching
     uint64_t invalidations;     // individual block invalidations (write)
     uint64_t bulk_invalidations;// full cache invalidations (MMU change)
 };
@@ -166,6 +168,8 @@ public:
     // Cancel recording (e.g., if an interrupt fires mid-block).
     void CancelRecord()
     {
+        if (recording_)
+            stats_.record_cancels++;
         recording_ = false;
     }
 
@@ -273,31 +277,53 @@ private:
         }
     }
 
+    bool ValidateDecodedBlock(uint16_t start_pc, int num_insns,
+                              const DecodedInst* insns, uint16_t decode_end_pc) const
+    {
+        if (num_insns <= 0 || num_insns > MAX_BLOCK_INSNS)
+            return false;
+
+        uint16_t pc = start_pc;
+        for (int i = 0; i < num_insns; i++)
+        {
+            if (insns[i].handler == nullptr || insns[i].length == 0)
+                return false;
+            pc = (uint16_t)(pc + insns[i].length);
+        }
+
+        return pc == decode_end_pc;
+    }
+
     void FinishRecord(uint16_t end_pc, int cycle_counter)
     {
         recording_ = false;
         int total_cycles = cycle_counter - rec_cycle_start_;
+        (void)end_pc;
 
         // Only cache if we got useful data
         if (rec_insn_count_ > 0 && total_cycles > 0 && total_cycles < 256)
         {
+            // Pre-decode instructions for the block execution path.
+            DecodedInst decoded[MAX_BLOCK_INSNS];
+            uint16_t decode_end_pc = DecodeBlock(rec_start_pc_, rec_insn_count_, decoded);
+            if (!ValidateDecodedBlock(rec_start_pc_, rec_insn_count_, decoded, decode_end_pc))
+            {
+                stats_.rejected_blocks++;
+                return;
+            }
+
             CachedBlock& old = blocks_[rec_start_pc_ & CACHE_MASK];
 
-            // If replacing a valid block, clear its reverse map first
+            // If replacing a valid block, clear its reverse map first.
             if (old.generation == generation_)
                 ClearReverseMap(old.start_pc, old.end_pc);
 
             old.start_pc = rec_start_pc_;
+            old.end_pc = decode_end_pc;
             old.num_insns = (uint8_t)rec_insn_count_;
             old.total_cycles = (uint8_t)total_cycles;
             old.generation = generation_;
-
-            // Pre-decode instructions for the block execution path.
-            // Note: end_pc from the recorder may be a branch target (not the
-            // byte after the last instruction) because PC_REG is read after
-            // the handler modifies it. The decoder's end_pc is authoritative.
-            uint16_t decode_end_pc = DecodeBlock(rec_start_pc_, rec_insn_count_, old.insns);
-            old.end_pc = decode_end_pc;
+            memcpy(old.insns, decoded, sizeof(decoded));
 
             SetReverseMap(rec_start_pc_, decode_end_pc);
             stats_.blocks_recorded++;

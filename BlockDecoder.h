@@ -263,6 +263,33 @@ inline int ComputeInsLength(uint8_t lenEntry, uint16_t pc, int postbyteOffset)
     return base + IndexedExtraBytes(postbyte);
 }
 
+// Returns the total byte length of the instruction at pc using the same
+// length tables that drive DecodeBlock(). This is used by the recorder to
+// verify that a non-terminating instruction really fell through to its
+// sequential next PC; if not, recording is abandoned instead of caching a
+// block with hidden control flow.
+inline int GetInstructionLengthAt(uint16_t pc)
+{
+    uint8_t opcode = MemRead8(pc);
+
+    if (opcode == 0x10)
+    {
+        uint8_t op2 = MemRead8(pc + 1);
+        uint8_t lenEntry = Page2InsLen[op2];
+        return 1 + ComputeInsLength(lenEntry, pc + 1, (lenEntry & 0x80) ? (((lenEntry & 0x7F) >= 3) ? 2 : 1) : 0);
+    }
+
+    if (opcode == 0x11)
+    {
+        uint8_t op3 = MemRead8(pc + 1);
+        uint8_t lenEntry = Page3InsLen[op3];
+        return 1 + ComputeInsLength(lenEntry, pc + 1, (lenEntry & 0x80) ? 1 : 0);
+    }
+
+    uint8_t lenEntry = Page1InsLen[opcode];
+    return ComputeInsLength(lenEntry, pc, (lenEntry & 0x80) ? (((lenEntry & 0x7F) >= 3) ? 2 : 1) : 0);
+}
+
 // Resolve an indexed postbyte into an EAMode and extract the operand.
 // pc_at_postbyte: address of the postbyte in memory (for reading offset bytes)
 // Sets mode, reg, and operand. Returns number of extra bytes after postbyte.
