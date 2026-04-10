@@ -170,7 +170,6 @@
       <TreatWarningAsError Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</TreatWarningAsError>
     </ClCompile>
     <ClCompile Include="quickload.cpp" />
-    <ClCompile Include="RomAnalyzer.cpp" />
     <ClCompile Include="tcc1014graphics.cpp" />
     <ClCompile Include="tcc1014mmu.cpp" />
     <ClCompile Include="tcc1014registers.cpp" />
@@ -225,10 +224,8 @@
     <ClInclude Include="OpDecoder.h" />
     <ClInclude Include="pakinterface.h" />
     <ClInclude Include="ProcessorState.h" />
-    <ClInclude Include="InsnLengths.h" />
     <ClInclude Include="quickload.h" />
     <ClInclude Include="resource.h" />
-    <ClInclude Include="RomAnalyzer.h" />
     <ClInclude Include="tcc1014graphics.h" />
     <ClInclude Include="tcc1014mmu.h" />
     <ClInclude Include="tcc1014registers.h" />

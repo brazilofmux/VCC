@@ -17,8 +17,8 @@ This file is part of VCC (Virtual Color Computer).
     <http://www.gnu.org/licenses/>.
 */
 
-#include "RomAnalyzer.h"
-#include "InsnLengths.h"
+#include <vcc/util/RomAnalyzer.h>
+#include <vcc/util/InsnLengths.h>
 
 namespace VCC
 {

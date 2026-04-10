@@ -26,6 +26,7 @@
     <ClCompile Include="src\util\fileutil.cpp" />
     <ClCompile Include="src\util\RomDatabase.cpp" />
     <ClCompile Include="src\util\RomBlockStore.cpp" />
+    <ClCompile Include="src\util\RomAnalyzer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\vcc\bus\basic_cartridge.h">
@@ -71,6 +72,8 @@
     <ClInclude Include="include\vcc\util\winapi.h" />
     <ClInclude Include="include\vcc\util\RomDatabase.h" />
     <ClInclude Include="include\vcc\util\RomBlockStore.h" />
+    <ClInclude Include="include\vcc\util\RomAnalyzer.h" />
+    <ClInclude Include="include\vcc\util\InsnLengths.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="bus">

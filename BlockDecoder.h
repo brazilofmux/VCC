@@ -31,7 +31,7 @@ This file is part of VCC (Virtual Color Computer).
 #include <cstdint>
 #include "DecodedInst.h"
 #include "EAModes.h"
-#include "InsnLengths.h"
+#include <vcc/util/InsnLengths.h>
 #include "tcc1014mmu.h"
 
 // Forward declarations — these are defined in hd6309.cpp

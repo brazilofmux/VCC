@@ -30,7 +30,7 @@ This file is part of VCC (Virtual Color Computer).
 #include <vcc/util/logger.h>
 #include <vcc/util/RomDatabase.h>
 #include <vcc/util/RomBlockStore.h>
-#include "RomAnalyzer.h"
+#include <vcc/util/RomAnalyzer.h>
 #include "hd6309.h"
 #include <vcc/util/FileOps.h>
 
