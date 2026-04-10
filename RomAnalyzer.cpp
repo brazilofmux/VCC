@@ -82,7 +82,11 @@ static int InstructionLengthAt(const uint8_t* rom, size_t rom_size, uint16_t off
     uint8_t lenEntry = Page1InsLen[opcode];
     if (lenEntry == 0)
         return 1;  // page prefix that wasn't handled above; shouldn't happen
-    int pbOffset = (lenEntry & 0x80) ? (((lenEntry & 0x7F) >= 3) ? 1 : 0) : 0;
+    // Postbyte sits at off+1 for normal indexed (base=2), or off+2 for
+    // OIM/AIM/EIM/TIM indexed (base=3, with an extra immediate byte
+    // between opcode and postbyte). Match BlockDecoder.h's pbOffset
+    // calculation exactly.
+    int pbOffset = (lenEntry & 0x80) ? (((lenEntry & 0x7F) >= 3) ? 2 : 1) : 0;
     return resolve(lenEntry, /*prefixBytes=*/0, pbOffset);
 }
 

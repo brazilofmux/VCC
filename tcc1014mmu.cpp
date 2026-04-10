@@ -185,7 +185,10 @@ void SetMmuRegister(unsigned char Register,unsigned char data)
 	unsigned char BankRegister,Task;
 	BankRegister = Register & 7;
 	Task=!!(Register & 8);
-	MmuRegisters[Task][BankRegister]= MmuPrefix |(data & RamMask[CurrentRamConfig]); //gime.c returns what was written so I can get away with this
+	unsigned short newValue = MmuPrefix | (data & RamMask[CurrentRamConfig]);
+	if (MmuRegisters[Task][BankRegister] == newValue)
+		return;  // no actual change - skip the cache invalidations
+	MmuRegisters[Task][BankRegister] = newValue;
 	InvalidateFetchCache();
 	if (gBlockInvalidateAll) gBlockInvalidateAll();
 	return;
@@ -193,7 +196,10 @@ void SetMmuRegister(unsigned char Register,unsigned char data)
 
 void SetRomMap(unsigned char data)
 {
-	RomMap=(data & 3);
+	unsigned char newRomMap = data & 3;
+	if (newRomMap == RomMap)
+		return;  // no actual change - skip the cache invalidations
+	RomMap = newRomMap;
 	UpdateMmuArray();
 	InvalidateFetchCache();
 	if (gBlockInvalidateAll) gBlockInvalidateAll();
@@ -202,6 +208,8 @@ void SetRomMap(unsigned char data)
 
 void SetMapType(unsigned char type)
 {
+	if (type == MapType)
+		return;  // no actual change
 	MapType=type;
 	UpdateMmuArray();
 	InvalidateFetchCache();
@@ -211,6 +219,8 @@ void SetMapType(unsigned char type)
 
 void Set_MmuTask(unsigned char task)
 {
+	if (task == MmuTask)
+		return;  // no actual change
 	MmuTask=task;
 	MmuState= (!MmuEnabled)<<1 | MmuTask;
 	InvalidateFetchCache();
@@ -220,6 +230,8 @@ void Set_MmuTask(unsigned char task)
 
 void Set_MmuEnabled (unsigned char usingmmu)
 {
+	if (usingmmu == MmuEnabled)
+		return;  // no actual change
 	MmuEnabled=usingmmu;
 	MmuState= (!MmuEnabled)<<1 | MmuTask;
 	InvalidateFetchCache();
