@@ -170,7 +170,6 @@
       <TreatWarningAsError Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</TreatWarningAsError>
     </ClCompile>
     <ClCompile Include="quickload.cpp" />
-    <ClCompile Include="RomDatabase.cpp" />
     <ClCompile Include="tcc1014graphics.cpp" />
     <ClCompile Include="tcc1014mmu.cpp" />
     <ClCompile Include="tcc1014registers.cpp" />
@@ -227,7 +226,6 @@
     <ClInclude Include="ProcessorState.h" />
     <ClInclude Include="quickload.h" />
     <ClInclude Include="resource.h" />
-    <ClInclude Include="RomDatabase.h" />
     <ClInclude Include="tcc1014graphics.h" />
     <ClInclude Include="tcc1014mmu.h" />
     <ClInclude Include="tcc1014registers.h" />

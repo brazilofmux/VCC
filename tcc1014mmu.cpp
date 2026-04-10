@@ -27,8 +27,8 @@ This file is part of VCC (Virtual Color Computer).
 #include "tcc1014graphics.h"
 #include "pakinterface.h"
 #include <vcc/util/logger.h>
+#include <vcc/util/RomDatabase.h>
 #include "hd6309.h"
-#include "RomDatabase.h"
 #include <vcc/util/FileOps.h>
 
 
@@ -247,8 +247,13 @@ void LoadRom()
 	}
 
 	if ((hFile = fopen(RomPath,"rb")) != nullptr) {
-		while ((feof(hFile)==0) & (index<0x8000)) {
-			InternalRomBuffer[index++] = fgetc(hFile);
+		// Read up to 32KB. Use fgetc's EOF return value as the loop
+		// terminator - feof only flips after a failed read and would
+		// leave a stray 0xFF at the end of the buffer for ROMs smaller
+		// than 32KB.
+		int c;
+		while (index < 0x8000 && (c = fgetc(hFile)) != EOF) {
+			InternalRomBuffer[index++] = (unsigned char)c;
 		}
 		fclose(hFile);
 	}

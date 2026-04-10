@@ -24,6 +24,7 @@
     <ClCompile Include="src\util\Fileops.cpp" />
     <ClCompile Include="src\util\logger.cpp" />
     <ClCompile Include="src\util\fileutil.cpp" />
+    <ClCompile Include="src\util\RomDatabase.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\vcc\bus\basic_cartridge.h">
@@ -67,6 +68,7 @@
     <ClInclude Include="include\vcc\util\critical_section.h" />
     <ClInclude Include="include\vcc\util\filesystem.h" />
     <ClInclude Include="include\vcc\util\winapi.h" />
+    <ClInclude Include="include\vcc\util\RomDatabase.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="bus">

@@ -18,6 +18,9 @@
 ////////////////////////////////////////////////////////////////////////////////
 #include <vcc/bus/rom_cartridge.h>
 #include <vcc/util/logger.h>
+#include <vcc/util/RomDatabase.h>
+#include <Windows.h>
+#include <cstdio>
 
 namespace VCC::Core
 {
@@ -38,6 +41,21 @@ namespace VCC::Core
 	{
 		DLOG_C("rom_cartridge ctor type: %s cart ptr: %p buf siz: %zu\n",
 			typeid(*this).name(), this, buffer_.size());
+
+		// Identify the cartridge ROM by content fingerprint and log it.
+		// Cartridge ROMs may be bank-switched (the same buffer is mapped at
+		// different offsets) - the fingerprint always covers the full byte
+		// sequence, so banking doesn't affect identification.
+		if (!buffer_.empty())
+		{
+			VCC::RomInfo info = VCC::IdentifyRom(buffer_.data(), buffer_.size());
+			char dbg[256];
+			snprintf(dbg, sizeof(dbg),
+				"[ROM] cartridge \"%s\": %s size=%u crc=0x%08X bankswitch=%d\n",
+				name_.c_str(), info.name, (unsigned)info.size,
+				info.fingerprint, enable_bank_switching ? 1 : 0);
+			OutputDebugStringA(dbg);
+		}
 	}
 
 

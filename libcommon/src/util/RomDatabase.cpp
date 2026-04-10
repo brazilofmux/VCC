@@ -17,7 +17,7 @@ This file is part of VCC (Virtual Color Computer).
     <http://www.gnu.org/licenses/>.
 */
 
-#include "RomDatabase.h"
+#include <vcc/util/RomDatabase.h>
 
 namespace VCC
 {
@@ -55,11 +55,23 @@ uint32_t Crc32(const uint8_t* data, size_t len)
 // The order does not matter; lookups are linear and the registry is small.
 //
 // To add an entry: run VCC with the new ROM, look at the OutputDebugString
-// log for "[ROM] internal: Unknown ROM size=N crc=0xXXXXXXXX". Add a row.
+// log for "[ROM] ... Unknown ROM size=N crc=0xXXXXXXXX". Add a row.
 static const RomInfo kKnownRoms[] = {
     // CoCo3 internal ROM (32KB: Color BASIC + ECB + Super ECB).
     // The standard MAME / VCC dump shipping in D:\roms\coco3.rom.
     { 0xB4C88D6Cu, 32768, RomKind::Coco3Internal, "CoCo3 Internal ROM (32K)" },
+
+    // Disk Extended Color BASIC 1.1 (Tandy). The canonical FD-502 disk
+    // ROM, ships as disk11.rom in D:\roms.
+    { 0x0B9C5415u,  8192, RomKind::DiskBasic,     "Disk ECB 1.1 (Tandy)" },
+
+    // RGB-DOS (alternative disk ROM with extended directory / drive
+    // support). Ships as rgbdos.rom in D:\roms.
+    { 0xE548C0A3u,  8192, RomKind::DiskBasic,     "RGB-DOS" },
+
+    // CoCo 1 Color BASIC 1.0 (8KB). The earliest BASIC ROM, used by
+    // the original 1980 Color Computer. From the MAME coco set.
+    { 0x00B50AAAu,  8192, RomKind::CocoBasic,     "Color BASIC 1.0" },
 };
 
 static const size_t kKnownRomCount = sizeof(kKnownRoms) / sizeof(kKnownRoms[0]);

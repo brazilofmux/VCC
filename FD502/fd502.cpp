@@ -39,6 +39,7 @@
 #include <vcc/util/FileOps.h>
 #include <vcc/util/DialogOps.h>
 #include <vcc/util/logger.h>
+#include <vcc/util/RomDatabase.h>
 // Three includes added for PakGetMenuItem
 #include <vcc/bus/cartridge_menu.h>
 #include <vcc/bus/cartridge_messages.h>
@@ -764,18 +765,37 @@ unsigned char LoadExtRom( unsigned char RomType,const char *FilePath)	//Returns 
 	unsigned short index=0;
 	unsigned char RetVal=0;
 	unsigned char *ThisRom[3]={ExternalRom,DiskRom,RGBDiskRom};
+	static const char* RomTypeName[3] = { "External", "TandyDisk", "RGBDisk" };
 
 	rom_handle=fopen(FilePath,"rb");
 	if (rom_handle==nullptr)
 		memset(ThisRom[RomType],0xFF,EXTROMSIZE);
 	else
 	{
-		while ((feof(rom_handle)==0) & (index<EXTROMSIZE))
-			ThisRom[RomType][index++]=fgetc(rom_handle);
+		// Read up to EXTROMSIZE bytes. Use fgetc's EOF return value as the
+		// loop terminator (not feof, which only flips after a failed read
+		// and would leave a stray 0xFF at the end of the buffer).
+		int c;
+		while (index < EXTROMSIZE && (c = fgetc(rom_handle)) != EOF)
+			ThisRom[RomType][index++] = (unsigned char)c;
 		RetVal=1;
 		fclose(rom_handle);
 	}
 
 	DLOG_C("load %s %d %d\n",FilePath,RomType,RetVal);
+
+	// Identify the ROM by content fingerprint and log it. Even an "empty"
+	// load (file missing) gets logged so we can see what slot was empty.
+	if (RetVal && index > 0)
+	{
+		VCC::RomInfo info = VCC::IdentifyRom(ThisRom[RomType], index);
+		char dbg[256];
+		snprintf(dbg, sizeof(dbg),
+			"[ROM] FD502/%s: %s size=%u crc=0x%08X path=%s\n",
+			RomTypeName[RomType < 3 ? RomType : 0], info.name,
+			(unsigned)info.size, info.fingerprint, FilePath);
+		OutputDebugStringA(dbg);
+	}
+
 	return RetVal;
 }
