@@ -38,6 +38,7 @@ This file is part of VCC (Virtual Color Computer).
 // interpreter so we don't have to deal with arena churn yet.
 
 #include <cstdint>
+#include "DecodedInst.h"
 
 struct CachedBlock;
 
@@ -45,11 +46,43 @@ namespace BlockJit
 {
     using NativeEntry = void (*)(void);
 
-    // Set up the code arena and remember where PC_REG lives so the
-    // emitter can bake its address into mov instructions. Must be
-    // called once at CPU init, before any EmitBlock call. Calling
-    // again is idempotent and resets the arena.
-    void Init(uint16_t* pc_reg_addr);
+    // CPU state addresses the level-2 inline emitters need to bake
+    // into mov/add instructions. Everything here is a static in
+    // hd6309.cpp; the JIT needs the bare addresses, not the macros.
+    struct CpuAddrs
+    {
+        uint16_t* pc;             // PC_REG
+        uint8_t*  a;              // A_REG
+        uint8_t*  b;              // B_REG
+        uint16_t* d;              // D_REG (overlays A:B as a 16-bit value)
+        uint16_t* x;              // X_REG
+        uint16_t* y;              // Y_REG (reserved)
+        uint16_t* u;              // U_REG
+        uint8_t*  cc;             // base of cc[8] - cc[N], cc[Z], cc[V] live here
+        int*      cycle_counter;  // CycleCounter
+    };
+
+    // Handler addresses the level-2 emitter knows how to inline. The
+    // JIT compares each DecodedInst's handler pointer against these and
+    // emits a precomputed body when it matches; otherwise it falls
+    // through to the level-1 call-handler trampoline. Adding a new
+    // inlineable handler means adding a slot here, populating it from
+    // hd6309.cpp at Init time, and teaching EmitBlock to recognize and
+    // emit it.
+    struct InlineableHandlers
+    {
+        InstHandler lda_m;        // LDA #imm  (op 0x86, length 2, +2 cycles)
+        InstHandler ldb_m;        // LDB #imm  (op 0xC6, length 2, +2 cycles)
+        InstHandler ldd_m;        // LDD #imm  (op 0xCC, length 3, +3 cycles)
+        InstHandler ldx_m;        // LDX #imm  (op 0x8E, length 3, +3 cycles)
+        InstHandler ldu_m;        // LDU #imm  (op 0xCE, length 3, +3 cycles)
+    };
+
+    // Set up the code arena and remember the addresses the emitter
+    // bakes into instructions. Must be called once at CPU init, before
+    // any EmitBlock call. Calling again is idempotent and resets the
+    // arena and stats.
+    void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers);
 
     // Reset the bump allocator. After this, every previously-emitted
     // thunk is invalid - the caller is responsible for clearing all
@@ -73,6 +106,8 @@ namespace BlockJit
         size_t  arena_used;
         uint32_t blocks_emitted;
         uint32_t emit_failures;
+        uint32_t insns_called;     // emitted as a __cdecl handler call
+        uint32_t insns_inlined;    // emitted as a level-2 inline body
     };
     Stats GetStats();
 }

@@ -351,13 +351,20 @@ static void HD6309PrePopulateBlockCache()
 	// can verify the arena sizing assumptions and notice if anything
 	// fell back to the interpreter due to exhaustion.
 	BlockJit::Stats js = BlockJit::GetStats();
-	char dbg[200];
+	uint32_t total_insns = js.insns_called + js.insns_inlined;
+	double inline_pct = (total_insns > 0)
+		? 100.0 * (double)js.insns_inlined / (double)total_insns : 0.0;
+	char dbg[256];
 	snprintf(dbg, sizeof(dbg),
-		"[JIT] arena %u/%u bytes (%.1f%%) blocks_emitted=%u emit_failures=%u\n",
+		"[JIT] arena %u/%u bytes (%.1f%%) blocks=%u failures=%u "
+		"insns=%u inlined=%u (%.1f%%)\n",
 		(unsigned)js.arena_used, (unsigned)js.arena_size,
 		100.0 * (double)js.arena_used / (double)js.arena_size,
 		(unsigned)js.blocks_emitted,
-		(unsigned)js.emit_failures);
+		(unsigned)js.emit_failures,
+		(unsigned)total_insns,
+		(unsigned)js.insns_inlined,
+		inline_pct);
 	OutputDebugStringA(dbg);
 }
 
@@ -506,12 +513,46 @@ void HD6309Reset()
 	return;
 }
 
+// Forward declarations of the handlers the level-2 JIT inlines. Their
+// full definitions live with the rest of the instruction handlers
+// further down in this file; HD6309Init only needs their addresses to
+// register them with BlockJit.
+void Lda_M(const DecodedInst* inst);
+void Ldb_M(const DecodedInst* inst);
+void Ldd_M(const DecodedInst* inst);
+void Ldx_M(const DecodedInst* inst);
+void Ldu_M(const DecodedInst* inst);
+
 void HD6309Init()
 {	//Call this first or RESET will core!
-	// One-time setup for the level-1 JIT code arena. The emitter needs
-	// the address of PC_REG so it can bake mov instructions that
-	// pre-set PC before each handler call.
-	BlockJit::Init(&PC_REG);
+	// One-time setup for the JIT code arena. The level-1 emitter needs
+	// the address of PC_REG so it can pre-set PC before each handler
+	// call; the level-2 inline emitters also need the addresses of A,
+	// B, D, X, U, the cc[] array, and CycleCounter so they can bake
+	// stores directly to register state. The handler-pointer table
+	// tells the emitter which interpreter handlers it knows how to
+	// inline (currently the immediate-load family).
+	{
+		BlockJit::CpuAddrs addrs;
+		addrs.pc            = &PC_REG;
+		addrs.a             = &A_REG;
+		addrs.b             = &B_REG;
+		addrs.d             = &D_REG;
+		addrs.x             = &X_REG;
+		addrs.y             = &Y_REG;
+		addrs.u             = &U_REG;
+		addrs.cc            = cc;
+		addrs.cycle_counter = &CycleCounter;
+
+		BlockJit::InlineableHandlers inlines;
+		inlines.lda_m = &Lda_M;
+		inlines.ldb_m = &Ldb_M;
+		inlines.ldd_m = &Ldd_M;
+		inlines.ldx_m = &Ldx_M;
+		inlines.ldu_m = &Ldu_M;
+
+		BlockJit::Init(addrs, inlines);
+	}
 
 	// reg pointers for TFR and EXG and LEA ops
 	xfreg16[0] = &D_REG;
@@ -634,15 +675,21 @@ void HD6309GetBlockStatsText(char* buf, int bufsize)
 		avg_block = (double)s.block_insns / s.block_hits;
 	// Arena fraction shown as a percentage of the 16 MB JIT arena.
 	double jit_arena_pct = 100.0 * (double)js.arena_used / (double)js.arena_size;
+	uint32_t total_emitted_insns = js.insns_called + js.insns_inlined;
+	double inline_pct = (total_emitted_insns > 0)
+		? 100.0 * (double)js.insns_inlined / (double)total_emitted_insns
+		: 0.0;
 	snprintf(buf, bufsize,
-		"Blk:%.0f%% %.1fi/b %llurec %llurej %llucan %lluinv  JIT:%u/%.0f%%",
+		"Blk:%.0f%% %.1fi/b %llurec %llurej %llucan %lluinv  "
+		"JIT:%u/%.0f%% inl:%.0f%%",
 		hit_pct, avg_block,
 		(unsigned long long)s.blocks_recorded,
 		(unsigned long long)s.rejected_blocks,
 		(unsigned long long)s.record_cancels,
 		(unsigned long long)s.invalidations,
 		(unsigned)js.blocks_emitted,
-		jit_arena_pct);
+		jit_arena_pct,
+		inline_pct);
 }
 
 void Neg_D(const DecodedInst* inst)
