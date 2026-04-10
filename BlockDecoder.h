@@ -259,7 +259,7 @@ inline int ComputeInsLength(uint8_t lenEntry, uint16_t pc, int postbyteOffset)
     // Indexed mode: base length + extra from postbyte
     int base = lenEntry & 0x7F;
     // The postbyte is at pc + postbyteOffset (usually 1, or 2 for OIM/AIM etc.)
-    uint8_t postbyte = MemRead8(pc + postbyteOffset);
+    uint8_t postbyte = MemFetch8(pc + postbyteOffset);
     return base + IndexedExtraBytes(postbyte);
 }
 
@@ -270,18 +270,18 @@ inline int ComputeInsLength(uint8_t lenEntry, uint16_t pc, int postbyteOffset)
 // block with hidden control flow.
 inline int GetInstructionLengthAt(uint16_t pc)
 {
-    uint8_t opcode = MemRead8(pc);
+    uint8_t opcode = MemFetch8(pc);
 
     if (opcode == 0x10)
     {
-        uint8_t op2 = MemRead8(pc + 1);
+        uint8_t op2 = MemFetch8(pc + 1);
         uint8_t lenEntry = Page2InsLen[op2];
         return 1 + ComputeInsLength(lenEntry, pc + 1, (lenEntry & 0x80) ? (((lenEntry & 0x7F) >= 3) ? 2 : 1) : 0);
     }
 
     if (opcode == 0x11)
     {
-        uint8_t op3 = MemRead8(pc + 1);
+        uint8_t op3 = MemFetch8(pc + 1);
         uint8_t lenEntry = Page3InsLen[op3];
         return 1 + ComputeInsLength(lenEntry, pc + 1, (lenEntry & 0x80) ? 1 : 0);
     }
@@ -321,19 +321,19 @@ inline int DecodeIndexedPostbyte(uint8_t pb, uint16_t pc_at_postbyte,
     case 7:  mode = EA_OFFSET_E; break;
     case 8:  // 8-bit offset
         mode = EA_OFFSET_8;
-        operand = MemRead8(pc_at_postbyte + 1);
+        operand = MemFetch8(pc_at_postbyte + 1);
         extra = 1;
         break;
     case 9:  // 16-bit offset
         mode = EA_OFFSET_16;
-        operand = MemRead16(pc_at_postbyte + 1);
+        operand = MemFetch16(pc_at_postbyte + 1);
         extra = 2;
         break;
     case 10: mode = EA_OFFSET_F; break;
     case 11: mode = EA_OFFSET_D; break;
     case 12: // 8-bit PC-relative: pre-compute absolute address
         {
-            signed char off8 = (signed char)MemRead8(pc_at_postbyte + 1);
+            signed char off8 = (signed char)MemFetch8(pc_at_postbyte + 1);
             // EA = (address_of_offset_byte) + offset + 1
             // address_of_offset_byte = pc_at_postbyte + 1
             operand = (uint16_t)((pc_at_postbyte + 1) + off8 + 1);
@@ -343,7 +343,7 @@ inline int DecodeIndexedPostbyte(uint8_t pb, uint16_t pc_at_postbyte,
         break;
     case 13: // 16-bit PC-relative: pre-compute absolute address
         {
-            uint16_t off16 = MemRead16(pc_at_postbyte + 1);
+            uint16_t off16 = MemFetch16(pc_at_postbyte + 1);
             // EA = (address_of_offset_word) + offset + 2
             operand = (uint16_t)((pc_at_postbyte + 1) + off16 + 2);
             mode = EA_PC_16;
@@ -355,7 +355,7 @@ inline int DecodeIndexedPostbyte(uint8_t pb, uint16_t pc_at_postbyte,
         switch (reg) {
         case 0: mode = EA_W_NO_OFFSET; break;
         case 1: mode = EA_W_OFFSET_16;
-                operand = MemRead16(pc_at_postbyte + 1);
+                operand = MemFetch16(pc_at_postbyte + 1);
                 extra = 2; break;
         case 2: mode = EA_W_POST_INC; break;
         case 3: mode = EA_W_PRE_DEC; break;
@@ -365,7 +365,7 @@ inline int DecodeIndexedPostbyte(uint8_t pb, uint16_t pc_at_postbyte,
         switch (reg) {
         case 0: mode = EA_I_W_NO_OFFSET; break;
         case 1: mode = EA_I_W_OFFSET_16;
-                operand = MemRead16(pc_at_postbyte + 1);
+                operand = MemFetch16(pc_at_postbyte + 1);
                 extra = 2; break;
         case 2: mode = EA_I_W_POST_INC; break;
         case 3: mode = EA_I_W_PRE_DEC; break;
@@ -380,19 +380,19 @@ inline int DecodeIndexedPostbyte(uint8_t pb, uint16_t pc_at_postbyte,
     case 23: mode = EA_I_OFFSET_E; break;
     case 24: // indirect 8-bit offset
         mode = EA_I_OFFSET_8;
-        operand = MemRead8(pc_at_postbyte + 1);
+        operand = MemFetch8(pc_at_postbyte + 1);
         extra = 1;
         break;
     case 25: // indirect 16-bit offset
         mode = EA_I_OFFSET_16;
-        operand = MemRead16(pc_at_postbyte + 1);
+        operand = MemFetch16(pc_at_postbyte + 1);
         extra = 2;
         break;
     case 26: mode = EA_I_OFFSET_F; break;
     case 27: mode = EA_I_OFFSET_D; break;
     case 28: // indirect 8-bit PC-relative
         {
-            signed char off8 = (signed char)MemRead8(pc_at_postbyte + 1);
+            signed char off8 = (signed char)MemFetch8(pc_at_postbyte + 1);
             operand = (uint16_t)((pc_at_postbyte + 1) + off8 + 1);
             mode = EA_I_PC_8;
             extra = 1;
@@ -400,7 +400,7 @@ inline int DecodeIndexedPostbyte(uint8_t pb, uint16_t pc_at_postbyte,
         break;
     case 29: // indirect 16-bit PC-relative
         {
-            uint16_t off16 = MemRead16(pc_at_postbyte + 1);
+            uint16_t off16 = MemFetch16(pc_at_postbyte + 1);
             operand = (uint16_t)((pc_at_postbyte + 1) + off16 + 2);
             mode = EA_I_PC_16;
             extra = 2;
@@ -409,7 +409,7 @@ inline int DecodeIndexedPostbyte(uint8_t pb, uint16_t pc_at_postbyte,
     case 30: mode = EA_I_OFFSET_W; break;
     case 31: // extended indirect
         mode = EA_I_EXT;
-        operand = MemRead16(pc_at_postbyte + 1);
+        operand = MemFetch16(pc_at_postbyte + 1);
         extra = 2;
         break;
     default:
@@ -428,14 +428,14 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
 
     for (int i = 0; i < num_insns; i++)
     {
-        uint8_t opcode = MemRead8(pc);
+        uint8_t opcode = MemFetch8(pc);
         DecodedInst& inst = out[i];
         inst.aux = 0;
 
         if (opcode == 0x10)
         {
             // Page 2 prefix: decode through to the actual handler.
-            uint8_t op2 = MemRead8(pc + 1);
+            uint8_t op2 = MemFetch8(pc + 1);
             uint8_t lenEntry = Page2InsLen[op2];
             inst.handler = JmpVec2[op2];
 
@@ -445,13 +445,13 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
                 // layout as page-1 indexed forms, just with a prefix byte.
                 int base = lenEntry & 0x7F;
                 int pbOffset = (base >= 3) ? 3 : 2;
-                uint8_t pb = MemRead8(pc + pbOffset);
+                uint8_t pb = MemFetch8(pc + pbOffset);
 
                 EAMode mode;
                 uint8_t reg;
                 uint16_t operand = 0;
                 if (base >= 3)
-                    inst.aux = MemRead8(pc + 2);  // immediate byte before postbyte
+                    inst.aux = MemFetch8(pc + 2);  // immediate byte before postbyte
 
                 DecodeIndexedPostbyte(pb, pc + pbOffset, mode, reg, operand);
                 inst.ea_info = MAKE_EA_INFO(mode, reg);
@@ -470,20 +470,20 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
                     inst.operand = 0;
                     break;
                 case 2:
-                    inst.operand = MemRead8(pc + 2);
+                    inst.operand = MemFetch8(pc + 2);
                     break;
                 case 3:
-                    inst.operand = MemRead16(pc + 2);
+                    inst.operand = MemFetch16(pc + 2);
                     break;
                 default:
-                    inst.operand = MemRead16(pc + 2);
+                    inst.operand = MemFetch16(pc + 2);
                     break;
                 }
             }
         }
         else if (opcode == 0x11)
         {
-            uint8_t op3 = MemRead8(pc + 1);
+            uint8_t op3 = MemFetch8(pc + 1);
             uint8_t lenEntry = Page3InsLen[op3];
             bool directDispatch = false;
 
@@ -519,7 +519,7 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
             {
                 if (lenEntry & 0x80)
                 {
-                    uint8_t pb = MemRead8(pc + 2);
+                    uint8_t pb = MemFetch8(pc + 2);
                     EAMode mode;
                     uint8_t reg;
                     uint16_t operand = 0;
@@ -540,13 +540,13 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
                         inst.operand = 0;
                         break;
                     case 2:
-                        inst.operand = MemRead8(pc + 2);
+                        inst.operand = MemFetch8(pc + 2);
                         break;
                     case 3:
-                        inst.operand = MemRead16(pc + 2);
+                        inst.operand = MemFetch16(pc + 2);
                         break;
                     default:
-                        inst.operand = MemRead16(pc + 2);
+                        inst.operand = MemFetch16(pc + 2);
                         break;
                     }
                 }
@@ -554,7 +554,7 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
             else
             {
                 int innerLen = (lenEntry & 0x80)
-                    ? (lenEntry & 0x7F) + IndexedExtraBytes(MemRead8(pc + 2))
+                    ? (lenEntry & 0x7F) + IndexedExtraBytes(MemFetch8(pc + 2))
                     : lenEntry;
                 inst.length = (uint8_t)(1 + innerLen);
                 inst.ea_info = 0;
@@ -574,7 +574,7 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
                 // Postbyte position: for OIM/AIM/EIM/TIM indexed (base=3),
                 // there's an immediate byte between opcode and postbyte
                 int pbOffset = (base >= 3) ? 2 : 1;
-                uint8_t pb = MemRead8(pc + pbOffset);
+                uint8_t pb = MemFetch8(pc + pbOffset);
 
                 // Decode the postbyte into EA mode + register + operand
                 EAMode mode;
@@ -583,7 +583,7 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
                 // For base>=3 (OIM etc.), the immediate byte is the operand;
                 // preserve it and let the indexed decode only set offset.
                 if (base >= 3)
-                    inst.aux = MemRead8(pc + 1);  // immediate byte for OIM/AIM/EIM/TIM
+                    inst.aux = MemFetch8(pc + 1);  // immediate byte for OIM/AIM/EIM/TIM
 
                 DecodeIndexedPostbyte(pb, pc + pbOffset, mode, reg, operand);
                 // For base>=3, operand was overwritten by DecodeIndexedPostbyte
@@ -619,14 +619,14 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
                 if (opcode == 0x01 || opcode == 0x02 || opcode == 0x05 || opcode == 0x0B)
                 {
                     // OIM/AIM/EIM/TIM direct: imm8 then dp8
-                    inst.aux = MemRead8(pc + 1);
-                    inst.operand = MemRead8(pc + 2);
+                    inst.aux = MemFetch8(pc + 1);
+                    inst.operand = MemFetch8(pc + 2);
                 }
                 else if (opcode == 0x71 || opcode == 0x72 || opcode == 0x75 || opcode == 0x7B)
                 {
                     // OIM/AIM/EIM/TIM extended: imm8 then ext16
-                    inst.aux = MemRead8(pc + 1);
-                    inst.operand = MemRead16(pc + 2);
+                    inst.aux = MemFetch8(pc + 1);
+                    inst.operand = MemFetch16(pc + 2);
                 }
                 else
                 {
@@ -636,13 +636,13 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
                         inst.operand = 0;
                         break;
                     case 2:
-                        inst.operand = MemRead8(pc + 1);
+                        inst.operand = MemFetch8(pc + 1);
                         break;
                     case 3:
-                        inst.operand = MemRead16(pc + 1);
+                        inst.operand = MemFetch16(pc + 1);
                         break;
                     default:
-                        inst.operand = MemRead16(pc + 1);
+                        inst.operand = MemFetch16(pc + 1);
                         break;
                     }
                 }

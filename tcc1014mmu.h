@@ -46,6 +46,41 @@ void MemWrite16(unsigned short,unsigned short );
 
 unsigned short MemRead16(unsigned short);
 unsigned char MemRead8(unsigned short);
+
+// Fast instruction-fetch primitive. Uses a cached pointer to the current
+// 8KB RAM page so the common case (PC inside a RAM page that's already
+// been resolved) is a single load with no MMU lookup, no port check, no
+// ROM/RAM discrimination, and no mutex.
+//
+// The cache is invalidated whenever any MMU state changes (task swap,
+// register write, ROM map, MapType, MMU enable). When the cache misses
+// (different page, or non-RAM), MemFetch8_Slow falls back to MemRead8.
+//
+// Use this ONLY for instruction fetches and decoder byte walks. Data reads
+// must go through MemRead8 because they may target ports or vector RAM.
+extern unsigned char* gFetchPagePtr;
+extern unsigned int   gFetchPageMask;  // matches (addr & 0xE000) when cache valid
+unsigned char MemFetch8_Slow(unsigned short address);
+
+static inline unsigned char MemFetch8(unsigned short address)
+{
+	// The < 0xFE00 guard is required: addresses in 0xFE00-0xFFFF live in
+	// the same 8KB bucket as 0xE000-0xFDFF, but they may be RAM vectors or
+	// port pass-throughs. Routing them through the cached page pointer
+	// would return garbage. Force the slow path for that high tail.
+	if (address < 0xFE00 && (unsigned int)(address & 0xE000) == gFetchPageMask)
+		return gFetchPagePtr[address & 0x1FFF];
+	return MemFetch8_Slow(address);
+}
+
+// Big-endian 16-bit instruction-fetch primitive built on MemFetch8.
+// Used by the block decoder to read 16-bit immediates / addresses /
+// branch offsets that live in the instruction stream.
+static inline unsigned short MemFetch16(unsigned short address)
+{
+	return ((unsigned short)MemFetch8(address) << 8)
+	     |  (unsigned short)MemFetch8((unsigned short)(address + 1));
+}
 unsigned char SafeMemRead8(unsigned short);
 unsigned char * MmuInit(unsigned char);
 unsigned char *	Getint_rom_pointer();

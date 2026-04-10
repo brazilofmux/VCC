@@ -45,9 +45,9 @@ This file is part of VCC (Virtual Color Computer).
 #define OVERFLOW16(c,a,b,r) c ^ (((a^b^r)>>15)&1)
 #define ZTEST(r) !r
 
-#define DPADDRESS(r) (dp.Reg |MemRead8(r))
-#define IMMADDRESS(r) MemRead16(r)
-#define INDADDRESS(r) CalculateEA(MemRead8(r))
+#define DPADDRESS(r) (dp.Reg |MemFetch8(r))
+#define IMMADDRESS(r) MemFetch16(r)
+#define INDADDRESS(r) CalculateEA(MemFetch8(r))
 
 // Pre-decoded operand access for converted handlers.
 // Block path (inst != nullptr): reads from DecodedInst, avoids MemRead.
@@ -58,8 +58,8 @@ This file is part of VCC (Virtual Color Computer).
 // Non-block path (inst == nullptr): reads from memory AND advances PC.
 // Handlers must NOT advance PC explicitly — the block loop handles it,
 // and these macros handle it for the non-block path.
-#define OPERAND_8(inst)   ((inst) ? (unsigned char)(inst)->operand : MemRead8(PC_REG++))
-#define OPERAND_16(inst)  ((inst) ? (unsigned short)(inst)->operand : (PC_REG += 2, MemRead16(PC_REG - 2)))
+#define OPERAND_8(inst)   ((inst) ? (unsigned char)(inst)->operand : MemFetch8(PC_REG++))
+#define OPERAND_16(inst)  ((inst) ? (unsigned short)(inst)->operand : (PC_REG += 2, MemFetch16(PC_REG - 2)))
 #define DPAGE_ADDR(inst)  (dp.Reg | OPERAND_8(inst))
 #define EXTENDED_ADDR(inst) OPERAND_16(inst)
 
@@ -322,9 +322,9 @@ static const bool IsPage3Terminator[256] = {
 static inline bool IsBlockTerminator(uint16_t pc, uint8_t opcode)
 {
 	if (opcode == 0x10)
-		return IsPage2Terminator[MemRead8(pc + 1)];
+		return IsPage2Terminator[MemFetch8((unsigned short)(pc + 1))];
 	if (opcode == 0x11)
-		return IsPage3Terminator[MemRead8(pc + 1)];
+		return IsPage3Terminator[MemFetch8((unsigned short)(pc + 1))];
 	return IsTerminator[opcode];
 }
 
@@ -4645,7 +4645,7 @@ void Oim_X(const DecodedInst* inst)
 	else
 	{
 		postbyte = OPERAND_8(inst);
-		temp16 = CalculateEA(MemRead8(PC_REG++)); // OIM: can't use INDEXED_EA (extra imm byte)
+		temp16 = CalculateEA(MemFetch8(PC_REG++)); // OIM: can't use INDEXED_EA (extra imm byte)
 	}
 	postbyte |= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
@@ -4665,7 +4665,7 @@ void Aim_X(const DecodedInst* inst)
 	else
 	{
 		postbyte = OPERAND_8(inst);
-		temp16 = CalculateEA(MemRead8(PC_REG++)); // AIM: can't use INDEXED_EA (extra imm byte)
+		temp16 = CalculateEA(MemFetch8(PC_REG++)); // AIM: can't use INDEXED_EA (extra imm byte)
 	}
 	postbyte &= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
@@ -4710,7 +4710,7 @@ void Eim_X(const DecodedInst* inst)
 	else
 	{
 		postbyte = OPERAND_8(inst);
-		temp16 = CalculateEA(MemRead8(PC_REG++)); // EIM: can't use INDEXED_EA (extra imm byte)
+		temp16 = CalculateEA(MemFetch8(PC_REG++)); // EIM: can't use INDEXED_EA (extra imm byte)
 	}
 	postbyte ^= MemRead8(temp16);
 	MemWrite8(postbyte,temp16);
@@ -4794,7 +4794,7 @@ void Tim_X(const DecodedInst* inst)
 	else
 	{
 		postbyte = OPERAND_8(inst);
-		temp8 = MemRead8(CalculateEA(MemRead8(PC_REG++))); // TIM: can't use INDEXED_EA (extra imm byte)
+		temp8 = MemRead8(CalculateEA(MemFetch8(PC_REG++))); // TIM: can't use INDEXED_EA (extra imm byte)
 	}
 	postbyte&=temp8;
 	cc[N] = NTEST8(postbyte);
@@ -4862,7 +4862,7 @@ void Oim_E(const DecodedInst* inst)
 	}
 	else
 	{
-		postbyte = MemRead8(PC_REG++);
+		postbyte = MemFetch8(PC_REG++);
 		temp16 = IMMADDRESS(PC_REG);
 		PC_REG += 2;
 	}
@@ -4883,7 +4883,7 @@ void Aim_E(const DecodedInst* inst)
 	}
 	else
 	{
-		postbyte = MemRead8(PC_REG++);
+		postbyte = MemFetch8(PC_REG++);
 		temp16 = IMMADDRESS(PC_REG);
 		PC_REG += 2;
 	}
@@ -4929,7 +4929,7 @@ void Eim_E(const DecodedInst* inst)
 	}
 	else
 	{
-		postbyte = MemRead8(PC_REG++);
+		postbyte = MemFetch8(PC_REG++);
 		temp16 = IMMADDRESS(PC_REG);
 		PC_REG += 2;
 	}
@@ -5014,7 +5014,7 @@ void Tim_E(const DecodedInst* inst)
 	}
 	else
 	{
-		postbyte = MemRead8(PC_REG++);
+		postbyte = MemFetch8(PC_REG++);
 		temp16 = IMMADDRESS(PC_REG);
 		PC_REG += 2;
 	}
@@ -7220,9 +7220,9 @@ InstHandler JmpVec3[256] = {
 
 // Stepping check for Tfm and step over it
 void StepIns(const DecodedInst* inst) {
-	JmpVec1[MemRead8(PC_REG++)](nullptr);
+	JmpVec1[MemFetch8(PC_REG++)](nullptr);
 	while (DoingTFM)
-		JmpVec1[MemRead8(PC_REG++)](nullptr);
+		JmpVec1[MemFetch8(PC_REG++)](nullptr);
 }
 
 // Returns true if the debugger needs per-instruction attention.
@@ -7331,10 +7331,11 @@ int HD6309Exec(int CycleFor)
 
 			blockCache.RecordSingleStep();
 			uint16_t insn_pc = PC_REG;
-			unsigned char opcode = MemRead8(insn_pc); // peek, don't consume
+			unsigned char opcode = MemFetch8(insn_pc); // peek, don't consume
 			bool is_terminator = IsBlockTerminator(insn_pc, opcode);
 			uint16_t expected_next_pc = (uint16_t)(insn_pc + GetInstructionLengthAt(insn_pc));
-			JmpVec1[MemRead8(PC_REG++)](nullptr);
+			PC_REG = insn_pc + 1;
+			JmpVec1[opcode](nullptr);
 
 			if (blockCache.IsRecording())
 			{
@@ -7449,7 +7450,7 @@ debugger_path:
 			EmuState.Debugger.TraceCaptureBefore(CycleCounter, HD6309GetState());
 		}
 
-		JmpVec1[MemRead8(PC_REG++)](nullptr);
+		JmpVec1[MemFetch8(PC_REG++)](nullptr);
 
 		if (EmuState.Debugger.IsTracing())
 		{
@@ -7480,7 +7481,7 @@ void Page_2(const DecodedInst* inst) //10
 	}
 	else
 	{
-		JmpVec2[MemRead8(PC_REG++)](nullptr); // Execute instruction pointed to by PC_REG
+		JmpVec2[MemFetch8(PC_REG++)](nullptr); // Execute instruction pointed to by PC_REG
 	}
 }
 
@@ -7498,7 +7499,7 @@ void Page_3(const DecodedInst* inst) //11
 	}
 	else
 	{
-		JmpVec3[MemRead8(PC_REG++)](nullptr); // Execute instruction pointed to by PC_REG
+		JmpVec3[MemFetch8(PC_REG++)](nullptr); // Execute instruction pointed to by PC_REG
 	}
 }
 
@@ -7846,7 +7847,7 @@ static unsigned short CalculateEA(unsigned char postbyte)
 			break;
 
 		case 8: // 8 bit offset
-			ea = (*xfreg16[Register]) + (signed char)MemRead8(PC_REG++);
+			ea = (*xfreg16[Register]) + (signed char)MemFetch8(PC_REG++);
 			CycleCounter += 1;
 			break;
 
@@ -7977,7 +7978,7 @@ static unsigned short CalculateEA(unsigned char postbyte)
 			break;
 
 		case 24: // indirect 8 bit offset
-			ea = (*xfreg16[Register]) + (signed char)MemRead8(PC_REG++);
+			ea = (*xfreg16[Register]) + (signed char)MemFetch8(PC_REG++);
 			ea = MemRead16(ea);
 			CycleCounter += 4;
 			break;

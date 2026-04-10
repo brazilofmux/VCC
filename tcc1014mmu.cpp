@@ -35,6 +35,18 @@ This file is part of VCC (Virtual Color Computer).
 BlockInvalidateFunc gBlockInvalidate = nullptr;
 BlockInvalidateAllFunc gBlockInvalidateAll = nullptr;
 
+// Fast instruction-fetch cache. See tcc1014mmu.h for the docs.
+// gFetchPageMask = 0xFFFFFFFF is a sentinel that no real address matches,
+// so the fast path safely falls into the slow path when the cache is empty.
+unsigned char* gFetchPagePtr = nullptr;
+unsigned int   gFetchPageMask = 0xFFFFFFFFu;
+
+static inline void InvalidateFetchCache()
+{
+	gFetchPageMask = 0xFFFFFFFFu;
+	// gFetchPagePtr is left dangling on purpose; the mask check guards it.
+}
+
 static unsigned char *MemPages[1024];
 static unsigned short MemPageOffsets[1024];
 static unsigned char *memory=nullptr;	//Emulated RAM
@@ -172,6 +184,7 @@ void SetMmuRegister(unsigned char Register,unsigned char data)
 	BankRegister = Register & 7;
 	Task=!!(Register & 8);
 	MmuRegisters[Task][BankRegister]= MmuPrefix |(data & RamMask[CurrentRamConfig]); //gime.c returns what was written so I can get away with this
+	InvalidateFetchCache();
 	if (gBlockInvalidateAll) gBlockInvalidateAll();
 	return;
 }
@@ -180,6 +193,7 @@ void SetRomMap(unsigned char data)
 {
 	RomMap=(data & 3);
 	UpdateMmuArray();
+	InvalidateFetchCache();
 	if (gBlockInvalidateAll) gBlockInvalidateAll();
 	return;
 }
@@ -188,6 +202,7 @@ void SetMapType(unsigned char type)
 {
 	MapType=type;
 	UpdateMmuArray();
+	InvalidateFetchCache();
 	if (gBlockInvalidateAll) gBlockInvalidateAll();
 	return;
 }
@@ -196,6 +211,7 @@ void Set_MmuTask(unsigned char task)
 {
 	MmuTask=task;
 	MmuState= (!MmuEnabled)<<1 | MmuTask;
+	InvalidateFetchCache();
 	if (gBlockInvalidateAll) gBlockInvalidateAll();
 	return;
 }
@@ -204,6 +220,7 @@ void Set_MmuEnabled (unsigned char usingmmu)
 {
 	MmuEnabled=usingmmu;
 	MmuState= (!MmuEnabled)<<1 | MmuTask;
+	InvalidateFetchCache();
 	if (gBlockInvalidateAll) gBlockInvalidateAll();
 	return;
 }
@@ -262,6 +279,27 @@ unsigned char MemRead8( unsigned short address)
 	if (MemPageOffsets[page]==1)
 		return(MemPages[page][address & 0x1FFF]);
 	return( PackMem8Read( MemPageOffsets[page] + (address & 0x1FFF) ));
+}
+
+// Slow path for MemFetch8. Called when the cached fetch page doesn't cover
+// the requested address. If the address lives in a RAM page, we resolve it
+// once, populate the cache, and return the byte. If it lives in ROM, a port,
+// or the vector area, we fall through to the full MemRead8 without caching
+// (those addresses are rare for instruction fetches and the slow path is
+// fine for them).
+unsigned char MemFetch8_Slow(unsigned short address)
+{
+	if (address < 0xFE00)
+	{
+		unsigned short page = MmuRegisters[MmuState][address >> 13];
+		if (MemPageOffsets[page] == 1)
+		{
+			gFetchPagePtr  = MemPages[page];
+			gFetchPageMask = (unsigned int)(address & 0xE000);
+			return gFetchPagePtr[address & 0x1FFF];
+		}
+	}
+	return MemRead8(address);
 }
 
 // Debugger does not want to do port reads that change state
