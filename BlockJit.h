@@ -69,7 +69,8 @@ namespace BlockJit
         // mode-switch path when the CPU flips between 6809 emulation
         // mode and 6309 native mode. Inlined handlers that use these
         // costs read the live byte at runtime via movzx + add.
-        uint8_t*  nat_cycles_21;  // NatEmuCycles21 (used by CLRA/CLRB and others)
+        uint8_t*  nat_cycles_21;  // NatEmuCycles21 (CLRA/CLRB, most inherent ops)
+        uint8_t*  nat_cycles_31;  // NatEmuCycles31 (ABX)
         uint8_t*  nat_cycles_43;  // NatEmuCycles43 (used by *_D handlers)
         uint8_t*  nat_cycles_54;  // NatEmuCycles54 (used by *_E handlers and LDY/LDS #imm)
         // Memory access entrypoints used by inlined 8-bit load/store
@@ -113,6 +114,26 @@ namespace BlockJit
         InstHandler ldb_e;        // LDB ext    (op 0xF6, +NatEmuCycles54 runtime)
         InstHandler sta_e;        // STA ext    (op 0xB7, +NatEmuCycles54 runtime)
         InstHandler stb_e;        // STB ext    (op 0xF7, +NatEmuCycles54 runtime)
+        // Inherent (accumulator) ops. These have small bodies and map
+        // cleanly onto x86 flag-setting instructions plus setcc
+        // sequences - the first use of runtime-CC emission, which is
+        // the pattern we will reuse for compares and eventually lazy-
+        // CC. All use NatEmuCycles21 except ABX which uses
+        // NatEmuCycles31.
+        InstHandler tsta_i;       // TSTA (0x4D)
+        InstHandler tstb_i;       // TSTB (0x5D)
+        InstHandler inca_i;       // INCA (0x4C)
+        InstHandler incb_i;       // INCB (0x5C)
+        InstHandler deca_i;       // DECA (0x4A)
+        InstHandler decb_i;       // DECB (0x5A)
+        InstHandler coma_i;       // COMA (0x43)
+        InstHandler comb_i;       // COMB (0x53)
+        InstHandler nega_i;       // NEGA (0x40)
+        InstHandler negb_i;       // NEGB (0x50)
+        InstHandler lsra_i;       // LSRA (0x44)
+        InstHandler asra_i;       // ASRA (0x47)
+        InstHandler asla_i;       // ASLA / LSLA (0x48)
+        InstHandler abx_i;        // ABX  (0x3A)
     };
 
     // Set up the code arena and remember the addresses the emitter

@@ -285,6 +285,142 @@ static void EmitAddEspImm8(uint8_t*& p, uint8_t imm)
     p += 3;
 }
 
+// cmp byte ptr [imm32], imm8    - 7 bytes (80 3D <addr32> <imm8>).
+// Reads the register byte and sets SF/ZF so TSTA can set cc[N]/cc[Z]
+// from a single cmp instead of loading into a register first.
+static void EmitCmpMem8Imm8(uint8_t*& p, const void* addr, uint8_t imm)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0x80;
+    p[1] = 0x3D;                 // /7 group, mod=00, r/m=101 (disp32)
+    std::memcpy(p + 2, &addr_imm, 4);
+    p[6] = imm;
+    p += 7;
+}
+
+// xor byte ptr [imm32], imm8    - 7 bytes (80 35 <addr32> <imm8>).
+// Used for COMA/COMB: xor with 0xFF is the ones-complement and sets
+// SF/ZF/PF cleanly (CF/OF are always cleared by xor).
+static void EmitXorMem8Imm8(uint8_t*& p, const void* addr, uint8_t imm)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0x80;
+    p[1] = 0x35;                 // /6 group
+    std::memcpy(p + 2, &addr_imm, 4);
+    p[6] = imm;
+    p += 7;
+}
+
+// inc byte ptr [imm32]          - 6 bytes (FE 05 <addr32>). Sets
+// SF/ZF/OF from the result; CF is unchanged - matches 6309 INC which
+// leaves carry alone and sets V only on 0x7F->0x80 overflow.
+static void EmitIncMem8(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0xFE;
+    p[1] = 0x05;                 // /0
+    std::memcpy(p + 2, &addr_imm, 4);
+    p += 6;
+}
+
+// dec byte ptr [imm32]          - 6 bytes (FE 0D <addr32>). Same
+// flag story as inc: SF/ZF/OF updated, CF preserved. For 6309 DEC,
+// the OF flag is 1 exactly when the result is 0x7F, matching
+// cc[V] = (A_REG == 0x7F).
+static void EmitDecMem8(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0xFE;
+    p[1] = 0x0D;                 // /1
+    std::memcpy(p + 2, &addr_imm, 4);
+    p += 6;
+}
+
+// neg byte ptr [imm32]          - 6 bytes (F6 1D <addr32>). Sets
+// SF/ZF, CF = (input != 0), OF = (input == 0x80) — which exactly
+// matches 6309 NEG's cc[C] and cc[V] rules.
+static void EmitNegMem8(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0xF6;
+    p[1] = 0x1D;                 // /3
+    std::memcpy(p + 2, &addr_imm, 4);
+    p += 6;
+}
+
+// shl byte ptr [imm32], 1       - 6 bytes (D0 25 <addr32>). CF gets
+// the shifted-out MSB, OF is (CF != new MSB) which is the 6309 V
+// formula (old_bit7 XOR old_bit6).
+static void EmitShlMem8By1(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0xD0;
+    p[1] = 0x25;                 // /4
+    std::memcpy(p + 2, &addr_imm, 4);
+    p += 6;
+}
+
+// shr byte ptr [imm32], 1       - 6 bytes (D0 2D <addr32>). Logical
+// shift: CF = old LSB; SF always 0 in the result (top bit cleared);
+// OF on a 1-bit shift = old MSB - we don't consume it for LSR.
+static void EmitShrMem8By1(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0xD0;
+    p[1] = 0x2D;                 // /5
+    std::memcpy(p + 2, &addr_imm, 4);
+    p += 6;
+}
+
+// sar byte ptr [imm32], 1       - 6 bytes (D0 3D <addr32>). Arith
+// shift: CF = old LSB; the sign bit propagates so SF reflects the
+// preserved sign (matches 6309 ASRA's cc[N] rule).
+static void EmitSarMem8By1(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0xD0;
+    p[1] = 0x3D;                 // /7
+    std::memcpy(p + 2, &addr_imm, 4);
+    p += 6;
+}
+
+// seto byte ptr [imm32]         - 7 bytes (0F 90 05 <addr32>). Pairs
+// with inc/dec/neg/shl to capture the 6309 V flag directly from x86
+// OF without any arithmetic.
+static void EmitSetoMem(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0x0F;
+    p[1] = 0x90;
+    p[2] = 0x05;
+    std::memcpy(p + 3, &addr_imm, 4);
+    p += 7;
+}
+
+// setc byte ptr [imm32]         - 7 bytes (0F 92 05 <addr32>). Pairs
+// with neg/shl/shr/sar to write cc[C] from x86 CF.
+static void EmitSetcMem(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0x0F;
+    p[1] = 0x92;
+    p[2] = 0x05;
+    std::memcpy(p + 3, &addr_imm, 4);
+    p += 7;
+}
+
+// add word ptr [imm32], ax      - 7 bytes (66 01 05 <addr32>). Used
+// by ABX to fold B_REG (widened into ax via movzx) into X_REG.
+static void EmitAddMem16Ax(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0x66;                 // operand size prefix
+    p[1] = 0x01;                 // add r/m16, r16
+    p[2] = 0x05;
+    std::memcpy(p + 3, &addr_imm, 4);
+    p += 7;
+}
+
 // Add a runtime cycle byte (e.g., NatEmuCycles21) into CycleCounter.
 // 13 bytes total (movzx eax, [addr]; add [cycle_counter], eax).
 static void EmitAddCyclesRuntime(uint8_t*& p, const void* nat_cycles_addr)
@@ -489,6 +625,117 @@ static void EmitInlineSt8Ext(uint8_t*& p, const DecodedInst& insn,
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_54);
 }
 
+// TSTA / TSTB. cmp m8, 0 sets SF/ZF without modifying the register;
+// 6309 semantics clear cc[V] and leave cc[C] alone, so we write Z/N
+// from the flags and V as a constant. Cycle cost is NatEmuCycles21.
+static void EmitInlineTst8(uint8_t*& p, uint8_t* reg_addr)
+{
+    EmitCmpMem8Imm8(p, reg_addr, 0);
+    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
+    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
+    EmitMovMem8Imm8(p, g_addrs.cc + 1, 0);   // cc[V] = 0
+    EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
+}
+
+// INCA / INCB. x86 inc m8 sets SF/ZF from the result and OF exactly
+// when the value wraps from 0x7F to 0x80 - which is the 6309 V rule
+// verbatim. CF is left alone, matching "C untouched".
+static void EmitInlineInc8(uint8_t*& p, uint8_t* reg_addr)
+{
+    EmitIncMem8(p, reg_addr);
+    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
+    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
+    EmitSetoMem(p, g_addrs.cc + 1);          // cc[V]
+    EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
+}
+
+// DECA / DECB. Same shape as INC8 with dec m8 - OF is 1 exactly on
+// the 0x80 -> 0x7F wrap, which is the 6309 V rule for DEC.
+static void EmitInlineDec8(uint8_t*& p, uint8_t* reg_addr)
+{
+    EmitDecMem8(p, reg_addr);
+    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
+    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
+    EmitSetoMem(p, g_addrs.cc + 1);          // cc[V]
+    EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
+}
+
+// COMA / COMB. Ones-complement via xor m8, 0xFF. xor sets SF/ZF/PF
+// and clears CF/OF, so we pick up Z/N from the flags and hard-wire
+// cc[V]=0 and cc[C]=1 per the 6309 spec.
+static void EmitInlineCom8(uint8_t*& p, uint8_t* reg_addr)
+{
+    EmitXorMem8Imm8(p, reg_addr, 0xFF);
+    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
+    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
+    EmitMovMem8Imm8(p, g_addrs.cc + 1, 0);   // cc[V] = 0
+    EmitMovMem8Imm8(p, g_addrs.cc + 0, 1);   // cc[C] = 1 (per spec)
+    EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
+}
+
+// NEGA / NEGB. x86 neg m8 sets: CF = (input != 0); OF = (input ==
+// 0x80); SF/ZF from the result. Those are exactly the four 6309 NEG
+// flag rules, so we can fire four setcc writes straight from the
+// same flag state.
+static void EmitInlineNeg8(uint8_t*& p, uint8_t* reg_addr)
+{
+    EmitNegMem8(p, reg_addr);
+    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
+    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
+    EmitSetoMem(p, g_addrs.cc + 1);          // cc[V]
+    EmitSetcMem(p, g_addrs.cc + 0);          // cc[C]
+    EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
+}
+
+// LSRA. Logical shift right by 1: CF gets the shifted-out LSB (the
+// 6309 C rule), ZF reflects the new value (cc[Z]), and the top bit
+// of the result is always 0 so we hard-wire cc[N] to 0 rather than
+// copy SF. V is left untouched per the 6309 spec, so no write.
+static void EmitInlineLsr8(uint8_t*& p, uint8_t* reg_addr)
+{
+    EmitShrMem8By1(p, reg_addr);
+    EmitSetcMem(p, g_addrs.cc + 0);          // cc[C]
+    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
+    EmitMovMem8Imm8(p, g_addrs.cc + 3, 0);   // cc[N] = 0
+    EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
+}
+
+// ASRA. Arithmetic shift right: sar m8, 1 - sign bit replicates so
+// SF gives us the correct cc[N], ZF cc[Z], CF cc[C]. V unchanged.
+static void EmitInlineAsr8(uint8_t*& p, uint8_t* reg_addr)
+{
+    EmitSarMem8By1(p, reg_addr);
+    EmitSetcMem(p, g_addrs.cc + 0);          // cc[C]
+    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
+    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
+    EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
+}
+
+// ASLA (also LSLA - same opcode, aliased mnemonic). shl m8, 1:
+// CF = old MSB (cc[C]); OF = new-MSB != CF = old_bit6 XOR old_bit7
+// which matches the 6309 V formula (cc[C] ^ ((A_REG & 0x40) >> 6));
+// SF/ZF from the result.
+static void EmitInlineAsl8(uint8_t*& p, uint8_t* reg_addr)
+{
+    EmitShlMem8By1(p, reg_addr);
+    EmitSetcMem(p, g_addrs.cc + 0);          // cc[C]
+    EmitSetoMem(p, g_addrs.cc + 1);          // cc[V]
+    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
+    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
+    EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
+}
+
+// ABX. X_REG += B_REG. Touches no flags in 6309 semantics. We widen
+// B_REG through movzx (upper bits of eax become zero), then add its
+// low word into X_REG via an operand-size-prefixed add m16, r16.
+// Cycle cost is NatEmuCycles31, not the usual 21.
+static void EmitInlineAbx(uint8_t*& p)
+{
+    EmitMovzxEaxMem8(p, g_addrs.b);
+    EmitAddMem16Ax(p, g_addrs.x);
+    EmitAddCyclesRuntime(p, g_addrs.nat_cycles_31);
+}
+
 // Returns true and emits if the handler matches a registered inlineable
 // handler; returns false otherwise so the caller emits the call sequence.
 static bool TryEmitInline(uint8_t*& p, const DecodedInst& insn)
@@ -511,6 +758,20 @@ static bool TryEmitInline(uint8_t*& p, const DecodedInst& insn)
     if (h == g_inlines.ldb_e)  { EmitInlineLd8Ext             (p, insn, g_addrs.b);                          return true; }
     if (h == g_inlines.sta_e)  { EmitInlineSt8Ext             (p, insn, g_addrs.a);                          return true; }
     if (h == g_inlines.stb_e)  { EmitInlineSt8Ext             (p, insn, g_addrs.b);                          return true; }
+    if (h == g_inlines.tsta_i) { EmitInlineTst8               (p, g_addrs.a);                                return true; }
+    if (h == g_inlines.tstb_i) { EmitInlineTst8               (p, g_addrs.b);                                return true; }
+    if (h == g_inlines.inca_i) { EmitInlineInc8               (p, g_addrs.a);                                return true; }
+    if (h == g_inlines.incb_i) { EmitInlineInc8               (p, g_addrs.b);                                return true; }
+    if (h == g_inlines.deca_i) { EmitInlineDec8               (p, g_addrs.a);                                return true; }
+    if (h == g_inlines.decb_i) { EmitInlineDec8               (p, g_addrs.b);                                return true; }
+    if (h == g_inlines.coma_i) { EmitInlineCom8               (p, g_addrs.a);                                return true; }
+    if (h == g_inlines.comb_i) { EmitInlineCom8               (p, g_addrs.b);                                return true; }
+    if (h == g_inlines.nega_i) { EmitInlineNeg8               (p, g_addrs.a);                                return true; }
+    if (h == g_inlines.negb_i) { EmitInlineNeg8               (p, g_addrs.b);                                return true; }
+    if (h == g_inlines.lsra_i) { EmitInlineLsr8               (p, g_addrs.a);                                return true; }
+    if (h == g_inlines.asra_i) { EmitInlineAsr8               (p, g_addrs.a);                                return true; }
+    if (h == g_inlines.asla_i) { EmitInlineAsl8               (p, g_addrs.a);                                return true; }
+    if (h == g_inlines.abx_i)  { EmitInlineAbx                (p);                                           return true; }
     return false;
 }
 

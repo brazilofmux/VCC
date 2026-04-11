@@ -551,6 +551,20 @@ void Lda_E(const DecodedInst* inst);
 void Ldb_E(const DecodedInst* inst);
 void Sta_E(const DecodedInst* inst);
 void Stb_E(const DecodedInst* inst);
+void Tsta_I(const DecodedInst* inst);
+void Tstb_I(const DecodedInst* inst);
+void Inca_I(const DecodedInst* inst);
+void Incb_I(const DecodedInst* inst);
+void Deca_I(const DecodedInst* inst);
+void Decb_I(const DecodedInst* inst);
+void Coma_I(const DecodedInst* inst);
+void Comb_I(const DecodedInst* inst);
+void Nega_I(const DecodedInst* inst);
+void Negb_I(const DecodedInst* inst);
+void Lsra_I(const DecodedInst* inst);
+void Asra_I(const DecodedInst* inst);
+void Asla_I(const DecodedInst* inst);
+void Abx_I(const DecodedInst* inst);
 
 void HD6309Init()
 {	//Call this first or RESET will core!
@@ -575,6 +589,7 @@ void HD6309Init()
 		addrs.cc             = cc;
 		addrs.cycle_counter  = &CycleCounter;
 		addrs.nat_cycles_21  = &NatEmuCycles21;
+		addrs.nat_cycles_31  = &NatEmuCycles31;
 		addrs.nat_cycles_43  = &NatEmuCycles43;
 		addrs.nat_cycles_54  = &NatEmuCycles54;
 		addrs.mem_read8      = &MemRead8;
@@ -598,6 +613,20 @@ void HD6309Init()
 		inlines.ldb_e  = &Ldb_E;
 		inlines.sta_e  = &Sta_E;
 		inlines.stb_e  = &Stb_E;
+		inlines.tsta_i = &Tsta_I;
+		inlines.tstb_i = &Tstb_I;
+		inlines.inca_i = &Inca_I;
+		inlines.incb_i = &Incb_I;
+		inlines.deca_i = &Deca_I;
+		inlines.decb_i = &Decb_I;
+		inlines.coma_i = &Coma_I;
+		inlines.comb_i = &Comb_I;
+		inlines.nega_i = &Nega_I;
+		inlines.negb_i = &Negb_I;
+		inlines.lsra_i = &Lsra_I;
+		inlines.asra_i = &Asra_I;
+		inlines.asla_i = &Asla_I;
+		inlines.abx_i  = &Abx_I;
 
 		BlockJit::Init(addrs, inlines);
 	}
