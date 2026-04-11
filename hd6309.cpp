@@ -362,11 +362,15 @@ static void HD6309PrePopulateBlockCache()
 	uint32_t total_pc = js.pc_writes_emitted + js.pc_writes_skipped;
 	double skipped_pct = (total_pc > 0)
 		? 100.0 * (double)js.pc_writes_skipped / (double)total_pc : 0.0;
-	char dbg[320];
+	double cc_elided_pct = (js.cc_writes_requested > 0)
+		? 100.0 * (double)js.cc_writes_elided / (double)js.cc_writes_requested
+		: 0.0;
+	char dbg[384];
 	snprintf(dbg, sizeof(dbg),
 		"[JIT] arena %u/%u bytes (%.1f%%) blocks=%u failures=%u "
 		"insns=%u inlined=%u (%.1f%%) "
-		"pc_skipped=%u/%u (%.1f%%)\n",
+		"pc_skipped=%u/%u (%.1f%%) "
+		"cc_elided=%u/%u (%.1f%%)\n",
 		(unsigned)js.arena_used, (unsigned)js.arena_size,
 		100.0 * (double)js.arena_used / (double)js.arena_size,
 		(unsigned)js.blocks_emitted,
@@ -376,7 +380,10 @@ static void HD6309PrePopulateBlockCache()
 		inline_pct,
 		(unsigned)js.pc_writes_skipped,
 		(unsigned)total_pc,
-		skipped_pct);
+		skipped_pct,
+		(unsigned)js.cc_writes_elided,
+		(unsigned)js.cc_writes_requested,
+		cc_elided_pct);
 	OutputDebugStringA(dbg);
 }
 

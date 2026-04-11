@@ -43,6 +43,23 @@ static uint32_t           g_insns_called   = 0;
 static uint32_t           g_insns_inlined  = 0;
 static uint32_t           g_pc_writes_emitted = 0;
 static uint32_t           g_pc_writes_skipped = 0;
+static uint32_t           g_cc_writes_requested = 0;
+static uint32_t           g_cc_writes_elided    = 0;
+
+// ---------- cc[] bit ordering ----------
+//
+// Matches cc[] array ordering in hd6309.cpp: cc[C]=0, cc[V]=1,
+// cc[Z]=2, cc[N]=3. The four arithmetic-flag bits we track for DSE.
+static constexpr uint8_t CC_BIT_C = 1u << 0;
+static constexpr uint8_t CC_BIT_V = 1u << 1;
+static constexpr uint8_t CC_BIT_Z = 1u << 2;
+static constexpr uint8_t CC_BIT_N = 1u << 3;
+static constexpr uint8_t CC_ALL   = CC_BIT_C | CC_BIT_V | CC_BIT_Z | CC_BIT_N;
+
+// Sentinel returned by InlinedHandlerWritesMask when a handler is NOT
+// in our inlineable set. In the liveness analyzer this means "treat
+// as a called handler: it may read and write any cc[] bit."
+static constexpr uint8_t CC_UNKNOWN = 0xFF;
 
 void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers)
 {
@@ -65,6 +82,8 @@ void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers)
     g_insns_inlined = 0;
     g_pc_writes_emitted = 0;
     g_pc_writes_skipped = 0;
+    g_cc_writes_requested = 0;
+    g_cc_writes_elided    = 0;
 }
 
 void Reset()
@@ -76,6 +95,8 @@ void Reset()
     g_insns_inlined = 0;
     g_pc_writes_emitted = 0;
     g_pc_writes_skipped = 0;
+    g_cc_writes_requested = 0;
+    g_cc_writes_elided    = 0;
 }
 
 // ---------- low-level x86 emitter helpers ----------
@@ -469,28 +490,36 @@ static constexpr size_t kEpilogueBytes = 1 + kPcWriteBytes;
 
 // LDA #imm and LDB #imm have identical structure - only the destination
 // register byte address differs. The immediate is in insn.operand (low
-// byte). N/Z/V are precomputable from the constant immediate.
+// byte). N/Z/V are precomputable from the constant immediate, so any
+// cc[] write elided by DSE is a pure byte-store save.
 static void EmitInlineLd8Imm(uint8_t*& p, const DecodedInst& insn,
-                             uint8_t* reg_addr)
+                             uint8_t* reg_addr, uint8_t flag_mask)
 {
     const uint8_t imm = (uint8_t)(insn.operand & 0xFF);
-    EmitMovMem8Imm8(p, reg_addr,        imm);
-    EmitMovMem8Imm8(p, g_addrs.cc + 3,  (imm & 0x80) ? 1 : 0);   // cc[N=3]
-    EmitMovMem8Imm8(p, g_addrs.cc + 2,  (imm == 0)   ? 1 : 0);   // cc[Z=2]
-    EmitMovMem8Imm8(p, g_addrs.cc + 1,  0);                      // cc[V=1]
+    EmitMovMem8Imm8(p, reg_addr, imm);  // register write unconditional
+    if (flag_mask & CC_BIT_N)
+        EmitMovMem8Imm8(p, g_addrs.cc + 3, (imm & 0x80) ? 1 : 0);
+    if (flag_mask & CC_BIT_Z)
+        EmitMovMem8Imm8(p, g_addrs.cc + 2, (imm == 0)   ? 1 : 0);
+    if (flag_mask & CC_BIT_V)
+        EmitMovMem8Imm8(p, g_addrs.cc + 1, 0);
     EmitAddMem32Imm8(p, g_addrs.cycle_counter, 2);
 }
 
 // LDD/LDX/LDU #imm16: 16-bit destination, constant cycle cost. cc[N]
 // tests the high bit of the 16-bit value.
 static void EmitInlineLd16ImmConstCycles(uint8_t*& p, const DecodedInst& insn,
-                                         uint16_t* reg_addr, int8_t cycles)
+                                         uint16_t* reg_addr, int8_t cycles,
+                                         uint8_t flag_mask)
 {
     const uint16_t imm = insn.operand;
-    EmitMovMem16Imm16(p, reg_addr,      imm);
-    EmitMovMem8Imm8(p, g_addrs.cc + 3,  (imm & 0x8000) ? 1 : 0); // cc[N]
-    EmitMovMem8Imm8(p, g_addrs.cc + 2,  (imm == 0)     ? 1 : 0); // cc[Z]
-    EmitMovMem8Imm8(p, g_addrs.cc + 1,  0);                      // cc[V]
+    EmitMovMem16Imm16(p, reg_addr, imm);
+    if (flag_mask & CC_BIT_N)
+        EmitMovMem8Imm8(p, g_addrs.cc + 3, (imm & 0x8000) ? 1 : 0);
+    if (flag_mask & CC_BIT_Z)
+        EmitMovMem8Imm8(p, g_addrs.cc + 2, (imm == 0)     ? 1 : 0);
+    if (flag_mask & CC_BIT_V)
+        EmitMovMem8Imm8(p, g_addrs.cc + 1, 0);
     EmitAddMem32Imm8(p, g_addrs.cycle_counter, cycles);
 }
 
@@ -499,13 +528,17 @@ static void EmitInlineLd16ImmConstCycles(uint8_t*& p, const DecodedInst& insn,
 // the CPU mode changes. We read it via movzx + add.
 static void EmitInlineLd16ImmRuntimeCycles(uint8_t*& p, const DecodedInst& insn,
                                            uint16_t* reg_addr,
-                                           const void* nat_cycles_addr)
+                                           const void* nat_cycles_addr,
+                                           uint8_t flag_mask)
 {
     const uint16_t imm = insn.operand;
-    EmitMovMem16Imm16(p, reg_addr,      imm);
-    EmitMovMem8Imm8(p, g_addrs.cc + 3,  (imm & 0x8000) ? 1 : 0);
-    EmitMovMem8Imm8(p, g_addrs.cc + 2,  (imm == 0)     ? 1 : 0);
-    EmitMovMem8Imm8(p, g_addrs.cc + 1,  0);
+    EmitMovMem16Imm16(p, reg_addr, imm);
+    if (flag_mask & CC_BIT_N)
+        EmitMovMem8Imm8(p, g_addrs.cc + 3, (imm & 0x8000) ? 1 : 0);
+    if (flag_mask & CC_BIT_Z)
+        EmitMovMem8Imm8(p, g_addrs.cc + 2, (imm == 0)     ? 1 : 0);
+    if (flag_mask & CC_BIT_V)
+        EmitMovMem8Imm8(p, g_addrs.cc + 1, 0);
     EmitAddCyclesRuntime(p, nat_cycles_addr);
 }
 
@@ -513,13 +546,17 @@ static void EmitInlineLd16ImmRuntimeCycles(uint8_t*& p, const DecodedInst& insn,
 // pattern (C=0, V=0, Z=1, N=0). Touches cc[C] which the load
 // emitters do NOT, so this is its own emitter rather than reusing
 // the load shape. Cycle cost is the runtime NatEmuCycles21 byte.
-static void EmitInlineClr8(uint8_t*& p, uint8_t* reg_addr)
+static void EmitInlineClr8(uint8_t*& p, uint8_t* reg_addr, uint8_t flag_mask)
 {
-    EmitMovMem8Imm8(p, reg_addr,        0);
-    EmitMovMem8Imm8(p, g_addrs.cc + 0,  0);  // C
-    EmitMovMem8Imm8(p, g_addrs.cc + 1,  0);  // V
-    EmitMovMem8Imm8(p, g_addrs.cc + 2,  1);  // Z = 1
-    EmitMovMem8Imm8(p, g_addrs.cc + 3,  0);  // N
+    EmitMovMem8Imm8(p, reg_addr, 0);  // register write unconditional
+    if (flag_mask & CC_BIT_C)
+        EmitMovMem8Imm8(p, g_addrs.cc + 0, 0);
+    if (flag_mask & CC_BIT_V)
+        EmitMovMem8Imm8(p, g_addrs.cc + 1, 0);
+    if (flag_mask & CC_BIT_Z)
+        EmitMovMem8Imm8(p, g_addrs.cc + 2, 1);
+    if (flag_mask & CC_BIT_N)
+        EmitMovMem8Imm8(p, g_addrs.cc + 3, 0);
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
 }
 
@@ -527,33 +564,43 @@ static void EmitInlineClr8(uint8_t*& p, uint8_t* reg_addr)
 // the low byte currently in al. The caller is responsible for
 // ensuring al holds the value the 6309 handler would flag-test
 // (the byte just read, or A_REG/B_REG for stores).
-static void EmitFlags8FromAl(uint8_t*& p)
+//
+// Z and N both come from x86 SF/ZF after a `test al, al`, so the
+// test is only needed when at least one of those two is live. V is
+// a constant store and is independent of the test.
+static void EmitFlags8FromAl(uint8_t*& p, uint8_t flag_mask)
 {
-    EmitTestAlAl(p);                         // test al, al
-    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
-    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
-    EmitMovMem8Imm8(p, g_addrs.cc + 1, 0);   // cc[V] = 0
+    if (flag_mask & (CC_BIT_Z | CC_BIT_N))
+    {
+        EmitTestAlAl(p);
+        if (flag_mask & CC_BIT_Z)
+            EmitSeteMem(p, g_addrs.cc + 2);
+        if (flag_mask & CC_BIT_N)
+            EmitSetsMem(p, g_addrs.cc + 3);
+    }
+    if (flag_mask & CC_BIT_V)
+        EmitMovMem8Imm8(p, g_addrs.cc + 1, 0);
 }
 
 // LDA <dp / LDB <dp. Compute effective address as dp.Reg | offset,
 // call MemRead8, store the byte to A/B, then update Z/N/V from the
 // returned byte. Cycles come from the runtime NatEmuCycles43 byte.
+// The MemRead8 call and register write are unconditional (visible
+// side effects); only the cc[] writes respond to flag_mask.
 static void EmitInlineLd8Dp(uint8_t*& p, const DecodedInst& insn,
-                            uint8_t* reg_addr)
+                            uint8_t* reg_addr, uint8_t flag_mask)
 {
     const uint8_t offset = (uint8_t)(insn.operand & 0xFF);
 
-    // eax = dp.Reg | offset, then push and call MemRead8.
-    EmitMovzxEaxMem16(p, g_addrs.dp);        // movzx eax, word [dp]
+    EmitMovzxEaxMem16(p, g_addrs.dp);
     if (offset != 0)
-        EmitOrAlImm8(p, offset);             // or al, offset_imm8
-    EmitPushEax(p);                          // push eax
+        EmitOrAlImm8(p, offset);
+    EmitPushEax(p);
     EmitCallRel32(p, (const void*)g_addrs.mem_read8);
-    EmitAddEsp4(p);                          // add esp, 4
+    EmitAddEsp4(p);
 
-    // al now holds the memory byte. Store it and flag-test.
-    EmitMovMemAl(p, reg_addr);               // mov [reg], al
-    EmitFlags8FromAl(p);
+    EmitMovMemAl(p, reg_addr);
+    EmitFlags8FromAl(p, flag_mask);
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_43);
 }
 
@@ -561,16 +608,16 @@ static void EmitInlineLd8Dp(uint8_t*& p, const DecodedInst& insn,
 // time and gets baked as a push imm32, so we skip the dp math and
 // just call. Uses NatEmuCycles54.
 static void EmitInlineLd8Ext(uint8_t*& p, const DecodedInst& insn,
-                             uint8_t* reg_addr)
+                             uint8_t* reg_addr, uint8_t flag_mask)
 {
     const uint16_t addr = insn.operand;
 
-    EmitPushImm32(p, addr);                  // push imm32 (zero-extended addr)
+    EmitPushImm32(p, addr);
     EmitCallRel32(p, (const void*)g_addrs.mem_read8);
     EmitAddEsp4(p);
 
     EmitMovMemAl(p, reg_addr);
-    EmitFlags8FromAl(p);
+    EmitFlags8FromAl(p, flag_mask);
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_54);
 }
 
@@ -580,28 +627,21 @@ static void EmitInlineLd8Ext(uint8_t*& p, const DecodedInst& insn,
 // The flag update uses the value in A/B, not anything from memory,
 // matching the interpreter handler.
 static void EmitInlineSt8Dp(uint8_t*& p, const DecodedInst& insn,
-                            uint8_t* reg_addr)
+                            uint8_t* reg_addr, uint8_t flag_mask)
 {
     const uint8_t offset = (uint8_t)(insn.operand & 0xFF);
 
-    // Load data into eax zero-extended. movzx (7 bytes) is two
-    // bytes longer than mov al (5 bytes) but zero-extends for the
-    // push imm arg promotion the C ABI requires.
-    EmitMovzxEaxMem8(p, reg_addr);           // movzx eax, byte [reg]
+    EmitMovzxEaxMem8(p, reg_addr);
+    EmitFlags8FromAl(p, flag_mask);
 
-    // Flag-test while al still has the value.
-    EmitFlags8FromAl(p);
-
-    // Compute address in edx = dp.Reg | offset.
     EmitMovzxEdxMem16(p, g_addrs.dp);
     if (offset != 0)
         EmitOrDlImm8(p, offset);
 
-    // cdecl: push args right-to-left -> push address then data.
-    EmitPushEdx(p);                          // push edx (address, arg1)
-    EmitPushEax(p);                          // push eax (data,   arg0)
+    EmitPushEdx(p);
+    EmitPushEax(p);
     EmitCallRel32(p, (const void*)g_addrs.mem_write8);
-    EmitAddEspImm8(p, 8);                    // add esp, 8
+    EmitAddEspImm8(p, 8);
 
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_43);
 }
@@ -610,15 +650,15 @@ static void EmitInlineSt8Dp(uint8_t*& p, const DecodedInst& insn,
 // push imm32, not a runtime dp.Reg|offset computation. Uses
 // NatEmuCycles54.
 static void EmitInlineSt8Ext(uint8_t*& p, const DecodedInst& insn,
-                             uint8_t* reg_addr)
+                             uint8_t* reg_addr, uint8_t flag_mask)
 {
     const uint16_t addr = insn.operand;
 
-    EmitMovzxEaxMem8(p, reg_addr);           // movzx eax, byte [reg]
-    EmitFlags8FromAl(p);
+    EmitMovzxEaxMem8(p, reg_addr);
+    EmitFlags8FromAl(p, flag_mask);
 
-    EmitPushImm32(p, addr);                  // push address imm
-    EmitPushEax(p);                          // push data
+    EmitPushImm32(p, addr);
+    EmitPushEax(p);
     EmitCallRel32(p, (const void*)g_addrs.mem_write8);
     EmitAddEspImm8(p, 8);
 
@@ -628,48 +668,68 @@ static void EmitInlineSt8Ext(uint8_t*& p, const DecodedInst& insn,
 // TSTA / TSTB. cmp m8, 0 sets SF/ZF without modifying the register;
 // 6309 semantics clear cc[V] and leave cc[C] alone, so we write Z/N
 // from the flags and V as a constant. Cycle cost is NatEmuCycles21.
-static void EmitInlineTst8(uint8_t*& p, uint8_t* reg_addr)
+// If all three flag bits are dead, TST collapses to just the cycle
+// update - the cmp itself has no side effects other than flags.
+static void EmitInlineTst8(uint8_t*& p, uint8_t* reg_addr, uint8_t flag_mask)
 {
-    EmitCmpMem8Imm8(p, reg_addr, 0);
-    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
-    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
-    EmitMovMem8Imm8(p, g_addrs.cc + 1, 0);   // cc[V] = 0
+    if (flag_mask & (CC_BIT_Z | CC_BIT_N))
+    {
+        EmitCmpMem8Imm8(p, reg_addr, 0);
+        if (flag_mask & CC_BIT_Z)
+            EmitSeteMem(p, g_addrs.cc + 2);
+        if (flag_mask & CC_BIT_N)
+            EmitSetsMem(p, g_addrs.cc + 3);
+    }
+    if (flag_mask & CC_BIT_V)
+        EmitMovMem8Imm8(p, g_addrs.cc + 1, 0);
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
 }
 
 // INCA / INCB. x86 inc m8 sets SF/ZF from the result and OF exactly
 // when the value wraps from 0x7F to 0x80 - which is the 6309 V rule
-// verbatim. CF is left alone, matching "C untouched".
-static void EmitInlineInc8(uint8_t*& p, uint8_t* reg_addr)
+// verbatim. CF is left alone, matching "C untouched". The register
+// mutation is the architectural side effect, so inc m8 is emitted
+// unconditionally; only the cc[] stores are DSE-able.
+static void EmitInlineInc8(uint8_t*& p, uint8_t* reg_addr, uint8_t flag_mask)
 {
     EmitIncMem8(p, reg_addr);
-    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
-    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
-    EmitSetoMem(p, g_addrs.cc + 1);          // cc[V]
+    if (flag_mask & CC_BIT_Z)
+        EmitSeteMem(p, g_addrs.cc + 2);
+    if (flag_mask & CC_BIT_N)
+        EmitSetsMem(p, g_addrs.cc + 3);
+    if (flag_mask & CC_BIT_V)
+        EmitSetoMem(p, g_addrs.cc + 1);
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
 }
 
 // DECA / DECB. Same shape as INC8 with dec m8 - OF is 1 exactly on
 // the 0x80 -> 0x7F wrap, which is the 6309 V rule for DEC.
-static void EmitInlineDec8(uint8_t*& p, uint8_t* reg_addr)
+static void EmitInlineDec8(uint8_t*& p, uint8_t* reg_addr, uint8_t flag_mask)
 {
     EmitDecMem8(p, reg_addr);
-    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
-    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
-    EmitSetoMem(p, g_addrs.cc + 1);          // cc[V]
+    if (flag_mask & CC_BIT_Z)
+        EmitSeteMem(p, g_addrs.cc + 2);
+    if (flag_mask & CC_BIT_N)
+        EmitSetsMem(p, g_addrs.cc + 3);
+    if (flag_mask & CC_BIT_V)
+        EmitSetoMem(p, g_addrs.cc + 1);
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
 }
 
 // COMA / COMB. Ones-complement via xor m8, 0xFF. xor sets SF/ZF/PF
 // and clears CF/OF, so we pick up Z/N from the flags and hard-wire
 // cc[V]=0 and cc[C]=1 per the 6309 spec.
-static void EmitInlineCom8(uint8_t*& p, uint8_t* reg_addr)
+static void EmitInlineCom8(uint8_t*& p, uint8_t* reg_addr, uint8_t flag_mask)
 {
     EmitXorMem8Imm8(p, reg_addr, 0xFF);
-    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
-    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
-    EmitMovMem8Imm8(p, g_addrs.cc + 1, 0);   // cc[V] = 0
-    EmitMovMem8Imm8(p, g_addrs.cc + 0, 1);   // cc[C] = 1 (per spec)
+    if (flag_mask & CC_BIT_Z)
+        EmitSeteMem(p, g_addrs.cc + 2);
+    if (flag_mask & CC_BIT_N)
+        EmitSetsMem(p, g_addrs.cc + 3);
+    if (flag_mask & CC_BIT_V)
+        EmitMovMem8Imm8(p, g_addrs.cc + 1, 0);
+    if (flag_mask & CC_BIT_C)
+        EmitMovMem8Imm8(p, g_addrs.cc + 0, 1);
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
 }
 
@@ -677,13 +737,17 @@ static void EmitInlineCom8(uint8_t*& p, uint8_t* reg_addr)
 // 0x80); SF/ZF from the result. Those are exactly the four 6309 NEG
 // flag rules, so we can fire four setcc writes straight from the
 // same flag state.
-static void EmitInlineNeg8(uint8_t*& p, uint8_t* reg_addr)
+static void EmitInlineNeg8(uint8_t*& p, uint8_t* reg_addr, uint8_t flag_mask)
 {
     EmitNegMem8(p, reg_addr);
-    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
-    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
-    EmitSetoMem(p, g_addrs.cc + 1);          // cc[V]
-    EmitSetcMem(p, g_addrs.cc + 0);          // cc[C]
+    if (flag_mask & CC_BIT_Z)
+        EmitSeteMem(p, g_addrs.cc + 2);
+    if (flag_mask & CC_BIT_N)
+        EmitSetsMem(p, g_addrs.cc + 3);
+    if (flag_mask & CC_BIT_V)
+        EmitSetoMem(p, g_addrs.cc + 1);
+    if (flag_mask & CC_BIT_C)
+        EmitSetcMem(p, g_addrs.cc + 0);
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
 }
 
@@ -691,23 +755,29 @@ static void EmitInlineNeg8(uint8_t*& p, uint8_t* reg_addr)
 // 6309 C rule), ZF reflects the new value (cc[Z]), and the top bit
 // of the result is always 0 so we hard-wire cc[N] to 0 rather than
 // copy SF. V is left untouched per the 6309 spec, so no write.
-static void EmitInlineLsr8(uint8_t*& p, uint8_t* reg_addr)
+static void EmitInlineLsr8(uint8_t*& p, uint8_t* reg_addr, uint8_t flag_mask)
 {
     EmitShrMem8By1(p, reg_addr);
-    EmitSetcMem(p, g_addrs.cc + 0);          // cc[C]
-    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
-    EmitMovMem8Imm8(p, g_addrs.cc + 3, 0);   // cc[N] = 0
+    if (flag_mask & CC_BIT_C)
+        EmitSetcMem(p, g_addrs.cc + 0);
+    if (flag_mask & CC_BIT_Z)
+        EmitSeteMem(p, g_addrs.cc + 2);
+    if (flag_mask & CC_BIT_N)
+        EmitMovMem8Imm8(p, g_addrs.cc + 3, 0);
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
 }
 
 // ASRA. Arithmetic shift right: sar m8, 1 - sign bit replicates so
 // SF gives us the correct cc[N], ZF cc[Z], CF cc[C]. V unchanged.
-static void EmitInlineAsr8(uint8_t*& p, uint8_t* reg_addr)
+static void EmitInlineAsr8(uint8_t*& p, uint8_t* reg_addr, uint8_t flag_mask)
 {
     EmitSarMem8By1(p, reg_addr);
-    EmitSetcMem(p, g_addrs.cc + 0);          // cc[C]
-    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
-    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
+    if (flag_mask & CC_BIT_C)
+        EmitSetcMem(p, g_addrs.cc + 0);
+    if (flag_mask & CC_BIT_Z)
+        EmitSeteMem(p, g_addrs.cc + 2);
+    if (flag_mask & CC_BIT_N)
+        EmitSetsMem(p, g_addrs.cc + 3);
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
 }
 
@@ -715,20 +785,25 @@ static void EmitInlineAsr8(uint8_t*& p, uint8_t* reg_addr)
 // CF = old MSB (cc[C]); OF = new-MSB != CF = old_bit6 XOR old_bit7
 // which matches the 6309 V formula (cc[C] ^ ((A_REG & 0x40) >> 6));
 // SF/ZF from the result.
-static void EmitInlineAsl8(uint8_t*& p, uint8_t* reg_addr)
+static void EmitInlineAsl8(uint8_t*& p, uint8_t* reg_addr, uint8_t flag_mask)
 {
     EmitShlMem8By1(p, reg_addr);
-    EmitSetcMem(p, g_addrs.cc + 0);          // cc[C]
-    EmitSetoMem(p, g_addrs.cc + 1);          // cc[V]
-    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
-    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
+    if (flag_mask & CC_BIT_C)
+        EmitSetcMem(p, g_addrs.cc + 0);
+    if (flag_mask & CC_BIT_V)
+        EmitSetoMem(p, g_addrs.cc + 1);
+    if (flag_mask & CC_BIT_Z)
+        EmitSeteMem(p, g_addrs.cc + 2);
+    if (flag_mask & CC_BIT_N)
+        EmitSetsMem(p, g_addrs.cc + 3);
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
 }
 
 // ABX. X_REG += B_REG. Touches no flags in 6309 semantics. We widen
 // B_REG through movzx (upper bits of eax become zero), then add its
 // low word into X_REG via an operand-size-prefixed add m16, r16.
-// Cycle cost is NatEmuCycles31, not the usual 21.
+// Cycle cost is NatEmuCycles31, not the usual 21. No flag_mask param
+// because ABX never writes cc[].
 static void EmitInlineAbx(uint8_t*& p)
 {
     EmitMovzxEaxMem8(p, g_addrs.b);
@@ -736,42 +811,169 @@ static void EmitInlineAbx(uint8_t*& p)
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_31);
 }
 
+// Returns the set of cc[] bits an inlined handler's full body would
+// write, or CC_UNKNOWN if the handler is not inlineable. The caller
+// uses CC_UNKNOWN as the signal "treat as called handler" for the
+// liveness analysis: such a handler may read any cc[] bit (which
+// means any earlier inlined write is live) and may write any cc[]
+// bit (which means any earlier elision decision must reset).
+//
+// Keep this function in lockstep with TryEmitInline - whenever a new
+// handler is added to the inlineable set, its writes_mask must be
+// added here too, or DSE will silently believe the handler elides
+// nothing (which is safe but leaves a gap), or worse classify it as
+// CC_UNKNOWN (which defeats DSE around inlined runs of that op).
+static uint8_t InlinedHandlerWritesMask(InstHandler h)
+{
+    if (h == nullptr) return CC_UNKNOWN;
+
+    // {Z, N, V} family: immediate loads, 8-bit memory loads/stores,
+    // TSTA/TSTB, INCA/INCB, DECA/DECB. All leave C untouched.
+    if (h == g_inlines.lda_m  || h == g_inlines.ldb_m  ||
+        h == g_inlines.ldd_m  || h == g_inlines.ldx_m  ||
+        h == g_inlines.ldu_m  || h == g_inlines.lds_i  ||
+        h == g_inlines.ldy_m  ||
+        h == g_inlines.lda_d  || h == g_inlines.ldb_d  ||
+        h == g_inlines.sta_d  || h == g_inlines.stb_d  ||
+        h == g_inlines.lda_e  || h == g_inlines.ldb_e  ||
+        h == g_inlines.sta_e  || h == g_inlines.stb_e  ||
+        h == g_inlines.tsta_i || h == g_inlines.tstb_i ||
+        h == g_inlines.inca_i || h == g_inlines.incb_i ||
+        h == g_inlines.deca_i || h == g_inlines.decb_i)
+    {
+        return CC_BIT_Z | CC_BIT_N | CC_BIT_V;
+    }
+
+    // CLR, COM, NEG all set all four arithmetic flags.
+    if (h == g_inlines.clra_i || h == g_inlines.clrb_i ||
+        h == g_inlines.coma_i || h == g_inlines.comb_i ||
+        h == g_inlines.nega_i || h == g_inlines.negb_i)
+    {
+        return CC_ALL;
+    }
+
+    // LSRA: C from LSB, Z from result, N=0, V unchanged.
+    if (h == g_inlines.lsra_i)
+    {
+        return CC_BIT_C | CC_BIT_Z | CC_BIT_N;
+    }
+
+    // ASRA: C from LSB, Z/N from result, V unchanged.
+    if (h == g_inlines.asra_i)
+    {
+        return CC_BIT_C | CC_BIT_Z | CC_BIT_N;
+    }
+
+    // ASLA / LSLA: C from MSB, Z/N from result, V from overflow.
+    if (h == g_inlines.asla_i)
+    {
+        return CC_ALL;
+    }
+
+    // ABX: touches nothing.
+    if (h == g_inlines.abx_i)
+    {
+        return 0;
+    }
+
+    return CC_UNKNOWN;
+}
+
+// Backward liveness analysis over a block's pre-decoded instructions.
+// Fills live_writes[i] (for inlined ops) with the subset of the op's
+// writes_mask that a future reader will observe before another
+// overwrite elides it. For ops that map to CC_UNKNOWN (called
+// handlers, or handlers we do not recognize), live_writes is
+// irrelevant and set to 0; the forward pass will emit those via the
+// call-handler path regardless.
+//
+// Standard backward liveness, with the simplification that none of
+// our inlineable handlers READ cc[]:
+//   live_out[last]  = CC_ALL                              // anything a future block could observe
+//   live_writes[i]  = writes[i] & live_out[i]
+//   live_in[i]      = (live_out[i] - writes[i]) U use[i]  // use[i] = 0 for inlined ops
+// For called handlers, writes = use = CC_ALL, so live_in resets to
+// CC_ALL regardless of the outgoing live set.
+static void AnalyzeFlagLiveness(const CachedBlock& slot,
+                                uint8_t* live_writes_out,
+                                uint32_t* requested_out,
+                                uint32_t* elided_out)
+{
+    uint8_t live = CC_ALL;
+    uint32_t requested = 0;
+    uint32_t elided    = 0;
+
+    for (int i = (int)slot.num_insns - 1; i >= 0; --i)
+    {
+        const uint8_t mask = InlinedHandlerWritesMask(slot.insns[i].handler);
+
+        if (mask == CC_UNKNOWN)
+        {
+            // Called handler: treat as reading and writing everything.
+            live_writes_out[i] = 0;  // unused; forward pass emits via call path
+            live = CC_ALL;
+            continue;
+        }
+
+        // Count what the op WOULD write without DSE.
+        uint8_t bits = mask;
+        while (bits) { requested++; bits &= bits - 1; }
+
+        const uint8_t live_writes = (uint8_t)(mask & live);
+        live_writes_out[i] = live_writes;
+
+        // Count what DSE eliminated.
+        uint8_t dead = (uint8_t)(mask & ~live);
+        while (dead) { elided++; dead &= dead - 1; }
+
+        // Backward transfer: an inlined op's writes kill liveness for
+        // those flags before this point. (use[i] == 0, so no flags
+        // become newly live.)
+        live &= (uint8_t)~mask;
+    }
+
+    if (requested_out) *requested_out = requested;
+    if (elided_out)    *elided_out    = elided;
+}
+
 // Returns true and emits if the handler matches a registered inlineable
 // handler; returns false otherwise so the caller emits the call sequence.
-static bool TryEmitInline(uint8_t*& p, const DecodedInst& insn)
+// The flag_mask parameter controls which cc[] byte writes the op will
+// actually emit - bits set = live, bits clear = dead (elided by DSE).
+static bool TryEmitInline(uint8_t*& p, const DecodedInst& insn, uint8_t flag_mask)
 {
     const InstHandler h = insn.handler;
-    if (h == g_inlines.lda_m)  { EmitInlineLd8Imm             (p, insn, g_addrs.a);                          return true; }
-    if (h == g_inlines.ldb_m)  { EmitInlineLd8Imm             (p, insn, g_addrs.b);                          return true; }
-    if (h == g_inlines.ldd_m)  { EmitInlineLd16ImmConstCycles (p, insn, g_addrs.d, 3);                       return true; }
-    if (h == g_inlines.ldx_m)  { EmitInlineLd16ImmConstCycles (p, insn, g_addrs.x, 3);                       return true; }
-    if (h == g_inlines.ldu_m)  { EmitInlineLd16ImmConstCycles (p, insn, g_addrs.u, 3);                       return true; }
-    if (h == g_inlines.lds_i)  { EmitInlineLd16ImmConstCycles (p, insn, g_addrs.s, 4);                       return true; }
-    if (h == g_inlines.ldy_m)  { EmitInlineLd16ImmRuntimeCycles(p, insn, g_addrs.y, g_addrs.nat_cycles_54);  return true; }
-    if (h == g_inlines.clra_i) { EmitInlineClr8               (p, g_addrs.a);                                return true; }
-    if (h == g_inlines.clrb_i) { EmitInlineClr8               (p, g_addrs.b);                                return true; }
-    if (h == g_inlines.lda_d)  { EmitInlineLd8Dp              (p, insn, g_addrs.a);                          return true; }
-    if (h == g_inlines.ldb_d)  { EmitInlineLd8Dp              (p, insn, g_addrs.b);                          return true; }
-    if (h == g_inlines.sta_d)  { EmitInlineSt8Dp              (p, insn, g_addrs.a);                          return true; }
-    if (h == g_inlines.stb_d)  { EmitInlineSt8Dp              (p, insn, g_addrs.b);                          return true; }
-    if (h == g_inlines.lda_e)  { EmitInlineLd8Ext             (p, insn, g_addrs.a);                          return true; }
-    if (h == g_inlines.ldb_e)  { EmitInlineLd8Ext             (p, insn, g_addrs.b);                          return true; }
-    if (h == g_inlines.sta_e)  { EmitInlineSt8Ext             (p, insn, g_addrs.a);                          return true; }
-    if (h == g_inlines.stb_e)  { EmitInlineSt8Ext             (p, insn, g_addrs.b);                          return true; }
-    if (h == g_inlines.tsta_i) { EmitInlineTst8               (p, g_addrs.a);                                return true; }
-    if (h == g_inlines.tstb_i) { EmitInlineTst8               (p, g_addrs.b);                                return true; }
-    if (h == g_inlines.inca_i) { EmitInlineInc8               (p, g_addrs.a);                                return true; }
-    if (h == g_inlines.incb_i) { EmitInlineInc8               (p, g_addrs.b);                                return true; }
-    if (h == g_inlines.deca_i) { EmitInlineDec8               (p, g_addrs.a);                                return true; }
-    if (h == g_inlines.decb_i) { EmitInlineDec8               (p, g_addrs.b);                                return true; }
-    if (h == g_inlines.coma_i) { EmitInlineCom8               (p, g_addrs.a);                                return true; }
-    if (h == g_inlines.comb_i) { EmitInlineCom8               (p, g_addrs.b);                                return true; }
-    if (h == g_inlines.nega_i) { EmitInlineNeg8               (p, g_addrs.a);                                return true; }
-    if (h == g_inlines.negb_i) { EmitInlineNeg8               (p, g_addrs.b);                                return true; }
-    if (h == g_inlines.lsra_i) { EmitInlineLsr8               (p, g_addrs.a);                                return true; }
-    if (h == g_inlines.asra_i) { EmitInlineAsr8               (p, g_addrs.a);                                return true; }
-    if (h == g_inlines.asla_i) { EmitInlineAsl8               (p, g_addrs.a);                                return true; }
-    if (h == g_inlines.abx_i)  { EmitInlineAbx                (p);                                           return true; }
+    if (h == g_inlines.lda_m)  { EmitInlineLd8Imm              (p, insn, g_addrs.a,                       flag_mask); return true; }
+    if (h == g_inlines.ldb_m)  { EmitInlineLd8Imm              (p, insn, g_addrs.b,                       flag_mask); return true; }
+    if (h == g_inlines.ldd_m)  { EmitInlineLd16ImmConstCycles  (p, insn, g_addrs.d, 3,                    flag_mask); return true; }
+    if (h == g_inlines.ldx_m)  { EmitInlineLd16ImmConstCycles  (p, insn, g_addrs.x, 3,                    flag_mask); return true; }
+    if (h == g_inlines.ldu_m)  { EmitInlineLd16ImmConstCycles  (p, insn, g_addrs.u, 3,                    flag_mask); return true; }
+    if (h == g_inlines.lds_i)  { EmitInlineLd16ImmConstCycles  (p, insn, g_addrs.s, 4,                    flag_mask); return true; }
+    if (h == g_inlines.ldy_m)  { EmitInlineLd16ImmRuntimeCycles(p, insn, g_addrs.y, g_addrs.nat_cycles_54,flag_mask); return true; }
+    if (h == g_inlines.clra_i) { EmitInlineClr8                (p, g_addrs.a,                             flag_mask); return true; }
+    if (h == g_inlines.clrb_i) { EmitInlineClr8                (p, g_addrs.b,                             flag_mask); return true; }
+    if (h == g_inlines.lda_d)  { EmitInlineLd8Dp               (p, insn, g_addrs.a,                       flag_mask); return true; }
+    if (h == g_inlines.ldb_d)  { EmitInlineLd8Dp               (p, insn, g_addrs.b,                       flag_mask); return true; }
+    if (h == g_inlines.sta_d)  { EmitInlineSt8Dp               (p, insn, g_addrs.a,                       flag_mask); return true; }
+    if (h == g_inlines.stb_d)  { EmitInlineSt8Dp               (p, insn, g_addrs.b,                       flag_mask); return true; }
+    if (h == g_inlines.lda_e)  { EmitInlineLd8Ext              (p, insn, g_addrs.a,                       flag_mask); return true; }
+    if (h == g_inlines.ldb_e)  { EmitInlineLd8Ext              (p, insn, g_addrs.b,                       flag_mask); return true; }
+    if (h == g_inlines.sta_e)  { EmitInlineSt8Ext              (p, insn, g_addrs.a,                       flag_mask); return true; }
+    if (h == g_inlines.stb_e)  { EmitInlineSt8Ext              (p, insn, g_addrs.b,                       flag_mask); return true; }
+    if (h == g_inlines.tsta_i) { EmitInlineTst8                (p, g_addrs.a,                             flag_mask); return true; }
+    if (h == g_inlines.tstb_i) { EmitInlineTst8                (p, g_addrs.b,                             flag_mask); return true; }
+    if (h == g_inlines.inca_i) { EmitInlineInc8                (p, g_addrs.a,                             flag_mask); return true; }
+    if (h == g_inlines.incb_i) { EmitInlineInc8                (p, g_addrs.b,                             flag_mask); return true; }
+    if (h == g_inlines.deca_i) { EmitInlineDec8                (p, g_addrs.a,                             flag_mask); return true; }
+    if (h == g_inlines.decb_i) { EmitInlineDec8                (p, g_addrs.b,                             flag_mask); return true; }
+    if (h == g_inlines.coma_i) { EmitInlineCom8                (p, g_addrs.a,                             flag_mask); return true; }
+    if (h == g_inlines.comb_i) { EmitInlineCom8                (p, g_addrs.b,                             flag_mask); return true; }
+    if (h == g_inlines.nega_i) { EmitInlineNeg8                (p, g_addrs.a,                             flag_mask); return true; }
+    if (h == g_inlines.negb_i) { EmitInlineNeg8                (p, g_addrs.b,                             flag_mask); return true; }
+    if (h == g_inlines.lsra_i) { EmitInlineLsr8                (p, g_addrs.a,                             flag_mask); return true; }
+    if (h == g_inlines.asra_i) { EmitInlineAsr8                (p, g_addrs.a,                             flag_mask); return true; }
+    if (h == g_inlines.asla_i) { EmitInlineAsl8                (p, g_addrs.a,                             flag_mask); return true; }
+    if (h == g_inlines.abx_i)  { EmitInlineAbx                 (p);                                                   return true; }
     return false;
 }
 
@@ -788,6 +990,17 @@ NativeEntry EmitBlock(const CachedBlock& slot)
         ++g_emit_failures;
         return nullptr;
     }
+
+    // Backward liveness pass for cc[] writes. For each inlined op,
+    // live_writes[i] is the subset of the op's default cc[] writes
+    // that a future reader will observe before some later op
+    // overwrites them. The forward pass emits only those writes.
+    uint8_t live_writes[12];  // MAX_BLOCK_INSNS
+    uint32_t cc_requested = 0;
+    uint32_t cc_elided    = 0;
+    AnalyzeFlagLiveness(slot, live_writes, &cc_requested, &cc_elided);
+    g_cc_writes_requested += cc_requested;
+    g_cc_writes_elided    += cc_elided;
 
     uint8_t* const entry = g_arena_base + g_arena_used;
     uint8_t* p = entry;
@@ -808,7 +1021,7 @@ NativeEntry EmitBlock(const CachedBlock& slot)
         const DecodedInst& insn = slot.insns[i];
         local_pc = (uint16_t)(local_pc + insn.length);
 
-        if (TryEmitInline(p, insn))
+        if (TryEmitInline(p, insn, live_writes[i]))
         {
             // Inlined ops don't read PC, so skip the per-insn PC
             // write. Just remember PC is now stale relative to local_pc.
@@ -856,14 +1069,16 @@ NativeEntry EmitBlock(const CachedBlock& slot)
 Stats GetStats()
 {
     Stats s;
-    s.arena_size        = kArenaSize;
-    s.arena_used        = g_arena_used;
-    s.blocks_emitted    = g_blocks_emitted;
-    s.emit_failures     = g_emit_failures;
-    s.insns_called      = g_insns_called;
-    s.insns_inlined     = g_insns_inlined;
-    s.pc_writes_emitted = g_pc_writes_emitted;
-    s.pc_writes_skipped = g_pc_writes_skipped;
+    s.arena_size          = kArenaSize;
+    s.arena_used          = g_arena_used;
+    s.blocks_emitted      = g_blocks_emitted;
+    s.emit_failures       = g_emit_failures;
+    s.insns_called        = g_insns_called;
+    s.insns_inlined       = g_insns_inlined;
+    s.pc_writes_emitted   = g_pc_writes_emitted;
+    s.pc_writes_skipped   = g_pc_writes_skipped;
+    s.cc_writes_requested = g_cc_writes_requested;
+    s.cc_writes_elided    = g_cc_writes_elided;
     return s;
 }
 

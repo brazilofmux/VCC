@@ -168,6 +168,13 @@ namespace BlockJit
         uint32_t insns_inlined;      // emitted as a level-2 inline body
         uint32_t pc_writes_emitted;  // emit count of "mov [PC], imm16"
         uint32_t pc_writes_skipped;  // PC writes elided thanks to inlining
+        // cc[] write counters - updated as inlined ops emit. "Requested"
+        // is what the op would write if DSE were off; "elided" is the
+        // subset that the liveness pass proved dead. emitted = requested
+        // - elided. Ratio elided/requested tells us how effective the
+        // dead-store elimination pass actually is in practice.
+        uint32_t cc_writes_requested;
+        uint32_t cc_writes_elided;
     };
     Stats GetStats();
 }
