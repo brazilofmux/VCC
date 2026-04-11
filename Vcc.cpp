@@ -1108,12 +1108,21 @@ unsigned __stdcall EmuLoop(HANDLE hEvent)
 		GetModuleStatus(&EmuState);
 		
 		char tstatus[256];
-		char tspeed[32];
+		char tspeed[48];
 		char tblock[80];
 		snprintf(tspeed,sizeof(tspeed),"%2.2fMhz",EmuState.CPUCurrentSpeed);
 		// Append "+" to speed if overclocking is enabled
 		if (EmuState.OverclockFlag && (EmuState.DoubleSpeedMultiplyer>2))
 			strncat (tspeed,"+",sizeof(tspeed));
+		// Effective emulated MHz = real_fps / target_fps * emulated_target_MHz.
+		// When throttled this tracks the target speed; when F8 turns the
+		// throttle off it shows how fast the emulator is ACTUALLY running,
+		// which is the only useful JIT benchmark number under Windows's
+		// throttle (see the JIT-benchmark-gotcha note in project memory).
+		double effective_mhz = ((double)FPS / (double)TARGETFRAMERATE) * EmuState.CPUCurrentSpeed;
+		size_t speed_len = strlen(tspeed);
+		snprintf(tspeed + speed_len, sizeof(tspeed) - speed_len,
+			"[act %.1f]", effective_mhz);
 		HD6309GetBlockStatsText(tblock, sizeof(tblock));
 		if (EmuState.Debugger.IsHalted()) {
 			snprintf(tstatus,sizeof(tstatus), " Paused - Hit F7 | %s @ %s | %s | %s",
