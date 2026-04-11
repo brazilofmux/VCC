@@ -543,6 +543,14 @@ void Ldy_M(const DecodedInst* inst);
 void Lds_I(const DecodedInst* inst);
 void Clra_I(const DecodedInst* inst);
 void Clrb_I(const DecodedInst* inst);
+void Lda_D(const DecodedInst* inst);
+void Ldb_D(const DecodedInst* inst);
+void Sta_D(const DecodedInst* inst);
+void Stb_D(const DecodedInst* inst);
+void Lda_E(const DecodedInst* inst);
+void Ldb_E(const DecodedInst* inst);
+void Sta_E(const DecodedInst* inst);
+void Stb_E(const DecodedInst* inst);
 
 void HD6309Init()
 {	//Call this first or RESET will core!
@@ -563,10 +571,14 @@ void HD6309Init()
 		addrs.y              = &Y_REG;
 		addrs.u              = &U_REG;
 		addrs.s              = &S_REG;
+		addrs.dp             = &dp.Reg;
 		addrs.cc             = cc;
 		addrs.cycle_counter  = &CycleCounter;
 		addrs.nat_cycles_21  = &NatEmuCycles21;
+		addrs.nat_cycles_43  = &NatEmuCycles43;
 		addrs.nat_cycles_54  = &NatEmuCycles54;
+		addrs.mem_read8      = &MemRead8;
+		addrs.mem_write8     = &MemWrite8;
 
 		BlockJit::InlineableHandlers inlines;
 		inlines.lda_m  = &Lda_M;
@@ -578,6 +590,14 @@ void HD6309Init()
 		inlines.lds_i  = &Lds_I;
 		inlines.clra_i = &Clra_I;
 		inlines.clrb_i = &Clrb_I;
+		inlines.lda_d  = &Lda_D;
+		inlines.ldb_d  = &Ldb_D;
+		inlines.sta_d  = &Sta_D;
+		inlines.stb_d  = &Stb_D;
+		inlines.lda_e  = &Lda_E;
+		inlines.ldb_e  = &Ldb_E;
+		inlines.sta_e  = &Sta_E;
+		inlines.stb_e  = &Stb_E;
 
 		BlockJit::Init(addrs, inlines);
 	}

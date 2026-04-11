@@ -59,6 +59,10 @@ namespace BlockJit
         uint16_t* y;              // Y_REG
         uint16_t* u;              // U_REG
         uint16_t* s;              // S_REG
+        uint16_t* dp;             // dp.Reg (16-bit; high byte is the DP page,
+                                  //         low byte zero. LDA/LDB/STA/STB
+                                  //         direct-page handlers compute the
+                                  //         effective address as dp.Reg | off)
         uint8_t*  cc;             // base of cc[8] - cc[C/V/Z/N] are bytes 0..3
         int*      cycle_counter;  // CycleCounter
         // Runtime cycle-cost bytes: NatEmuCyclesNN gets updated by the
@@ -66,7 +70,16 @@ namespace BlockJit
         // mode and 6309 native mode. Inlined handlers that use these
         // costs read the live byte at runtime via movzx + add.
         uint8_t*  nat_cycles_21;  // NatEmuCycles21 (used by CLRA/CLRB and others)
-        uint8_t*  nat_cycles_54;  // NatEmuCycles54 (used by LDY/LDS #imm)
+        uint8_t*  nat_cycles_43;  // NatEmuCycles43 (used by *_D handlers)
+        uint8_t*  nat_cycles_54;  // NatEmuCycles54 (used by *_E handlers and LDY/LDS #imm)
+        // Memory access entrypoints used by inlined 8-bit load/store
+        // handlers. The emitter bakes call rel32 targets against these
+        // addresses so inline bodies can talk to the MMU without
+        // falling back through the interpreter handler. Both use the
+        // standard (__cdecl) calling convention to match the handler
+        // signatures in tcc1014mmu.cpp.
+        unsigned char (*mem_read8)(unsigned short);
+        void (*mem_write8)(unsigned char, unsigned short);
     };
 
     // Handler addresses the level-2 emitter knows how to inline. The
@@ -87,6 +100,19 @@ namespace BlockJit
         InstHandler ldy_m;        // LDY #imm   (op 0x108E, +NatEmuCycles54 runtime)
         InstHandler clra_i;       // CLRA       (op 0x4F, +NatEmuCycles21 runtime)
         InstHandler clrb_i;       // CLRB       (op 0x5F, +NatEmuCycles21 runtime)
+        // 8-bit memory loads/stores. These inline bodies still call
+        // MemRead8/MemWrite8 to honor MMU paging and port I/O, but they
+        // eliminate the handler dispatch overhead, bake the operand as
+        // an immediate, and (because they do not read PC) let the
+        // emitter skip the per-insn PC flush.
+        InstHandler lda_d;        // LDA <dp    (op 0x96, +NatEmuCycles43 runtime)
+        InstHandler ldb_d;        // LDB <dp    (op 0xD6, +NatEmuCycles43 runtime)
+        InstHandler sta_d;        // STA <dp    (op 0x97, +NatEmuCycles43 runtime)
+        InstHandler stb_d;        // STB <dp    (op 0xD7, +NatEmuCycles43 runtime)
+        InstHandler lda_e;        // LDA ext    (op 0xB6, +NatEmuCycles54 runtime)
+        InstHandler ldb_e;        // LDB ext    (op 0xF6, +NatEmuCycles54 runtime)
+        InstHandler sta_e;        // STA ext    (op 0xB7, +NatEmuCycles54 runtime)
+        InstHandler stb_e;        // STB ext    (op 0xF7, +NatEmuCycles54 runtime)
     };
 
     // Set up the code arena and remember the addresses the emitter

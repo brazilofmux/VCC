@@ -162,6 +162,129 @@ static void EmitAddMem32Eax(uint8_t*& p, const void* addr)
     p += 6;
 }
 
+// mov al, byte ptr [imm32]      - 5 bytes (A0 <addr32>). Short-form
+// load; only al has this one-byte-opcode encoding.
+static void EmitMovAlMem(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0xA0;
+    std::memcpy(p + 1, &addr_imm, 4);
+    p += 5;
+}
+
+// mov byte ptr [imm32], al      - 5 bytes (A2 <addr32>). Short-form
+// store paired with EmitMovAlMem above.
+static void EmitMovMemAl(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0xA2;
+    std::memcpy(p + 1, &addr_imm, 4);
+    p += 5;
+}
+
+// movzx eax, word ptr [imm32]   - 7 bytes (0F B7 05 <addr32>). Used
+// to load dp.Reg into eax for the DP effective-address calculation.
+static void EmitMovzxEaxMem16(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0x0F;
+    p[1] = 0xB7;
+    p[2] = 0x05;
+    std::memcpy(p + 3, &addr_imm, 4);
+    p += 7;
+}
+
+// movzx edx, word ptr [imm32]   - 7 bytes (0F B7 15 <addr32>). Used
+// when eax is already holding a separate value (STA_D holds A_REG in
+// eax while computing the effective address in edx).
+static void EmitMovzxEdxMem16(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0x0F;
+    p[1] = 0xB7;
+    p[2] = 0x15;
+    std::memcpy(p + 3, &addr_imm, 4);
+    p += 7;
+}
+
+// or al, imm8                   - 2 bytes (0C <imm8>). Short-form OR
+// used to fold the DP offset into the low byte of the EA; correct
+// because dp.Reg's low byte is guaranteed zero.
+static void EmitOrAlImm8(uint8_t*& p, uint8_t imm)
+{
+    p[0] = 0x0C;
+    p[1] = imm;
+    p += 2;
+}
+
+// or dl, imm8                   - 3 bytes (80 CA <imm8>). No short
+// form exists for dl; we pay an extra byte here to keep A_REG in al
+// for STA_D.
+static void EmitOrDlImm8(uint8_t*& p, uint8_t imm)
+{
+    p[0] = 0x80;
+    p[1] = 0xCA;
+    p[2] = imm;
+    p += 3;
+}
+
+// push eax                      - 1 byte (50)
+static void EmitPushEax(uint8_t*& p)
+{
+    p[0] = 0x50;
+    p += 1;
+}
+
+// push edx                      - 1 byte (52)
+static void EmitPushEdx(uint8_t*& p)
+{
+    p[0] = 0x52;
+    p += 1;
+}
+
+// test al, al                   - 2 bytes (84 C0). Sets ZF and SF
+// from the low byte only — exactly what the 6309 N/Z flags need.
+static void EmitTestAlAl(uint8_t*& p)
+{
+    p[0] = 0x84;
+    p[1] = 0xC0;
+    p += 2;
+}
+
+// sete byte ptr [imm32]         - 7 bytes (0F 94 05 <addr32>). Stores
+// 1 when ZF=1, else 0. Pairs naturally with the cc[Z] byte.
+static void EmitSeteMem(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0x0F;
+    p[1] = 0x94;
+    p[2] = 0x05;
+    std::memcpy(p + 3, &addr_imm, 4);
+    p += 7;
+}
+
+// sets byte ptr [imm32]         - 7 bytes (0F 98 05 <addr32>). Stores
+// 1 when SF=1 (high bit of the tested byte), else 0. cc[N].
+static void EmitSetsMem(uint8_t*& p, const void* addr)
+{
+    const uint32_t addr_imm = (uint32_t)(uintptr_t)addr;
+    p[0] = 0x0F;
+    p[1] = 0x98;
+    p[2] = 0x05;
+    std::memcpy(p + 3, &addr_imm, 4);
+    p += 7;
+}
+
+// add esp, imm8 (sign-extended) - 3 bytes (83 C4 <imm8>). Used to
+// clean up __cdecl stack frames of 4 or 8 bytes.
+static void EmitAddEspImm8(uint8_t*& p, uint8_t imm)
+{
+    p[0] = 0x83;
+    p[1] = 0xC4;
+    p[2] = imm;
+    p += 3;
+}
+
 // Add a runtime cycle byte (e.g., NatEmuCycles21) into CycleCounter.
 // 13 bytes total (movzx eax, [addr]; add [cycle_counter], eax).
 static void EmitAddCyclesRuntime(uint8_t*& p, const void* nat_cycles_addr)
@@ -179,21 +302,28 @@ static constexpr size_t kPcWriteBytes = 9;
 //   push imm32 + call rel32 + add esp, 4   = 13 bytes
 static constexpr size_t kCallSeqBytes = 5 + 5 + 3;
 
-// Worst-case inline body across all level-2 handlers. CLRA/CLRB are
-// the largest at:
-//   mov [reg], 0          7
-//   mov [cc[C]], 0        7
-//   mov [cc[V]], 0        7
-//   mov [cc[Z]], 1        7
-//   mov [cc[N]], 0        7
-//   movzx eax, [cycles21] 7
-//   add [cycles], eax     6
-//   --------------------- 48
+// Worst-case inline body across all level-2 handlers. STA_D is the
+// largest at:
+//   movzx eax, [A_REG]     7
+//   test al, al            2
+//   sete [cc[Z]]           7
+//   sets [cc[N]]           7
+//   mov [cc[V]], 0         7
+//   movzx edx, [dp.Reg]    7
+//   or dl, offset_imm8     3
+//   push edx               1
+//   push eax               1
+//   call MemWrite8         5
+//   add esp, 8             3
+//   movzx eax, [cycles43]  7
+//   add [cycles], eax      6
+//   --------------------- 63
 // PC-write skipping means inlined ops do NOT prepend a PC write, so
 // the per-instruction budget for an inlined op is just the body size.
 // For called ops the budget is kPcWriteBytes + kCallSeqBytes = 22.
-// Use 56 as a safe upper bound that covers either case plus headroom.
-static constexpr size_t kMaxBytesPerInsn = 56;
+// Use 64 as a safe upper bound that covers either case plus one
+// byte of headroom.
+static constexpr size_t kMaxBytesPerInsn = 64;
 
 // Block epilogue: 1 byte ret + up to 9 bytes for the final PC flush
 // when the last instruction in the block was inlined.
@@ -257,6 +387,108 @@ static void EmitInlineClr8(uint8_t*& p, uint8_t* reg_addr)
     EmitAddCyclesRuntime(p, g_addrs.nat_cycles_21);
 }
 
+// After an 8-bit memory load or store, update cc[Z]/cc[N]/cc[V] from
+// the low byte currently in al. The caller is responsible for
+// ensuring al holds the value the 6309 handler would flag-test
+// (the byte just read, or A_REG/B_REG for stores).
+static void EmitFlags8FromAl(uint8_t*& p)
+{
+    EmitTestAlAl(p);                         // test al, al
+    EmitSeteMem(p, g_addrs.cc + 2);          // cc[Z]
+    EmitSetsMem(p, g_addrs.cc + 3);          // cc[N]
+    EmitMovMem8Imm8(p, g_addrs.cc + 1, 0);   // cc[V] = 0
+}
+
+// LDA <dp / LDB <dp. Compute effective address as dp.Reg | offset,
+// call MemRead8, store the byte to A/B, then update Z/N/V from the
+// returned byte. Cycles come from the runtime NatEmuCycles43 byte.
+static void EmitInlineLd8Dp(uint8_t*& p, const DecodedInst& insn,
+                            uint8_t* reg_addr)
+{
+    const uint8_t offset = (uint8_t)(insn.operand & 0xFF);
+
+    // eax = dp.Reg | offset, then push and call MemRead8.
+    EmitMovzxEaxMem16(p, g_addrs.dp);        // movzx eax, word [dp]
+    if (offset != 0)
+        EmitOrAlImm8(p, offset);             // or al, offset_imm8
+    EmitPushEax(p);                          // push eax
+    EmitCallRel32(p, (const void*)g_addrs.mem_read8);
+    EmitAddEsp4(p);                          // add esp, 4
+
+    // al now holds the memory byte. Store it and flag-test.
+    EmitMovMemAl(p, reg_addr);               // mov [reg], al
+    EmitFlags8FromAl(p);
+    EmitAddCyclesRuntime(p, g_addrs.nat_cycles_43);
+}
+
+// LDA ext / LDB ext. The 16-bit effective address is known at emit
+// time and gets baked as a push imm32, so we skip the dp math and
+// just call. Uses NatEmuCycles54.
+static void EmitInlineLd8Ext(uint8_t*& p, const DecodedInst& insn,
+                             uint8_t* reg_addr)
+{
+    const uint16_t addr = insn.operand;
+
+    EmitPushImm32(p, addr);                  // push imm32 (zero-extended addr)
+    EmitCallRel32(p, (const void*)g_addrs.mem_read8);
+    EmitAddEsp4(p);
+
+    EmitMovMemAl(p, reg_addr);
+    EmitFlags8FromAl(p);
+    EmitAddCyclesRuntime(p, g_addrs.nat_cycles_54);
+}
+
+// STA <dp / STB <dp. Load A/B into al (for the call AND the flag
+// test), compute effective address in edx, push both, call
+// MemWrite8, update flags from al, accumulate runtime cycles.
+// The flag update uses the value in A/B, not anything from memory,
+// matching the interpreter handler.
+static void EmitInlineSt8Dp(uint8_t*& p, const DecodedInst& insn,
+                            uint8_t* reg_addr)
+{
+    const uint8_t offset = (uint8_t)(insn.operand & 0xFF);
+
+    // Load data into eax zero-extended. movzx (7 bytes) is two
+    // bytes longer than mov al (5 bytes) but zero-extends for the
+    // push imm arg promotion the C ABI requires.
+    EmitMovzxEaxMem8(p, reg_addr);           // movzx eax, byte [reg]
+
+    // Flag-test while al still has the value.
+    EmitFlags8FromAl(p);
+
+    // Compute address in edx = dp.Reg | offset.
+    EmitMovzxEdxMem16(p, g_addrs.dp);
+    if (offset != 0)
+        EmitOrDlImm8(p, offset);
+
+    // cdecl: push args right-to-left -> push address then data.
+    EmitPushEdx(p);                          // push edx (address, arg1)
+    EmitPushEax(p);                          // push eax (data,   arg0)
+    EmitCallRel32(p, (const void*)g_addrs.mem_write8);
+    EmitAddEspImm8(p, 8);                    // add esp, 8
+
+    EmitAddCyclesRuntime(p, g_addrs.nat_cycles_43);
+}
+
+// STA ext / STB ext. Same shape as STA_D but the address is a baked
+// push imm32, not a runtime dp.Reg|offset computation. Uses
+// NatEmuCycles54.
+static void EmitInlineSt8Ext(uint8_t*& p, const DecodedInst& insn,
+                             uint8_t* reg_addr)
+{
+    const uint16_t addr = insn.operand;
+
+    EmitMovzxEaxMem8(p, reg_addr);           // movzx eax, byte [reg]
+    EmitFlags8FromAl(p);
+
+    EmitPushImm32(p, addr);                  // push address imm
+    EmitPushEax(p);                          // push data
+    EmitCallRel32(p, (const void*)g_addrs.mem_write8);
+    EmitAddEspImm8(p, 8);
+
+    EmitAddCyclesRuntime(p, g_addrs.nat_cycles_54);
+}
+
 // Returns true and emits if the handler matches a registered inlineable
 // handler; returns false otherwise so the caller emits the call sequence.
 static bool TryEmitInline(uint8_t*& p, const DecodedInst& insn)
@@ -271,6 +503,14 @@ static bool TryEmitInline(uint8_t*& p, const DecodedInst& insn)
     if (h == g_inlines.ldy_m)  { EmitInlineLd16ImmRuntimeCycles(p, insn, g_addrs.y, g_addrs.nat_cycles_54);  return true; }
     if (h == g_inlines.clra_i) { EmitInlineClr8               (p, g_addrs.a);                                return true; }
     if (h == g_inlines.clrb_i) { EmitInlineClr8               (p, g_addrs.b);                                return true; }
+    if (h == g_inlines.lda_d)  { EmitInlineLd8Dp              (p, insn, g_addrs.a);                          return true; }
+    if (h == g_inlines.ldb_d)  { EmitInlineLd8Dp              (p, insn, g_addrs.b);                          return true; }
+    if (h == g_inlines.sta_d)  { EmitInlineSt8Dp              (p, insn, g_addrs.a);                          return true; }
+    if (h == g_inlines.stb_d)  { EmitInlineSt8Dp              (p, insn, g_addrs.b);                          return true; }
+    if (h == g_inlines.lda_e)  { EmitInlineLd8Ext             (p, insn, g_addrs.a);                          return true; }
+    if (h == g_inlines.ldb_e)  { EmitInlineLd8Ext             (p, insn, g_addrs.b);                          return true; }
+    if (h == g_inlines.sta_e)  { EmitInlineSt8Ext             (p, insn, g_addrs.a);                          return true; }
+    if (h == g_inlines.stb_e)  { EmitInlineSt8Ext             (p, insn, g_addrs.b);                          return true; }
     return false;
 }
 
