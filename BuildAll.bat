@@ -10,5 +10,5 @@ if exist "%VSINSTALLDIR%\MSBuild\Current\Bin\MSBuild.exe" (
   set _CL_=/DUSE_LOGGING
   call Build.bat
 ) else (
-  echo Build must be run from Developer Command Prompt for VS 2022
+  echo Build must be run from a Developer Command Prompt for Visual Studio
 )

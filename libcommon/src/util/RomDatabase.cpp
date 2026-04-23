@@ -58,15 +58,15 @@ uint32_t Crc32(const uint8_t* data, size_t len)
 // log for "[ROM] ... Unknown ROM size=N crc=0xXXXXXXXX". Add a row.
 static const RomInfo kKnownRoms[] = {
     // CoCo3 internal ROM (32KB: Color BASIC + ECB + Super ECB).
-    // The standard MAME / VCC dump shipping in D:\roms\coco3.rom.
+    // The standard MAME / VCC dump, typically named coco3.rom.
     { 0xB4C88D6Cu, 32768, RomKind::Coco3Internal, "CoCo3 Internal ROM (32K)" },
 
     // Disk Extended Color BASIC 1.1 (Tandy). The canonical FD-502 disk
-    // ROM, ships as disk11.rom in D:\roms.
+    // ROM, typically named disk11.rom.
     { 0x0B9C5415u,  8192, RomKind::DiskBasic,     "Disk ECB 1.1 (Tandy)" },
 
     // RGB-DOS (alternative disk ROM with extended directory / drive
-    // support). Ships as rgbdos.rom in D:\roms.
+    // support). Typically named rgbdos.rom.
     { 0xE548C0A3u,  8192, RomKind::DiskBasic,     "RGB-DOS" },
 
     // CoCo 1 Color BASIC 1.0 (8KB). The earliest BASIC ROM, used by
