@@ -41,7 +41,7 @@
     </Link>
   </ItemDefinitionGroup>
   <PropertyGroup>
-    <RomsDir>D:\roms\</RomsDir>
+    <RomsDir>C:\roms\</RomsDir>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <PostBuildEvent>
