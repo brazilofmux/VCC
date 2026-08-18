@@ -16,14 +16,19 @@
 //	VCC (Virtual Color Computer). If not, see <http://www.gnu.org/licenses/>.
 ////////////////////////////////////////////////////////////////////////////////
 #pragma once
-#include <mutex>
+#include <atomic>
+#include <thread>
 
 namespace VCC::Util
 {
 
-	// Formerly a Win32 CRITICAL_SECTION wrapper; std::recursive_mutex
-	// keeps the same semantics (CRITICAL_SECTION is recursive) on every
-	// host.
+	// Recursive mutual exclusion (Win32 CRITICAL_SECTION semantics)
+	// with an uncontended fast path of one CAS plus plain stores. The
+	// pak bus takes this lock every emulated scanline and every port
+	// access; as a pthread-backed mutex that traffic was ~30% of
+	// CPU-bound wall time on macOS. Contention (emulation thread vs an
+	// occasional config/UI operation) is rare and short-lived, so a
+	// spin-then-yield wait is the right shape.
 	class critical_section
 	{
 	public:
@@ -35,18 +40,41 @@ namespace VCC::Util
 
 		void lock() const
 		{
-			mutex_.lock();
+			const std::thread::id self = std::this_thread::get_id();
+			if (owner_.load(std::memory_order_relaxed) == self)
+			{
+				++depth_;
+				return;
+			}
+			std::thread::id expected {};
+			int spins = 0;
+			while (!owner_.compare_exchange_weak(expected, self,
+			                                     std::memory_order_acquire,
+			                                     std::memory_order_relaxed))
+			{
+				expected = {};
+				if (++spins > 64)
+				{
+					std::this_thread::yield();
+					spins = 0;
+				}
+			}
+			depth_ = 1;
 		}
 
 		void unlock() const
 		{
-			mutex_.unlock();
+			if (--depth_ == 0)
+				owner_.store(std::thread::id{}, std::memory_order_release);
 		}
 
 
 	private:
 
-		mutable std::recursive_mutex mutex_;
+		// depth_ is only touched by the owning thread, so it needs no
+		// atomicity of its own.
+		mutable std::atomic<std::thread::id> owner_ {};
+		mutable int depth_ = 0;
 	};
 
 

@@ -85,11 +85,6 @@ namespace VCC::Debugger
 	}
 
 
-	bool Debugger::IsHalted() const
-	{
-		return ExecutionMode_ == ExecutionMode::Halt;
-	}
-
 
 	bool Debugger::IsHalted(unsigned short& returnPc) const
 	{
@@ -106,11 +101,6 @@ namespace VCC::Debugger
 		return true;
 	}
 
-
-	bool Debugger::IsStepping() const
-	{
-		return ExecutionMode_ == ExecutionMode::Step;
-	}
 
 
 
@@ -148,16 +138,6 @@ namespace VCC::Debugger
 		BreakpointsChanged_ = true;
 	}
 
-
-	bool Debugger::IsTracingEnabled() const
-	{
-		return TraceEnabled_;
-	}
-
-	bool Debugger::IsTracing() const
-	{
-		return TraceRunning_;
-	}
 
 	void Debugger::TraceCaptureInterruptRequest(unsigned char irq, long cycleTime, const CPUState& state)
 	{
@@ -221,23 +201,13 @@ namespace VCC::Debugger
 		}
 	}
 
-	void Debugger::TraceCaptureScreenEvent(TraceEvent evt, double cycles)
+	void Debugger::TraceCaptureScreenEventSlow(TraceEvent evt, double cycles)
 	{
-		if (!TraceRunning_ || !TraceScreen_)
-		{
-			return;
-		}
-
 		Decoder_->CaptureScreenEvent(evt, cycles);
 	}
 
-	void Debugger::TraceEmulatorCycle(TraceEvent evt, int state, double lineNS, double irqNS, double soundNS, double cycles, double drift)
+	void Debugger::TraceEmulatorCycleSlow(TraceEvent evt, int state, double lineNS, double irqNS, double soundNS, double cycles, double drift)
 	{
-		if (!TraceRunning_ || !TraceEmulation_)
-		{
-			return;
-		}
-
 		Decoder_->CaptureEmulatorCycle(evt, state, lineNS, irqNS, soundNS, cycles, drift);
 	}
 
@@ -485,19 +455,9 @@ namespace VCC::Debugger
 		MemWrite8(memWrite.value, memWrite.addr);
 	}
 
-	bool Debugger::Halt_Enabled() const
-	{
-		return Halt_Enabled_TF;
-	}
-
 	void Debugger::Enable_Halt(bool flag)
 	{
 		Halt_Enabled_TF = flag;
-	}
-
-	bool Debugger::Break_Enabled() const
-	{
-		return Break_Enabled_TF;
 	}
 
 	void Debugger::Enable_Break(bool flag)

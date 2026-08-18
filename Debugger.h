@@ -61,9 +61,13 @@ namespace VCC::Debugger
 
 		CPUState GetProcessorStateCopy() const;
 
-		bool IsHalted() const;
+		// Called every dispatch-loop iteration / emulated scanline; the
+		// bodies are single atomic reads and MUST stay inline - as
+		// out-of-line calls these and the trace-hook gates below were
+		// ~13% of CPU-bound wall time.
+		bool IsHalted() const { return ExecutionMode_ == ExecutionMode::Halt; }
 		bool IsHalted(unsigned short& pc) const;
-		bool IsStepping() const;
+		bool IsStepping() const { return ExecutionMode_ == ExecutionMode::Step; }
 		
 		void Halt();
 
@@ -74,8 +78,8 @@ namespace VCC::Debugger
 
 		void QueueWrite(unsigned short addr, unsigned char value);
 
-		bool IsTracing() const;
-		bool IsTracingEnabled() const;
+		bool IsTracing() const { return TraceRunning_; }
+		bool IsTracingEnabled() const { return TraceEnabled_; }
 
 		void TraceStart();
 		void TraceStop();
@@ -85,8 +89,16 @@ namespace VCC::Debugger
 		void TraceCaptureInterruptMasked(unsigned char irq, long cycleTime, const CPUState& state);
 		void TraceCaptureInterruptServicing(unsigned char irq, long cycleTime, const CPUState& state);
 		void TraceCaptureInterruptExecuting(unsigned char irq, long cycleTime, const CPUState& state);
-		void TraceCaptureScreenEvent(TraceEvent evt, double cycles);
-		void TraceEmulatorCycle(TraceEvent evt, int state, double lineNS, double irqNS, double soundNS, double cycles, double drift);
+		void TraceCaptureScreenEvent(TraceEvent evt, double cycles)
+		{
+			if (TraceRunning_ && TraceScreen_)
+				TraceCaptureScreenEventSlow(evt, cycles);
+		}
+		void TraceEmulatorCycle(TraceEvent evt, int state, double lineNS, double irqNS, double soundNS, double cycles, double drift)
+		{
+			if (TraceRunning_ && TraceEmulation_)
+				TraceEmulatorCycleSlow(evt, state, lineNS, irqNS, soundNS, cycles, drift);
+		}
 
 		void SetTraceEnable();
 		void SetTraceDisable();
@@ -112,12 +124,13 @@ namespace VCC::Debugger
 		// haltpoints to avoid conflict with the mechanism used by the source
 		// code debugger)  BREAK instruction is page two opcodes 0x113E and the
 		// HALT instruction is opcode 0x15.
-		bool Break_Enabled() const;
+		bool Break_Enabled() const { return Break_Enabled_TF; }
 		void Enable_Break(bool);
-		bool Halt_Enabled() const;
+		bool Halt_Enabled() const { return Halt_Enabled_TF; }
 		void Enable_Halt(bool);
 
 	protected:
+
 
 		enum class ExecutionMode
 		{
@@ -153,6 +166,9 @@ namespace VCC::Debugger
 		bool							BreakpointsChanged_ = false;
 		CPUState						ProcessorState_;
 		std::map<HWND, std::unique_ptr<Client>>	RegisteredClients_;
+		void TraceCaptureScreenEventSlow(TraceEvent evt, double cycles);
+		void TraceEmulatorCycleSlow(TraceEvent evt, int state, double lineNS, double irqNS, double soundNS, double cycles, double drift);
+
 		std::atomic<ExecutionMode>		ExecutionMode_ = ExecutionMode::Run;
 		//
 		bool							HasPendingWrite_ = false;
