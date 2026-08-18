@@ -23,18 +23,23 @@
 
 #include <string>
 #include <filesystem>
+#ifdef _WIN32
 #include <Shlwapi.h>
+#endif
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <cstring>
 #include <vcc/util/logger.h>
 #include <vcc/util/fileutil.h>
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 
 namespace VCC::Util
 {
 	//----------------------------------------------------------------------
-	// Get most recent windows error text
+	// Get most recent host error text
 	//----------------------------------------------------------------------
+#ifdef _WIN32
 	std::string LastErrorString()
 	{
 		DWORD error_code = GetLastError();
@@ -48,6 +53,12 @@ namespace VCC::Util
 		if (len == 0) return "Unknown error";
 		return std::string(msg, len);
 	}
+#else
+	std::string LastErrorString()
+	{
+		return std::strerror(errno);
+	}
+#endif
 
 	// Only use this overload as argument to debug logger (DLOG)
 	const char* LastErrorTxt()

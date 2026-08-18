@@ -18,6 +18,7 @@
 //======================================================================
 
 #pragma once
+#include <cstddef>
 
 enum MenuItemType
 {

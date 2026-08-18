@@ -19,7 +19,7 @@
 
 #include <vcc/util/settings.h>
 #include <vcc/util/logger.h>
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 
 namespace VCC::Util
 {

@@ -19,7 +19,7 @@
 #include <vcc/bus/cartridge.h>
 #include <vcc/bus/cpak_cartridge_definitions.h>
 #include <vcc/bus/cartridge_menuitem.h>
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <string>
 
 namespace VCC::Core

@@ -17,7 +17,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 #pragma once
 #include <string>
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 
 namespace VCC::Util
 {

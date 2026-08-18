@@ -15,18 +15,23 @@
 //	You should have received a copy of the GNU General Public License along with
 //	VCC (Virtual Color Computer). If not, see <http://www.gnu.org/licenses/>.
 ////////////////////////////////////////////////////////////////////////////////
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#ifdef _WIN32
 #include <io.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#endif
 #include <vcc/util/logger.h>
 
-static HANDLE hLog_Out = nullptr;
 static const auto LogFileName = "VccLog.txt";
+
+#ifdef _WIN32
+
+static HANDLE hLog_Out = nullptr;
 
 // PrintLogC - Put formatted string to the console
 void PrintLogC(const char* fmt, ...)
@@ -60,3 +65,30 @@ void PrintLogF(const char* fmt, ...)
     _write(flog, msg, strlen(msg));
     _close(flog);
 }
+
+#else
+
+// PrintLogC - Put formatted string to the console
+void PrintLogC(const char* fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stdout, fmt, args);
+    va_end(args);
+    fflush(stdout);
+}
+
+// PrintLogF - Put formatted string to the log file
+void PrintLogF(const char* fmt, ...)
+{
+    FILE* flog = fopen(LogFileName, "a");
+    if (flog == nullptr)
+        return;
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(flog, fmt, args);
+    va_end(args);
+    fclose(flog);
+}
+
+#endif

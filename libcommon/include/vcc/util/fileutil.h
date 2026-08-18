@@ -23,7 +23,7 @@
 
 #include <string>
 #include <filesystem>
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 
 //=========================================================================
 // Host file utilities.  Most of these are general purpose
@@ -74,25 +74,43 @@ namespace VCC::Util {
 	// Verify that a file can be opened for read/write
 	inline bool ValidateRWFile(const std::string& path)
 	{
+#ifdef _WIN32
 		HANDLE h = CreateFile
 			(path.c_str(), GENERIC_READ | GENERIC_WRITE,
-			FILE_SHARE_READ, nullptr, OPEN_ALWAYS, 
+			FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
 			FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (h==INVALID_HANDLE_VALUE) return false;
 		CloseHandle(h);
 		return true;
+#else
+		// OPEN_ALWAYS semantics: open existing, or create if missing.
+		FILE* f = std::fopen(path.c_str(), "r+b");
+		if (f == nullptr) f = std::fopen(path.c_str(), "w+b");
+		if (f == nullptr) return false;
+		std::fclose(f);
+		return true;
+#endif
 	}
 
 	// Verify that a file can be opened for read
 	inline bool ValidateRDFile(const std::string& path)
 	{
+#ifdef _WIN32
 		HANDLE h = CreateFile
 			(path.c_str(), GENERIC_READ,
-			FILE_SHARE_READ, nullptr, OPEN_ALWAYS, 
+			FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
 			FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (h==INVALID_HANDLE_VALUE) return false;
 		CloseHandle(h);
 		return true;
+#else
+		// OPEN_ALWAYS creates a missing file even on the read check.
+		FILE* f = std::fopen(path.c_str(), "rb");
+		if (f == nullptr) f = std::fopen(path.c_str(), "ab");
+		if (f == nullptr) return false;
+		std::fclose(f);
+		return true;
+#endif
 	}
 
 	// Convert backslashes to slashes within string

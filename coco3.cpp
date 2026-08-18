@@ -16,9 +16,8 @@ This file is part of VCC (Virtual Color Computer).
     along with VCC (Virtual Color Computer).  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "Windows.h"
+#include <vcc/util/host_services.h>
 #include "stdio.h"
-#include "ddraw.h"
 #include <math.h>
 #include "defines.h"
 #include "BuildConfig.h"
@@ -1000,10 +999,17 @@ void CopyText() {
 			'h','i','j','k','l','m','n','o',
 			'p','q','r','s','t','u','v','w',
 			'x','y','z','{','|','}','~','_',
-			'Ç','ü','é','â','ä','à','å','ç',
-			'ê','ë','è','ï','î','ß','Ä','Â',
-			'Ó','æ','Æ','ô','ö','ø','û','ù',
-			'Ø','Ö','Ü','§','£','±','º','',
+			// CoCo 3 international glyphs as Windows-1252 codes, kept
+			// as hex escapes: written as bare accented literals in a
+			// UTF-8 source file they are multichar constants, which
+			// compiled to the wrong bytes on MSVC and do not compile at
+			// all on clang. (The entry before the final space was
+			// already encoding-damaged in the original; it stays a
+			// space.)
+			'\xC7','\xFC','\xE9','\xE2','\xE4','\xE0','\xE5','\xE7',
+			'\xEA','\xEB','\xE8','\xEF','\xEE','\xDF','\xC4','\xC2',
+			'\xD3','\xE6','\xC6','\xF4','\xF6','\xF8','\xFB','\xF9',
+			'\xD8','\xD6','\xDC','\xA7','\xA3','\xB1','\xBA',' ',
 			' ',' ','!','\"','#','$','%','&',
 			'\'','(',')','*','+',',','-','.',
 			'/','0','1','2','3','4','5','6',

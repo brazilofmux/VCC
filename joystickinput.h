@@ -18,9 +18,11 @@ This file is part of VCC (Virtual Color Computer).
     along with VCC (Virtual Color Computer).  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#ifdef _WIN32
 // FIXME: This should be defined on the command line
 #define DIRECTINPUT_VERSION 0x0800
 #include <dinput.h>
+#endif
 #include "mc6821.h"
 
 constexpr auto MAXSTICKS = 10u;
@@ -45,7 +47,9 @@ struct JoyStick
 extern JoyStick	LeftJS;
 extern JoyStick RightJS;
 
+#ifdef _WIN32
 HRESULT JoyStickPoll(DIJOYSTATE2 * ,unsigned char);
+#endif
 int EnumerateJoysticks();
 bool InitJoyStick (unsigned char);
 

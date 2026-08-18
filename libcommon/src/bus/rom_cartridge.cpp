@@ -19,7 +19,7 @@
 #include <vcc/bus/rom_cartridge.h>
 #include <vcc/util/logger.h>
 #include <vcc/util/RomDatabase.h>
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <cstdio>
 
 namespace VCC::Core

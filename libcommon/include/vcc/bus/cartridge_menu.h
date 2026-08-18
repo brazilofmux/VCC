@@ -20,7 +20,7 @@
 
 #pragma once
 
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <vector>
 #include <string>
 #include <vcc/util/logger.h>
@@ -94,10 +94,14 @@ public:
 		}
 	}
 
-	// Draw the menu (implemented in catridge_menu.cpp)
+#ifdef _WIN32
+	// Draw the menu (implemented in catridge_menu.cpp). Win32 shell
+	// only - the menu MODEL above is portable; other shells render it
+	// with their own toolkit.
 	HMENU draw(HWND hWnd,
 			int position=3,
 			const std::string& title="Cartridge");
+#endif
 };
 
 // instance for Vcc.cpp and pakinterface to use. Host only!

@@ -18,7 +18,7 @@
 //  Author: Ed Jaquay
 
 #pragma once
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 
 namespace VCC {
 void OpenDisassemblerWindow(HINSTANCE instance, HWND parent);

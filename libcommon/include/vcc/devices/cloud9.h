@@ -1,5 +1,5 @@
 #pragma once
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 
 namespace VCC::Device::rtc
 {

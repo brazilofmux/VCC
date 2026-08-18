@@ -25,7 +25,7 @@
 #include <vcc/bus/cartridge_menuitem.h> // for MenuItemType
 #include <cstddef>   // for std::size_t
 #include <cstdint>
-#include <windows.h>
+#include <vcc/util/host_services.h>
 
 // Forward-declared so the binary interface header doesn't pull in the
 // full RomBlockStore header (cartridge DLLs that don't pre-analyze ROMs

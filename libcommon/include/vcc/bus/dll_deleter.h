@@ -17,7 +17,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 #pragma once
 #include <vcc/util/logger.h>
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 // How nuts is this?  Just friggen call FreeLibrary at the point that is decided
 namespace VCC::Core
 {

@@ -16,7 +16,7 @@ This file is part of VCC (Virtual Color Computer).
     along with VCC (Virtual Color Computer).  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <stdio.h>
 #include "defines.h"
 #include "mc6809.h"
@@ -122,7 +122,7 @@ static const bool IsTerminator[256] = {
 //END Global variables for CPU Emulation-------------------
 
 //Fuction Prototypes---------------------------------------
-_inline unsigned short CalculateEA(unsigned char);
+static _inline unsigned short CalculateEA(unsigned char);
 static void set_cc_flags(unsigned char);
 static unsigned char get_cc_flags();
 static void cpu_firq();

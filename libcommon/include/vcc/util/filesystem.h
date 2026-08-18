@@ -1,6 +1,6 @@
 #pragma once
 #include <string>
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 
 //TODO: depreciate this - it is used only in mpi/multipak_cartridge.cpp:
 namespace VCC::Util

@@ -17,7 +17,7 @@
 //		Debugger Utilities - Part of the Debugger package for VCC
 //		Author: Chet Simpson
 #pragma once
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <string>
 #include <vector>
 

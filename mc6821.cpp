@@ -98,7 +98,7 @@ Bit 1 FIRQ POLARITY 0 = falling 1 = rising
 Bit 0 CART FIRQ 0 = FIRQ disabled 1 = enabled
 */
 
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

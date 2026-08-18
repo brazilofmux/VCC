@@ -22,7 +22,7 @@
 #include <vcc/bus/dll_deleter.h>
 #include <string>
 #include <memory>
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 
 
 namespace VCC::Core

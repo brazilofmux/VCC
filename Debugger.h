@@ -26,7 +26,7 @@
 #include <map>
 #include <memory>
 #include <atomic>
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include "OpDecoder.h"
 
 

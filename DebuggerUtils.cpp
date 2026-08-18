@@ -106,6 +106,7 @@ namespace VCC::Debugger
 	
 }
 
+#ifdef _WIN32
 namespace VCC::Debugger::UI
 {
 
@@ -143,4 +144,5 @@ namespace VCC::Debugger::UI
 	}
 
 }
+#endif // _WIN32
 

@@ -37,6 +37,7 @@ This file is part of VCC (Virtual Color Computer).
 // pre-population path). Runtime-recorded blocks fall through to the
 // interpreter so we don't have to deal with arena churn yet.
 
+#include <cstddef>
 #include <cstdint>
 #include "DecodedInst.h"
 

@@ -16,42 +16,37 @@
 //	VCC (Virtual Color Computer). If not, see <http://www.gnu.org/licenses/>.
 ////////////////////////////////////////////////////////////////////////////////
 #pragma once
-#include <Windows.h>
+#include <mutex>
 
 namespace VCC::Util
 {
 
+	// Formerly a Win32 CRITICAL_SECTION wrapper; std::recursive_mutex
+	// keeps the same semantics (CRITICAL_SECTION is recursive) on every
+	// host.
 	class critical_section
 	{
 	public:
 
-		critical_section()
-		{
-			InitializeCriticalSection(&section_);
-		}
-
-		~critical_section()
-		{
-			DeleteCriticalSection(&section_);
-		}
+		critical_section() = default;
 
 		critical_section(const critical_section&) = delete;
 		critical_section& operator=(const critical_section&) = delete;
 
 		void lock() const
 		{
-			EnterCriticalSection(&section_);
+			mutex_.lock();
 		}
 
 		void unlock() const
 		{
-			LeaveCriticalSection(&section_);
+			mutex_.unlock();
 		}
 
 
 	private:
 
-		mutable CRITICAL_SECTION section_;
+		mutable std::recursive_mutex mutex_;
 	};
 
 

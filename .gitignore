@@ -33,3 +33,5 @@ __bin
 *.*~
 *~
 diag.log
+build/
+.cache/

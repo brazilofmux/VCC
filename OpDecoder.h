@@ -15,7 +15,7 @@
 //		OpDecoder Interface - Part of the Debugger package for VCC
 //		Author: Mike Rojas
 #pragma once
-#include "Windows.h"
+#include <vcc/util/host_services.h>
 #include <string>
 #include <array>
 #include <memory>

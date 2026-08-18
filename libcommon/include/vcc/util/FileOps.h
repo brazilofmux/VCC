@@ -16,7 +16,7 @@
 //	VCC (Virtual Color Computer). If not, see <http://www.gnu.org/licenses/>.
 ////////////////////////////////////////////////////////////////////////////////
 #pragma once
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 
 void PathStripPath(char*);
 void ValidatePath(char* Path);

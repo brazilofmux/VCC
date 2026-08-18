@@ -52,6 +52,7 @@ bool cartridge_menu::copy_item(menu_item_entry& out, size_t index) const
     return true;
 }
 
+#ifdef _WIN32
 // ------------------------------------------------------------
 // Draw the menu.  DLL's should not call this
 // ------------------------------------------------------------
@@ -130,6 +131,7 @@ HMENU cartridge_menu::draw(HWND hWnd, int position, const std::string& title)
 	DrawMenuBar(hWnd);
 	return hMenu0;
 }
+#endif // _WIN32
 
 } // namespace VCC::Bus
 
