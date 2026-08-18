@@ -222,6 +222,38 @@ static std::vector<unsigned short> CPUTraceTriggers;
 static uint64_t gJitBlockRuns = 0;
 static uint32_t gJitArenaFlushes = 0;
 
+// VCC_COUNT_HANDLERS measurement support: per-handler execution counts
+// on the interpreter block path, dumped (with addresses for symbol
+// resolution) at process exit.
+void Lsra_I(const DecodedInst* inst);   // ASLR anchor for the dump
+static std::unordered_map<void*, uint64_t>& HandlerCounts()
+{
+	static std::unordered_map<void*, uint64_t> counts;
+	static bool registered = [] {
+		std::atexit([] {
+			std::vector<std::pair<void*, uint64_t>> v(HandlerCounts().begin(),
+			                                          HandlerCounts().end());
+			std::sort(v.begin(), v.end(),
+			          [](const auto& a, const auto& b) { return a.second > b.second; });
+			fprintf(stderr, "[HANDLER-COUNTS] anchor Lsra_I=%p\n", (void*)&Lsra_I);
+			fprintf(stderr, "[HANDLER-COUNTS] top interpreter-path handlers:\n");
+			for (size_t i = 0; i < v.size() && i < 40; ++i)
+				fprintf(stderr, "  %14llu  %p\n",
+				        (unsigned long long)v[i].second, v[i].first);
+		});
+		return true;
+	}();
+	(void)registered;
+	return counts;
+}
+
+static void CountBlockHandlers(const CachedBlock& block)
+{
+	auto& counts = HandlerCounts();
+	for (int i = 0; i < (int)block.num_insns; ++i)
+		counts[(void*)block.insns[i].handler]++;
+}
+
 static unsigned char& NatEmuCycles65   = cpu_state.NatEmuCycles65;
 static unsigned char& NatEmuCycles64   = cpu_state.NatEmuCycles64;
 static unsigned char& NatEmuCycles32   = cpu_state.NatEmuCycles32;
@@ -380,6 +412,7 @@ static void HD6309PrePopulateBlockCache()
 			// that case the slot just keeps native_entry == nullptr
 			// and the dispatch loop falls back to the interpreter.
 			slot->native_entry = BlockJit::EmitBlock(*slot);
+			slot->pure_thunk = slot->native_entry && BlockJit::EmitBlockWasPure();
 			++inserted;
 		}
 
@@ -611,6 +644,39 @@ void Lda_E(const DecodedInst* inst);
 void Ldb_E(const DecodedInst* inst);
 void Sta_E(const DecodedInst* inst);
 void Stb_E(const DecodedInst* inst);
+void Anda_M(const DecodedInst* inst);
+void Andb_M(const DecodedInst* inst);
+void Ora_M(const DecodedInst* inst);
+void Orb_M(const DecodedInst* inst);
+void Eora_M(const DecodedInst* inst);
+void Eorb_M(const DecodedInst* inst);
+void Bita_M(const DecodedInst* inst);
+void Bitb_M(const DecodedInst* inst);
+void Cmpa_M(const DecodedInst* inst);
+void Cmpb_M(const DecodedInst* inst);
+void Suba_M(const DecodedInst* inst);
+void Subb_M(const DecodedInst* inst);
+void Adda_M(const DecodedInst* inst);
+void Addb_M(const DecodedInst* inst);
+void Bra_R(const DecodedInst* inst);
+void Brn_R(const DecodedInst* inst);
+void Bhi_R(const DecodedInst* inst);
+void Bls_R(const DecodedInst* inst);
+void Bhs_R(const DecodedInst* inst);
+void Blo_R(const DecodedInst* inst);
+void Bne_R(const DecodedInst* inst);
+void Beq_R(const DecodedInst* inst);
+void Bvc_R(const DecodedInst* inst);
+void Bvs_R(const DecodedInst* inst);
+void Bpl_R(const DecodedInst* inst);
+void Bmi_R(const DecodedInst* inst);
+void Bge_R(const DecodedInst* inst);
+void Blt_R(const DecodedInst* inst);
+void Bgt_R(const DecodedInst* inst);
+void Ble_R(const DecodedInst* inst);
+void Lbra_R(const DecodedInst* inst);
+void LBne_R(const DecodedInst* inst);
+void LBeq_R(const DecodedInst* inst);
 void Tsta_I(const DecodedInst* inst);
 void Tstb_I(const DecodedInst* inst);
 void Inca_I(const DecodedInst* inst);
@@ -674,6 +740,39 @@ void HD6309Init()
 		inlines.ldb_e  = &Ldb_E;
 		inlines.sta_e  = &Sta_E;
 		inlines.stb_e  = &Stb_E;
+		inlines.bra_r  = &Bra_R;
+		inlines.brn_r  = &Brn_R;
+		inlines.bhi_r  = &Bhi_R;
+		inlines.bls_r  = &Bls_R;
+		inlines.bhs_r  = &Bhs_R;
+		inlines.blo_r  = &Blo_R;
+		inlines.bne_r  = &Bne_R;
+		inlines.beq_r  = &Beq_R;
+		inlines.bvc_r  = &Bvc_R;
+		inlines.bvs_r  = &Bvs_R;
+		inlines.bpl_r  = &Bpl_R;
+		inlines.bmi_r  = &Bmi_R;
+		inlines.bge_r  = &Bge_R;
+		inlines.blt_r  = &Blt_R;
+		inlines.bgt_r  = &Bgt_R;
+		inlines.ble_r  = &Ble_R;
+		inlines.lbra_r = &Lbra_R;
+		inlines.lbne_r = &LBne_R;
+		inlines.lbeq_r = &LBeq_R;
+		inlines.anda_m = &Anda_M;
+		inlines.andb_m = &Andb_M;
+		inlines.ora_m  = &Ora_M;
+		inlines.orb_m  = &Orb_M;
+		inlines.eora_m = &Eora_M;
+		inlines.eorb_m = &Eorb_M;
+		inlines.bita_m = &Bita_M;
+		inlines.bitb_m = &Bitb_M;
+		inlines.cmpa_m = &Cmpa_M;
+		inlines.cmpb_m = &Cmpb_M;
+		inlines.suba_m = &Suba_M;
+		inlines.subb_m = &Subb_M;
+		inlines.adda_m = &Adda_M;
+		inlines.addb_m = &Addb_M;
 		inlines.tsta_i = &Tsta_I;
 		inlines.tstb_i = &Tstb_I;
 		inlines.inca_i = &Inca_I;
@@ -7648,12 +7747,15 @@ int HD6309Exec(int CycleFor)
 					// for one designated PURE block, run thunk and
 					// interpreter from the same snapshot and compare.
 					static long verify_pc = -2;
+					static bool verify_pure = false;
 					if (verify_pc == -2)
 					{
 						const char* vp = std::getenv("VCC_VERIFY_PC");
 						verify_pc = vp ? std::strtol(vp, nullptr, 16) : -1;
+						verify_pure = std::getenv("VCC_VERIFY_PURE") != nullptr;
 					}
-					if ((long)block->start_pc == verify_pc)
+					if ((long)block->start_pc == verify_pc ||
+					    (verify_pure && block->pure_thunk))
 					{
 						Hd6309State snap = cpu_state;
 						block->native_entry();
@@ -7699,6 +7801,15 @@ int HD6309Exec(int CycleFor)
 				}
 				else
 				{
+					// Temporary measurement (VCC_COUNT_HANDLERS): rank
+					// handlers by interpreter-path execution count to
+					// steer the JIT inline set. Dumped at exit.
+					static int count_handlers = -1;
+					if (count_handlers == -1)
+						count_handlers = std::getenv("VCC_COUNT_HANDLERS") != nullptr;
+					if (count_handlers)
+						CountBlockHandlers(*block);
+
 					// Tiering: runtime-recorded blocks earn a thunk
 					// once hot. This execution stays interpreted; the
 					// thunk serves the next hit. Lookup returns const
@@ -7711,6 +7822,7 @@ int HD6309Exec(int CycleFor)
 					    ++wb->exec_count == kJitHotThreshold)
 					{
 						wb->native_entry = BlockJit::EmitBlock(*wb);
+						wb->pure_thunk = wb->native_entry && BlockJit::EmitBlockWasPure();
 						if (wb->native_entry == nullptr)
 						{
 							// Arena full? Reclaim: drop every thunk,
@@ -7726,6 +7838,7 @@ int HD6309Exec(int CycleFor)
 								BlockJit::Reset();
 								++gJitArenaFlushes;
 								wb->native_entry = BlockJit::EmitBlock(*wb);
+								wb->pure_thunk = wb->native_entry && BlockJit::EmitBlockWasPure();
 							}
 						}
 						if (wb->native_entry)

@@ -126,6 +126,49 @@ namespace BlockJit
         // the pattern we will reuse for compares and eventually lazy-
         // CC. All use NatEmuCycles21 except ABX which uses
         // NatEmuCycles31.
+        // Branch handlers (terminators). The arm64 backend inlines
+        // these as the block's final instruction: both successor PCs
+        // are emit-time constants, so a branch becomes a few cc-byte
+        // loads and a PC store with no handler call. Appended after
+        // the original fields so the x86-32 backend (which doesn't
+        // know them and leaves them on the call path) is unaffected.
+        InstHandler bra_r;        // BRA  (0x20) always
+        InstHandler brn_r;        // BRN  (0x21) never
+        InstHandler bhi_r;        // BHI  (0x22) !(C|Z)
+        InstHandler bls_r;        // BLS  (0x23) C|Z
+        InstHandler bhs_r;        // BHS  (0x24) !C
+        InstHandler blo_r;        // BLO  (0x25) C
+        InstHandler bne_r;        // BNE  (0x26) !Z
+        InstHandler beq_r;        // BEQ  (0x27) Z
+        InstHandler bvc_r;        // BVC  (0x28) !V
+        InstHandler bvs_r;        // BVS  (0x29) V
+        InstHandler bpl_r;        // BPL  (0x2A) !N
+        InstHandler bmi_r;        // BMI  (0x2B) N
+        InstHandler bge_r;        // BGE  (0x2C) !(N^V)
+        InstHandler blt_r;        // BLT  (0x2D) N^V
+        InstHandler bgt_r;        // BGT  (0x2E) !(Z|(N^V))
+        InstHandler ble_r;        // BLE  (0x2F) Z|(N^V)
+        InstHandler lbra_r;       // LBRA (0x16) always, NatEmuCycles54
+        InstHandler lbne_r;       // LBNE (0x1026) !Z, 5+1
+        InstHandler lbeq_r;       // LBEQ (0x1027) Z, 5+1
+
+        // Immediate ALU family (also appended; x86-32 backend leaves
+        // them on the call path).
+        InstHandler anda_m;       // ANDA # (0x84)  Z,N from result, V=0
+        InstHandler andb_m;       // ANDB # (0xC4)
+        InstHandler ora_m;        // ORA  # (0x8A)
+        InstHandler orb_m;        // ORB  # (0xCA)
+        InstHandler eora_m;       // EORA # (0x88)
+        InstHandler eorb_m;       // EORB # (0xC8)
+        InstHandler bita_m;       // BITA # (0x85)  like AND, no writeback
+        InstHandler bitb_m;       // BITB # (0xC5)
+        InstHandler cmpa_m;       // CMPA # (0x81)  C,V,Z,N; no writeback
+        InstHandler cmpb_m;       // CMPB # (0xC1)
+        InstHandler suba_m;       // SUBA # (0x80)  C,V,Z,N + A
+        InstHandler subb_m;       // SUBB # (0xC0)
+        InstHandler adda_m;       // ADDA # (0x8B)  C,H,V,Z,N + A
+        InstHandler addb_m;       // ADDB # (0xCB)
+
         InstHandler tsta_i;       // TSTA (0x4D)
         InstHandler tstb_i;       // TSTB (0x5D)
         InstHandler inca_i;       // INCA (0x4C)
@@ -183,4 +226,9 @@ namespace BlockJit
         uint32_t cc_writes_elided;
     };
     Stats GetStats();
+
+    // Diagnostic: whether the most recent EmitBlock call produced a
+    // side-effect-free thunk (no MemRead8/MemWrite8, no handler calls).
+    // The null and x86-32 backends report false.
+    bool EmitBlockWasPure();
 }

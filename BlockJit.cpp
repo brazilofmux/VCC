@@ -942,6 +942,13 @@ static void AnalyzeFlagLiveness(const CachedBlock& slot,
 // actually emit - bits set = live, bits clear = dead (elided by DSE).
 static bool TryEmitInline(uint8_t*& p, const DecodedInst& insn, uint8_t flag_mask)
 {
+    // Lockstep invariant with AnalyzeFlagLiveness: a handler the
+    // analysis classifies CC_UNKNOWN has live_writes == 0 ("called
+    // handler"), NOT "no flags live". Refuse to inline it rather than
+    // silently dropping its flag writes.
+    if (InlinedHandlerWritesMask(insn.handler) == CC_UNKNOWN)
+        return false;
+
     const InstHandler h = insn.handler;
     if (h == g_inlines.lda_m)  { EmitInlineLd8Imm              (p, insn, g_addrs.a,                       flag_mask); return true; }
     if (h == g_inlines.ldb_m)  { EmitInlineLd8Imm              (p, insn, g_addrs.b,                       flag_mask); return true; }
@@ -1064,6 +1071,11 @@ NativeEntry EmitBlock(const CachedBlock& slot)
     ++g_blocks_emitted;
 
     return reinterpret_cast<NativeEntry>(entry);
+}
+
+bool EmitBlockWasPure()
+{
+    return false;
 }
 
 Stats GetStats()

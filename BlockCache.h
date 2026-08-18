@@ -54,6 +54,10 @@ struct CachedBlock
     // never consult this. Preserved when a re-record produces an
     // identical block (see FinishRecord).
     uint8_t  exec_count;
+    // Diagnostic: the thunk has no memory accesses or handler calls,
+    // so VCC_VERIFY_PURE can run it and the interpreter from the same
+    // snapshot and compare. Set alongside native_entry.
+    uint8_t  pure_thunk;
     uint32_t generation;    // generation when this block was cached
 
     // Optional level-1 JIT thunk: a small chunk of native x86 that
@@ -237,6 +241,7 @@ public:
         slot = block;
         slot.generation = generation_;
         slot.exec_count = 0;
+        slot.pure_thunk = 0;
 
         SetReverseMap(slot.start_pc, slot.end_pc);
         // Mark the page bitmap. Block lengths are bounded by
@@ -286,6 +291,7 @@ public:
         {
             blocks_[i].native_entry = nullptr;
             blocks_[i].exec_count = 0;
+            blocks_[i].pure_thunk = 0;
         }
     }
 
@@ -424,6 +430,7 @@ private:
                 // fresh thunk once hot again).
                 old.native_entry = nullptr;
                 old.exec_count = 0;
+                old.pure_thunk = 0;
                 memcpy(old.insns, decoded, sizeof(decoded));
             }
 

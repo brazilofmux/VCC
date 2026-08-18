@@ -69,7 +69,7 @@ static CpuAddrs           g_addrs        {};
 static InlineableHandlers g_inlines      {};
 static bool               g_disabled     = false;
 static bool               g_no_inline    = false;
-static int                g_inline_max   = 31;
+static int                g_inline_max   = 999;
 static uint32_t           g_blocks_emitted = 0;
 static uint32_t           g_emit_failures  = 0;
 static uint32_t           g_insns_called   = 0;
@@ -78,6 +78,7 @@ static uint32_t           g_pc_writes_emitted = 0;
 static uint32_t           g_pc_writes_skipped = 0;
 static uint32_t           g_cc_writes_requested = 0;
 static uint32_t           g_cc_writes_elided    = 0;
+static bool               g_emit_had_side_effects = false;   // diag: see EmitBlockWasPure
 
 // Field offsets from CpuAddrs.base, computed once at Init. Every one
 // fits the unsigned-immediate load/store forms with room to spare.
@@ -190,10 +191,10 @@ void Reset()
 
 // Prologue: 3 frame insns + two imm64 materializations (up to 4 each).
 static constexpr size_t kPrologueBytes = (3 + 4 + 4) * 4;
-// Per instruction, worst case: an inlined 8-bit dp store with all four
-// cc[] writes live runs about 21 instructions; the called path is 8.
-// 26 instructions is a safe ceiling for either.
-static constexpr size_t kMaxBytesPerInsn = 26 * 4;
+// Per instruction, worst case: an inlined ADDA #imm with every flag
+// live (including the unconditional H write) runs about 30
+// instructions; the called path is 8. 40 is a safe ceiling.
+static constexpr size_t kMaxBytesPerInsn = 40 * 4;
 // Epilogue: 2 ldp + ret, plus a final PC flush (movz+strh) when the
 // block ends on an inlined op.
 static constexpr size_t kEpilogueBytes = (2 + 1 + 2) * 4;
@@ -242,6 +243,25 @@ static void EmitAndImm(emit_t& e, a64_reg_t rd, a64_reg_t rn, uint32_t imm)
     {
         emit_movz_w32(&e, A64_W17, (uint16_t)imm, 0);
         emit_and_w32(&e, rd, rn, A64_W17);
+    }
+}
+
+// OR/EOR-immediate with register fallback, same rationale as EmitAndImm.
+static void EmitOrrImm(emit_t& e, a64_reg_t rd, a64_reg_t rn, uint32_t imm)
+{
+    if (!emit_orr_w32_imm(&e, rd, rn, imm))
+    {
+        emit_movz_w32(&e, A64_W17, (uint16_t)imm, 0);
+        emit_orr_w32(&e, rd, rn, A64_W17);
+    }
+}
+
+static void EmitEorImm(emit_t& e, a64_reg_t rd, a64_reg_t rn, uint32_t imm)
+{
+    if (!emit_eor_w32_imm(&e, rd, rn, imm))
+    {
+        emit_movz_w32(&e, A64_W17, (uint16_t)imm, 0);
+        emit_eor_w32(&e, rd, rn, A64_W17);
     }
 }
 
@@ -338,6 +358,7 @@ static void EmitInlineLd8Mem(emit_t& e, const DecodedInst& insn,
     {
         emit_movz_w32(&e, A64_W0, insn.operand, 0);
     }
+    g_emit_had_side_effects = true;
     emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read8);
     emit_blr(&e, A64_W16);
     // The return value contract only guarantees the low byte.
@@ -372,6 +393,7 @@ static void EmitInlineSt8Mem(emit_t& e, const DecodedInst& insn,
     {
         emit_movz_w32(&e, A64_W1, insn.operand, 0);
     }
+    g_emit_had_side_effects = true;
     emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_write8);
     emit_blr(&e, A64_W16);
     EmitCyclesRuntime(e, direct_page ? g_off_nat43 : g_off_nat54);
@@ -561,6 +583,243 @@ static void EmitInlineAbx(emit_t& e)
     EmitCyclesRuntime(e, g_off_nat31);
 }
 
+// ANDA/ANDB/ORA/ORB/EORA/EORB #imm (writeback) and BITA/BITB #imm
+// (flags only): result in W1, Z/N from it, V=0, +2 cycles.
+enum class LogicOp : uint8_t { And, Or, Eor };
+
+static void EmitInlineLogic8Imm(emit_t& e, const DecodedInst& insn,
+                                uint32_t reg_off, LogicOp op,
+                                bool writeback, uint8_t mask)
+{
+    const uint8_t imm = (uint8_t)(insn.operand & 0xFF);
+    emit_ldrb_imm(&e, A64_W0, A64_W19, reg_off);
+    switch (op)
+    {
+    case LogicOp::And: EmitAndImm(e, A64_W1, A64_W0, imm); break;
+    case LogicOp::Or:  EmitOrrImm(e, A64_W1, A64_W0, imm); break;
+    case LogicOp::Eor: EmitEorImm(e, A64_W1, A64_W0, imm); break;
+    }
+    if (writeback)
+        emit_strb_imm(&e, A64_W1, A64_W19, reg_off);
+    EmitFlagsZNVFromReg(e, A64_W1, mask);
+    EmitCyclesConst(e, 2);
+}
+
+// CMPA/CMPB (no writeback), SUBA/SUBB, ADDA/ADDB #imm. Mirrors the
+// handlers: C = borrow (sub/cmp: old < imm; add: bit 8 of the wide
+// sum), V = C ^ bit7(imm ^ result ^ old), Z/N from the result byte.
+// ADD also writes the untracked half-carry cc[H] (index 5)
+// unconditionally, exactly as the handler does.
+static void EmitInlineArith8Imm(emit_t& e, const DecodedInst& insn,
+                                uint32_t reg_off, bool is_add,
+                                bool writeback, uint8_t mask)
+{
+    const uint8_t imm = (uint8_t)(insn.operand & 0xFF);
+    emit_ldrb_imm(&e, A64_W0, A64_W19, reg_off);          // old value
+    if (is_add)
+        emit_add_w32_imm(&e, A64_W1, A64_W0, imm);        // wide sum
+    else
+        emit_sub_w32_imm(&e, A64_W1, A64_W0, imm);        // wide diff
+    EmitAndImm(e, A64_W3, A64_W1, 0xFF);                  // result byte
+    if (writeback)
+        emit_strb_imm(&e, A64_W3, A64_W19, reg_off);
+
+    // C into W2 (also feeds V).
+    if (is_add)
+    {
+        emit_lsr_w32_imm(&e, A64_W2, A64_W1, 8);          // sum bit 8
+    }
+    else
+    {
+        emit_cmp_w32_imm(&e, A64_W0, imm);
+        emit_cset_w32(&e, A64_W2, A64_COND_LO);           // borrow
+    }
+    if (mask & CC_BIT_C)
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 0);
+
+    if (mask & CC_BIT_V)
+    {
+        emit_eor_w32(&e, A64_W4, A64_W3, A64_W0);         // result ^ old
+        if (imm & 0x80)
+            EmitEorImm(e, A64_W4, A64_W4, 0x80);          // ^ imm bit 7
+        emit_lsr_w32_imm(&e, A64_W4, A64_W4, 7);
+        EmitAndImm(e, A64_W4, A64_W4, 1);
+        emit_eor_w32(&e, A64_W4, A64_W4, A64_W2);         // ^ C
+        emit_strb_imm(&e, A64_W4, A64_W19, g_off_cc + 1);
+    }
+
+    if (is_add)
+    {
+        // H = bit 4 of (old ^ imm ^ result); untracked by the DSE
+        // mask, written unconditionally like the handler.
+        emit_eor_w32(&e, A64_W4, A64_W0, A64_W3);
+        if (imm & 0x10)
+            EmitEorImm(e, A64_W4, A64_W4, 0x10);
+        emit_lsr_w32_imm(&e, A64_W4, A64_W4, 4);
+        EmitAndImm(e, A64_W4, A64_W4, 1);
+        emit_strb_imm(&e, A64_W4, A64_W19, g_off_cc + 5);
+    }
+
+    if (mask & CC_BIT_Z)
+    {
+        emit_cmp_w32_imm(&e, A64_W3, 0);
+        emit_cset_w32(&e, A64_W2, A64_COND_EQ);
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 2);
+    }
+    if (mask & CC_BIT_N)
+    {
+        emit_lsr_w32_imm(&e, A64_W2, A64_W3, 7);
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 3);
+    }
+    EmitCyclesConst(e, 2);
+}
+
+// ---------- branch terminators ----------
+// A branch as the block's last instruction needs no handler call: the
+// fall-through PC is the running local_pc and the taken PC is
+// fall + signed offset - both emit-time constants. The predicate is
+// one to three cc[] byte loads. Cycle costs mirror the handlers
+// exactly: short branches +3 flat, LBRA NatEmuCycles54, long
+// conditionals +5 (+1 when taken).
+
+enum class BranchPred : uint8_t
+{
+    Always,     // BRA
+    Never,      // BRN
+    Z,          // BEQ / BNE(inverted)
+    N,          // BMI / BPL
+    C,          // BLO / BHS
+    V,          // BVS / BVC
+    CorZ,       // BLS / BHI
+    NxorV,      // BLT / BGE
+    ZorNxorV,   // BLE / BGT
+};
+
+struct BranchDesc
+{
+    BranchPred pred;
+    bool taken_when_zero;   // condition inverted (BNE, BPL, ...)
+    bool is_long;
+};
+
+static bool LookupBranch(InstHandler h, BranchDesc& out)
+{
+    if (h == g_inlines.bra_r)  { out = { BranchPred::Always,   false, false }; return true; }
+    if (h == g_inlines.brn_r)  { out = { BranchPred::Never,    false, false }; return true; }
+    if (h == g_inlines.beq_r)  { out = { BranchPred::Z,        false, false }; return true; }
+    if (h == g_inlines.bne_r)  { out = { BranchPred::Z,        true,  false }; return true; }
+    if (h == g_inlines.bmi_r)  { out = { BranchPred::N,        false, false }; return true; }
+    if (h == g_inlines.bpl_r)  { out = { BranchPred::N,        true,  false }; return true; }
+    if (h == g_inlines.blo_r)  { out = { BranchPred::C,        false, false }; return true; }
+    if (h == g_inlines.bhs_r)  { out = { BranchPred::C,        true,  false }; return true; }
+    if (h == g_inlines.bvs_r)  { out = { BranchPred::V,        false, false }; return true; }
+    if (h == g_inlines.bvc_r)  { out = { BranchPred::V,        true,  false }; return true; }
+    if (h == g_inlines.bls_r)  { out = { BranchPred::CorZ,     false, false }; return true; }
+    if (h == g_inlines.bhi_r)  { out = { BranchPred::CorZ,     true,  false }; return true; }
+    if (h == g_inlines.blt_r)  { out = { BranchPred::NxorV,    false, false }; return true; }
+    if (h == g_inlines.bge_r)  { out = { BranchPred::NxorV,    true,  false }; return true; }
+    if (h == g_inlines.ble_r)  { out = { BranchPred::ZorNxorV, false, false }; return true; }
+    if (h == g_inlines.bgt_r)  { out = { BranchPred::ZorNxorV, true,  false }; return true; }
+    if (h == g_inlines.lbra_r) { out = { BranchPred::Always,   false, true  }; return true; }
+    if (h == g_inlines.lbeq_r) { out = { BranchPred::Z,        false, true  }; return true; }
+    if (h == g_inlines.lbne_r) { out = { BranchPred::Z,        true,  true  }; return true; }
+    return false;
+}
+
+// Leaves the predicate value in W1 (nonzero = condition holds, before
+// any taken_when_zero inversion).
+static void EmitBranchPredicate(emit_t& e, BranchPred pred)
+{
+    switch (pred)
+    {
+    case BranchPred::Z:
+        emit_ldrb_imm(&e, A64_W1, A64_W19, g_off_cc + 2);
+        break;
+    case BranchPred::N:
+        emit_ldrb_imm(&e, A64_W1, A64_W19, g_off_cc + 3);
+        break;
+    case BranchPred::C:
+        emit_ldrb_imm(&e, A64_W1, A64_W19, g_off_cc + 0);
+        break;
+    case BranchPred::V:
+        emit_ldrb_imm(&e, A64_W1, A64_W19, g_off_cc + 1);
+        break;
+    case BranchPred::CorZ:
+        emit_ldrb_imm(&e, A64_W1, A64_W19, g_off_cc + 0);
+        emit_ldrb_imm(&e, A64_W2, A64_W19, g_off_cc + 2);
+        emit_orr_w32(&e, A64_W1, A64_W1, A64_W2);
+        break;
+    case BranchPred::NxorV:
+        emit_ldrb_imm(&e, A64_W1, A64_W19, g_off_cc + 3);
+        emit_ldrb_imm(&e, A64_W2, A64_W19, g_off_cc + 1);
+        emit_eor_w32(&e, A64_W1, A64_W1, A64_W2);
+        break;
+    case BranchPred::ZorNxorV:
+        emit_ldrb_imm(&e, A64_W1, A64_W19, g_off_cc + 3);
+        emit_ldrb_imm(&e, A64_W2, A64_W19, g_off_cc + 1);
+        emit_eor_w32(&e, A64_W1, A64_W1, A64_W2);
+        emit_ldrb_imm(&e, A64_W2, A64_W19, g_off_cc + 2);
+        emit_orr_w32(&e, A64_W1, A64_W1, A64_W2);
+        break;
+    case BranchPred::Always:
+    case BranchPred::Never:
+        break;
+    }
+}
+
+// fall_pc is local_pc after this instruction; the taken target comes
+// from the pre-decoded signed offset. Stores PC (both paths) and adds
+// the exact handler cycle cost.
+static void EmitInlineBranch(emit_t& e, const DecodedInst& insn,
+                             const BranchDesc& desc, uint16_t fall_pc)
+{
+    const uint16_t taken_pc = desc.is_long
+        ? (uint16_t)(fall_pc + (int16_t)insn.operand)
+        : (uint16_t)(fall_pc + (int8_t)(insn.operand & 0xFF));
+
+    if (desc.pred == BranchPred::Always || desc.pred == BranchPred::Never)
+    {
+        const uint16_t pc = (desc.pred == BranchPred::Always) ? taken_pc : fall_pc;
+        emit_movz_w32(&e, A64_W2, pc, 0);
+        emit_strh_imm(&e, A64_W2, A64_W19, g_off_pc);
+        if (desc.is_long)
+            EmitCyclesRuntime(e, g_off_nat54);   // LBRA
+        else
+            EmitCyclesConst(e, 3);               // BRA / BRN
+        return;
+    }
+
+    EmitBranchPredicate(e, desc.pred);
+
+    // W2 = PC to store, W3 = cycles (long branches cost one more when
+    // taken). Select via a forward branch over the reassignment.
+    const uint16_t pc_if_zero    = desc.taken_when_zero ? taken_pc : fall_pc;
+    const uint16_t pc_if_nonzero = desc.taken_when_zero ? fall_pc : taken_pc;
+    const uint32_t cyc_if_zero    = desc.is_long ? (desc.taken_when_zero ? 6u : 5u) : 3u;
+    const uint32_t cyc_if_nonzero = desc.is_long ? (desc.taken_when_zero ? 5u : 6u) : 3u;
+
+    emit_movz_w32(&e, A64_W2, pc_if_zero, 0);
+    if (desc.is_long)
+        emit_movz_w32(&e, A64_W3, cyc_if_zero, 0);
+    // skip the nonzero-case reassignment when W1 == 0
+    emit_cbz_w32(&e, A64_W1, desc.is_long ? 12 : 8);
+    emit_movz_w32(&e, A64_W2, pc_if_nonzero, 0);
+    if (desc.is_long)
+        emit_movz_w32(&e, A64_W3, cyc_if_nonzero, 0);
+
+    emit_strh_imm(&e, A64_W2, A64_W19, g_off_pc);
+    if (desc.is_long)
+    {
+        emit_ldr_w32_imm(&e, A64_W9, A64_W19, g_off_cyc);
+        emit_add_w32(&e, A64_W9, A64_W9, A64_W3);
+        emit_str_w32_imm(&e, A64_W9, A64_W19, g_off_cyc);
+    }
+    else
+    {
+        EmitCyclesConst(e, 3);
+    }
+}
+
 // ---------- liveness analysis ----------
 // Ported verbatim from BlockJit.cpp (target-independent logic).
 
@@ -581,6 +840,22 @@ static uint8_t InlinedHandlerWritesMask(InstHandler h)
         h == g_inlines.deca_i || h == g_inlines.decb_i)
     {
         return CC_BIT_Z | CC_BIT_N | CC_BIT_V;
+    }
+
+    if (h == g_inlines.anda_m || h == g_inlines.andb_m ||
+        h == g_inlines.ora_m  || h == g_inlines.orb_m  ||
+        h == g_inlines.eora_m || h == g_inlines.eorb_m ||
+        h == g_inlines.bita_m || h == g_inlines.bitb_m)
+    {
+        return CC_BIT_Z | CC_BIT_N | CC_BIT_V;
+    }
+
+    // Compare/sub/add write all four (ADD also writes the untracked H).
+    if (h == g_inlines.cmpa_m || h == g_inlines.cmpb_m ||
+        h == g_inlines.suba_m || h == g_inlines.subb_m ||
+        h == g_inlines.adda_m || h == g_inlines.addb_m)
+    {
+        return CC_ALL;
     }
 
     if (h == g_inlines.clra_i || h == g_inlines.clrb_i ||
@@ -656,6 +931,10 @@ static int InlineRank(InstHandler h)
         g_inlines.incb_i, g_inlines.deca_i, g_inlines.decb_i, g_inlines.coma_i,
         g_inlines.comb_i, g_inlines.nega_i, g_inlines.negb_i, g_inlines.lsra_i,
         g_inlines.asra_i, g_inlines.asla_i, g_inlines.abx_i,
+        g_inlines.anda_m, g_inlines.andb_m, g_inlines.ora_m,  g_inlines.orb_m,
+        g_inlines.eora_m, g_inlines.eorb_m, g_inlines.bita_m, g_inlines.bitb_m,
+        g_inlines.cmpa_m, g_inlines.cmpb_m, g_inlines.suba_m, g_inlines.subb_m,
+        g_inlines.adda_m, g_inlines.addb_m,
     };
     for (int i = 0; i < (int)(sizeof(order) / sizeof(order[0])); i++)
         if (h == order[i]) return i;
@@ -665,7 +944,14 @@ static int InlineRank(InstHandler h)
 static bool TryEmitInline(emit_t& e, const DecodedInst& insn, uint8_t mask)
 {
     if (g_no_inline) return false;
-    if (g_inline_max < 31 && (InlineRank(insn.handler) >= g_inline_max))
+    if (g_inline_max < 999 && (InlineRank(insn.handler) >= g_inline_max))
+        return false;
+    // Lockstep invariant with AnalyzeFlagLiveness: an op the analysis
+    // classifies CC_UNKNOWN has live_writes == 0 (meaning "called
+    // handler"), NOT "no flags live". Inlining it would silently drop
+    // its flag writes - the exact bug this guard exists to prevent.
+    // Costs one table walk per emitted instruction, at emit time only.
+    if (InlinedHandlerWritesMask(insn.handler) == CC_UNKNOWN)
         return false;
     const InstHandler h = insn.handler;
     if (h == g_inlines.lda_m)  { EmitInlineLd8Imm (e, insn, g_off_a, mask); return true; }
@@ -699,6 +985,20 @@ static bool TryEmitInline(emit_t& e, const DecodedInst& insn, uint8_t mask)
     if (h == g_inlines.asra_i) { EmitInlineAsr8   (e, g_off_a, mask); return true; }
     if (h == g_inlines.asla_i) { EmitInlineAsl8   (e, g_off_a, mask); return true; }
     if (h == g_inlines.abx_i)  { EmitInlineAbx    (e); return true; }
+    if (h == g_inlines.anda_m) { EmitInlineLogic8Imm(e, insn, g_off_a, LogicOp::And, true,  mask); return true; }
+    if (h == g_inlines.andb_m) { EmitInlineLogic8Imm(e, insn, g_off_b, LogicOp::And, true,  mask); return true; }
+    if (h == g_inlines.ora_m)  { EmitInlineLogic8Imm(e, insn, g_off_a, LogicOp::Or,  true,  mask); return true; }
+    if (h == g_inlines.orb_m)  { EmitInlineLogic8Imm(e, insn, g_off_b, LogicOp::Or,  true,  mask); return true; }
+    if (h == g_inlines.eora_m) { EmitInlineLogic8Imm(e, insn, g_off_a, LogicOp::Eor, true,  mask); return true; }
+    if (h == g_inlines.eorb_m) { EmitInlineLogic8Imm(e, insn, g_off_b, LogicOp::Eor, true,  mask); return true; }
+    if (h == g_inlines.bita_m) { EmitInlineLogic8Imm(e, insn, g_off_a, LogicOp::And, false, mask); return true; }
+    if (h == g_inlines.bitb_m) { EmitInlineLogic8Imm(e, insn, g_off_b, LogicOp::And, false, mask); return true; }
+    if (h == g_inlines.cmpa_m) { EmitInlineArith8Imm(e, insn, g_off_a, false, false, mask); return true; }
+    if (h == g_inlines.cmpb_m) { EmitInlineArith8Imm(e, insn, g_off_b, false, false, mask); return true; }
+    if (h == g_inlines.suba_m) { EmitInlineArith8Imm(e, insn, g_off_a, false, true,  mask); return true; }
+    if (h == g_inlines.subb_m) { EmitInlineArith8Imm(e, insn, g_off_b, false, true,  mask); return true; }
+    if (h == g_inlines.adda_m) { EmitInlineArith8Imm(e, insn, g_off_a, true,  true,  mask); return true; }
+    if (h == g_inlines.addb_m) { EmitInlineArith8Imm(e, insn, g_off_b, true,  true,  mask); return true; }
     return false;
 }
 
@@ -729,6 +1029,7 @@ NativeEntry EmitBlock(const CachedBlock& slot)
 
     uint8_t* const entry = g_arena_base + g_arena_used;
     emit_t e { entry, 0, (uint32_t)needed };
+    g_emit_had_side_effects = false;
 
     jit_writable_begin();
 
@@ -750,6 +1051,19 @@ NativeEntry EmitBlock(const CachedBlock& slot)
         const DecodedInst& insn = slot.insns[i];
         local_pc = (uint16_t)(local_pc + insn.length);
 
+        // Branch terminators inline as the last instruction only: the
+        // baked fall-through/taken PCs assume the block ends here.
+        BranchDesc bdesc;
+        if (i == (int)slot.num_insns - 1 && !g_no_inline &&
+            LookupBranch(insn.handler, bdesc))
+        {
+            EmitInlineBranch(e, insn, bdesc, local_pc);
+            pc_dirty = false;   // the branch stored PC itself
+            ++g_insns_inlined;
+            ++g_pc_writes_skipped;
+            continue;
+        }
+
         if (TryEmitInline(e, insn, live_writes[i]))
         {
             pc_dirty = true;
@@ -766,6 +1080,7 @@ NativeEntry EmitBlock(const CachedBlock& slot)
             pc_dirty = false;
 
             // handler(&slot.insns[i])
+            g_emit_had_side_effects = true;
             emit_add_x64_imm(&e, A64_W0, A64_W20, (uint32_t)(i * sizeof(DecodedInst)));
             emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)insn.handler);
             emit_blr(&e, A64_W16);
@@ -798,10 +1113,19 @@ NativeEntry EmitBlock(const CachedBlock& slot)
 
     __builtin___clear_cache((char*)entry, (char*)entry + e.offset);
 
+
     g_arena_used += e.offset;
     ++g_blocks_emitted;
 
     return reinterpret_cast<NativeEntry>(entry);
+}
+
+// True when the most recent EmitBlock produced a thunk with no memory
+// accesses or handler calls - safe to run twice from a snapshot for
+// differential verification (VCC_VERIFY_PURE in hd6309.cpp).
+bool EmitBlockWasPure()
+{
+    return !g_emit_had_side_effects;
 }
 
 Stats GetStats()

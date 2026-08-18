@@ -47,6 +47,11 @@ NativeEntry EmitBlock(const CachedBlock&)
     return nullptr;
 }
 
+bool EmitBlockWasPure()
+{
+    return false;
+}
+
 Stats GetStats()
 {
     return Stats{};
