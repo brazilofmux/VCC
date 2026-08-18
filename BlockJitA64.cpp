@@ -49,6 +49,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "BlockCache.h"
 #include "emit_a64.h"
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <sys/mman.h>
 #ifdef __APPLE__
@@ -67,6 +68,8 @@ static size_t             g_arena_used   = 0;
 static CpuAddrs           g_addrs        {};
 static InlineableHandlers g_inlines      {};
 static bool               g_disabled     = false;
+static bool               g_no_inline    = false;
+static int                g_inline_max   = 31;
 static uint32_t           g_blocks_emitted = 0;
 static uint32_t           g_emit_failures  = 0;
 static uint32_t           g_insns_called   = 0;
@@ -125,6 +128,8 @@ void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers)
     // Kill switch for A/B runs and emitter debugging: with the JIT
     // refused, every block falls back to the threaded interpreter.
     g_disabled = std::getenv("VCC_NO_JIT") != nullptr;
+    g_no_inline = std::getenv("VCC_NO_INLINE") != nullptr;
+    if (const char* im = std::getenv("VCC_INLINE_MAX")) g_inline_max = std::atoi(im);
 
     if (g_arena_base == nullptr && !g_disabled)
     {
@@ -226,6 +231,20 @@ static void EmitCcConst(emit_t& e, uint32_t idx, unsigned value)
     }
 }
 
+
+// AND-immediate with a register fallback when the value has no logical-
+// immediate encoding. Never ignore emit_and_w32_imm's return value: a
+// silently-skipped instruction is exactly the failure mode that hid the
+// LSRA carry bug (see the UB note in emit_a64.h's encoder).
+static void EmitAndImm(emit_t& e, a64_reg_t rd, a64_reg_t rn, uint32_t imm)
+{
+    if (!emit_and_w32_imm(&e, rd, rn, imm))
+    {
+        emit_movz_w32(&e, A64_W17, (uint16_t)imm, 0);
+        emit_and_w32(&e, rd, rn, A64_W17);
+    }
+}
+
 // Update cc[Z]/cc[N]/cc[V] from an 8-bit value in Wv (already masked
 // to 0..255). Z: compare/cset; N: bit 7 shifted down; V: constant 0 -
 // matching the interpreter's rules for loads/stores/TST.
@@ -322,7 +341,7 @@ static void EmitInlineLd8Mem(emit_t& e, const DecodedInst& insn,
     emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read8);
     emit_blr(&e, A64_W16);
     // The return value contract only guarantees the low byte.
-    emit_and_w32_imm(&e, A64_W0, A64_W0, 0xFF);
+    EmitAndImm(e, A64_W0, A64_W0, 0xFF);
     emit_strb_imm(&e, A64_W0, A64_W19, reg_off);
     EmitFlagsZNVFromReg(e, A64_W0, mask);
     EmitCyclesRuntime(e, direct_page ? g_off_nat43 : g_off_nat54);
@@ -381,7 +400,7 @@ static void EmitInlineIncDec8(emit_t& e, uint32_t reg_off, bool is_inc,
         emit_add_w32_imm(&e, A64_W1, A64_W1, 1);
     else
         emit_sub_w32_imm(&e, A64_W1, A64_W1, 1);
-    emit_and_w32_imm(&e, A64_W1, A64_W1, 0xFF);
+    EmitAndImm(e, A64_W1, A64_W1, 0xFF);
     emit_strb_imm(&e, A64_W1, A64_W19, reg_off);
     if (mask & CC_BIT_Z)
     {
@@ -408,7 +427,7 @@ static void EmitInlineCom8(emit_t& e, uint32_t reg_off, uint8_t mask)
 {
     emit_ldrb_imm(&e, A64_W1, A64_W19, reg_off);
     emit_mvn_w32(&e, A64_W1, A64_W1);
-    emit_and_w32_imm(&e, A64_W1, A64_W1, 0xFF);
+    EmitAndImm(e, A64_W1, A64_W1, 0xFF);
     emit_strb_imm(&e, A64_W1, A64_W19, reg_off);
     EmitFlagsZNVFromReg(e, A64_W1, (uint8_t)(mask & (CC_BIT_Z | CC_BIT_N | CC_BIT_V)));
     if (mask & CC_BIT_C)
@@ -421,7 +440,7 @@ static void EmitInlineNeg8(emit_t& e, uint32_t reg_off, uint8_t mask)
 {
     emit_ldrb_imm(&e, A64_W0, A64_W19, reg_off);
     emit_neg_w32(&e, A64_W1, A64_W0);
-    emit_and_w32_imm(&e, A64_W1, A64_W1, 0xFF);
+    EmitAndImm(e, A64_W1, A64_W1, 0xFF);
     emit_strb_imm(&e, A64_W1, A64_W19, reg_off);
     if (mask & CC_BIT_C)
     {
@@ -457,7 +476,7 @@ static void EmitInlineLsr8(emit_t& e, uint32_t reg_off, uint8_t mask)
     emit_strb_imm(&e, A64_W1, A64_W19, reg_off);
     if (mask & CC_BIT_C)
     {
-        emit_and_w32_imm(&e, A64_W2, A64_W0, 1);
+        EmitAndImm(e, A64_W2, A64_W0, 1);
         emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 0);
     }
     if (mask & CC_BIT_Z)
@@ -476,12 +495,12 @@ static void EmitInlineAsr8(emit_t& e, uint32_t reg_off, uint8_t mask)
 {
     emit_ldrb_imm(&e, A64_W0, A64_W19, reg_off);
     emit_lsr_w32_imm(&e, A64_W1, A64_W0, 1);
-    emit_and_w32_imm(&e, A64_W2, A64_W0, 0x80);
+    EmitAndImm(e, A64_W2, A64_W0, 0x80);
     emit_orr_w32(&e, A64_W1, A64_W1, A64_W2);
     emit_strb_imm(&e, A64_W1, A64_W19, reg_off);
     if (mask & CC_BIT_C)
     {
-        emit_and_w32_imm(&e, A64_W2, A64_W0, 1);
+        EmitAndImm(e, A64_W2, A64_W0, 1);
         emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 0);
     }
     if (mask & CC_BIT_Z)
@@ -503,7 +522,7 @@ static void EmitInlineAsl8(emit_t& e, uint32_t reg_off, uint8_t mask)
 {
     emit_ldrb_imm(&e, A64_W0, A64_W19, reg_off);
     emit_lsl_w32_imm(&e, A64_W1, A64_W0, 1);
-    emit_and_w32_imm(&e, A64_W1, A64_W1, 0xFF);
+    EmitAndImm(e, A64_W1, A64_W1, 0xFF);
     emit_strb_imm(&e, A64_W1, A64_W19, reg_off);
     if (mask & CC_BIT_C)
     {
@@ -515,7 +534,7 @@ static void EmitInlineAsl8(emit_t& e, uint32_t reg_off, uint8_t mask)
         emit_lsr_w32_imm(&e, A64_W2, A64_W0, 7);
         emit_lsr_w32_imm(&e, A64_W3, A64_W0, 6);
         emit_eor_w32(&e, A64_W2, A64_W2, A64_W3);
-        emit_and_w32_imm(&e, A64_W2, A64_W2, 1);
+        EmitAndImm(e, A64_W2, A64_W2, 1);
         emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 1);
     }
     if (mask & CC_BIT_Z)
@@ -626,8 +645,28 @@ static void AnalyzeFlagLiveness(const CachedBlock& slot,
 
 // ---------- inline dispatch ----------
 
+static int InlineRank(InstHandler h)
+{
+    const InstHandler order[] = {
+        g_inlines.lda_m,  g_inlines.ldb_m,  g_inlines.ldd_m,  g_inlines.ldx_m,
+        g_inlines.ldu_m,  g_inlines.lds_i,  g_inlines.ldy_m,  g_inlines.clra_i,
+        g_inlines.clrb_i, g_inlines.lda_d,  g_inlines.ldb_d,  g_inlines.sta_d,
+        g_inlines.stb_d,  g_inlines.lda_e,  g_inlines.ldb_e,  g_inlines.sta_e,
+        g_inlines.stb_e,  g_inlines.tsta_i, g_inlines.tstb_i, g_inlines.inca_i,
+        g_inlines.incb_i, g_inlines.deca_i, g_inlines.decb_i, g_inlines.coma_i,
+        g_inlines.comb_i, g_inlines.nega_i, g_inlines.negb_i, g_inlines.lsra_i,
+        g_inlines.asra_i, g_inlines.asla_i, g_inlines.abx_i,
+    };
+    for (int i = 0; i < (int)(sizeof(order) / sizeof(order[0])); i++)
+        if (h == order[i]) return i;
+    return -1;
+}
+
 static bool TryEmitInline(emit_t& e, const DecodedInst& insn, uint8_t mask)
 {
+    if (g_no_inline) return false;
+    if (g_inline_max < 31 && (InlineRank(insn.handler) >= g_inline_max))
+        return false;
     const InstHandler h = insn.handler;
     if (h == g_inlines.lda_m)  { EmitInlineLd8Imm (e, insn, g_off_a, mask); return true; }
     if (h == g_inlines.ldb_m)  { EmitInlineLd8Imm (e, insn, g_off_b, mask); return true; }
@@ -696,7 +735,7 @@ NativeEntry EmitBlock(const CachedBlock& slot)
     // Prologue.
     emit_stp_pre_sp(&e, A64_W29, A64_W30, -32);
     emit_stp_x64_off(&e, A64_W19, A64_W20, A64_SP, 16);
-    emit_mov_x64_x64(&e, A64_W29, A64_SP);
+    emit_add_x64_imm(&e, A64_W29, A64_SP, 0);   // mov x29, sp (ORR would read XZR)
     emit_mov_x64_imm64(&e, A64_W19, (uint64_t)(uintptr_t)g_addrs.base);
     emit_mov_x64_imm64(&e, A64_W20, (uint64_t)(uintptr_t)&slot.insns[0]);
 

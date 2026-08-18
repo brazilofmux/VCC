@@ -48,6 +48,12 @@ struct CachedBlock
     uint16_t end_pc;        // PC after the last instruction in the block
     uint8_t  num_insns;     // number of instructions in the block
     uint8_t  total_cycles;  // total cycle cost of the block
+    // Executions through the interpreter dispatch path, saturating at
+    // the JIT hotness threshold. Runtime-recorded blocks earn a native
+    // thunk once hot; pre-populated ROM blocks are emitted eagerly and
+    // never consult this. Preserved when a re-record produces an
+    // identical block (see FinishRecord).
+    uint8_t  exec_count;
     uint32_t generation;    // generation when this block was cached
 
     // Optional level-1 JIT thunk: a small chunk of native x86 that
@@ -230,6 +236,7 @@ public:
 
         slot = block;
         slot.generation = generation_;
+        slot.exec_count = 0;
 
         SetReverseMap(slot.start_pc, slot.end_pc);
         // Mark the page bitmap. Block lengths are bounded by
@@ -268,6 +275,18 @@ public:
         // On the rare wraparound, do a full clear
         if (generation_ == 0)
             Clear();
+    }
+
+    // Drop every native thunk pointer. MUST be called before
+    // BlockJit::Reset() reclaims the code arena - afterwards any stale
+    // native_entry would jump into freshly-overwritten arena memory.
+    void ClearAllNativeEntries()
+    {
+        for (int i = 0; i < CACHE_SIZE; i++)
+        {
+            blocks_[i].native_entry = nullptr;
+            blocks_[i].exec_count = 0;
+        }
     }
 
 private:
@@ -375,19 +394,38 @@ private:
             if (old.generation == generation_)
                 ClearReverseMap(old.start_pc, old.end_pc);
 
+            // Thunk survival: a thunk's validity depends only on the
+            // slot's start_pc and insns[] contents (it bakes handler
+            // pointers, operands, and the PC chain derived from them).
+            // Bulk invalidations - every MMU remap under OS-9 - leave
+            // the slot bytes intact, and the hot code usually re-records
+            // to the identical block. When the freshly decoded contents
+            // match what the slot already holds, keep the thunk and the
+            // hotness count instead of throwing both away; this is what
+            // lets the JIT survive an MMU-heavy workload at all.
+            const bool identical =
+                old.native_entry != nullptr &&
+                old.start_pc == rec_start_pc_ &&
+                old.end_pc == decode_end_pc &&
+                old.num_insns == (uint8_t)rec_insn_count_ &&
+                memcmp(old.insns, decoded,
+                       (size_t)rec_insn_count_ * sizeof(DecodedInst)) == 0;
+
             old.start_pc = rec_start_pc_;
             old.end_pc = decode_end_pc;
             old.num_insns = (uint8_t)rec_insn_count_;
             old.total_cycles = (uint8_t)total_cycles;
             old.generation = generation_;
-            // Recorded blocks aren't JIT'd at level-1; the slot may
-            // still hold a stale thunk pointer from a previously
-            // pre-populated ROM block that landed in this slot. Clear
-            // it so the dispatch loop falls through to the interpreter
-            // path instead of jumping into a thunk that bakes the
-            // OLD block's insn pointers.
-            old.native_entry = nullptr;
-            memcpy(old.insns, decoded, sizeof(decoded));
+            if (!identical)
+            {
+                // Different contents: any thunk in this slot bakes the
+                // OLD block's instructions - drop it so the dispatch
+                // loop uses the interpreter path (and the block earns a
+                // fresh thunk once hot again).
+                old.native_entry = nullptr;
+                old.exec_count = 0;
+                memcpy(old.insns, decoded, sizeof(decoded));
+            }
 
             SetReverseMap(rec_start_pc_, decode_end_pc);
             stats_.blocks_recorded++;

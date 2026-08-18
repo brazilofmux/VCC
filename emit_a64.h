@@ -159,7 +159,14 @@ static inline bool a64_encode_logical_imm32(uint32_t val, uint32_t *encoded) {
         if (!uniform) continue;
 
         for (int r = 0; r < esz; r++) {
-            uint32_t rotated = ((elem << r) | (elem >> (esz - r))) & mask;
+            /* r==0 must not compute elem >> esz: for esz==32 that is a
+             * shift by 32 - undefined behavior, and clang -O3 deletes
+             * any branch that provably reaches it (which silently ate
+             * the emitted AND-immediate for values like 1 that only
+             * encode at element size 32). Same latent bug exists in the
+             * ~/riscv and ~/z80 copies of this header. */
+            uint32_t rotated = r ? (((elem << r) | (elem >> (esz - r))) & mask)
+                                 : elem;
             if (rotated == 0) continue;
             int ones = __builtin_ctz(~rotated);
             uint32_t expected = (1u << ones) - 1u;

@@ -215,6 +215,13 @@ static int gCycleFor;
 static std::vector<unsigned short> CPUBreakpoints;
 static std::vector<unsigned short> CPUTraceTriggers;
 
+// JIT tiering counters. gJitBlockRuns counts block dispatches served by
+// a native thunk (vs the interpreter loop) and resets with the other
+// interval stats; gJitArenaFlushes counts arena reclaims and is
+// cumulative.
+static uint64_t gJitBlockRuns = 0;
+static uint32_t gJitArenaFlushes = 0;
+
 static unsigned char& NatEmuCycles65   = cpu_state.NatEmuCycles65;
 static unsigned char& NatEmuCycles64   = cpu_state.NatEmuCycles64;
 static unsigned char& NatEmuCycles32   = cpu_state.NatEmuCycles32;
@@ -810,9 +817,15 @@ void HD6309GetBlockStatsText(char* buf, int bufsize)
 	double inline_pct = (total_emitted_insns > 0)
 		? 100.0 * (double)js.insns_inlined / (double)total_emitted_insns
 		: 0.0;
+	// Share of block dispatches served by a native thunk this interval.
+	uint64_t jit_runs = gJitBlockRuns;
+	gJitBlockRuns = 0;
+	double jit_run_pct = (s.block_hits > 0)
+		? 100.0 * (double)jit_runs / (double)s.block_hits
+		: 0.0;
 	snprintf(buf, bufsize,
 		"Blk:%.0f%% %.1fi/b %llurec %llurej %llucan %lluinv  "
-		"JIT:%u/%.0f%% inl:%.0f%%",
+		"JIT:%u/%.0f%% run:%.0f%% inl:%.0f%% fl:%u",
 		hit_pct, avg_block,
 		(unsigned long long)s.blocks_recorded,
 		(unsigned long long)s.rejected_blocks,
@@ -820,7 +833,9 @@ void HD6309GetBlockStatsText(char* buf, int bufsize)
 		(unsigned long long)s.invalidations,
 		(unsigned)js.blocks_emitted,
 		jit_arena_pct,
-		inline_pct);
+		jit_run_pct,
+		inline_pct,
+		(unsigned)gJitArenaFlushes);
 }
 
 void Neg_D(const DecodedInst* inst)
@@ -7627,10 +7642,105 @@ int HD6309Exec(int CycleFor)
 					// thunk runs the whole block. The thunk pre-sets
 					// PC_REG before each handler call and uses
 					// __cdecl, exactly matching the loop below.
+					++gJitBlockRuns;
+
+					// Temporary in-vivo differential (VCC_VERIFY_PC):
+					// for one designated PURE block, run thunk and
+					// interpreter from the same snapshot and compare.
+					static long verify_pc = -2;
+					if (verify_pc == -2)
+					{
+						const char* vp = std::getenv("VCC_VERIFY_PC");
+						verify_pc = vp ? std::strtol(vp, nullptr, 16) : -1;
+					}
+					if ((long)block->start_pc == verify_pc)
+					{
+						Hd6309State snap = cpu_state;
+						block->native_entry();
+						Hd6309State post_jit = cpu_state;
+						cpu_state = snap;
+						{
+							const DecodedInst* ip = block->insns;
+							const DecodedInst* end = ip + block->num_insns;
+							unsigned short lpc = PC_REG;
+							while (ip < end)
+							{
+								lpc += ip->length;
+								PC_REG = lpc;
+								ip->handler(ip);
+								ip++;
+							}
+						}
+						if (memcmp(&post_jit, &cpu_state, sizeof(Hd6309State)) != 0)
+						{
+							static int reports = 0;
+							if (reports++ < 6)
+							{
+								fprintf(stderr, "[VERIFY %04X] DIVERGES:\n", block->start_pc);
+								fprintf(stderr, "  pre : A=%02X B=%02X CC=%d%d%d%d PC=%04X cyc=%d\n",
+									snap.q.Byte.lswmsb, snap.q.Byte.lswlsb,
+									snap.cc[0], snap.cc[1], snap.cc[2], snap.cc[3],
+									snap.pc.Reg, snap.CycleCounter);
+								fprintf(stderr, "  jit : A=%02X B=%02X CC=%d%d%d%d PC=%04X cyc=%d\n",
+									post_jit.q.Byte.lswmsb, post_jit.q.Byte.lswlsb,
+									post_jit.cc[0], post_jit.cc[1], post_jit.cc[2], post_jit.cc[3],
+									post_jit.pc.Reg, post_jit.CycleCounter);
+								fprintf(stderr, "  int : A=%02X B=%02X CC=%d%d%d%d PC=%04X cyc=%d\n",
+									cpu_state.q.Byte.lswmsb, cpu_state.q.Byte.lswlsb,
+									cpu_state.cc[0], cpu_state.cc[1], cpu_state.cc[2], cpu_state.cc[3],
+									cpu_state.pc.Reg, cpu_state.CycleCounter);
+							}
+						}
+						goto jit_block_done;
+					}
+
 					block->native_entry();
+				jit_block_done:;
 				}
 				else
 				{
+					// Tiering: runtime-recorded blocks earn a thunk
+					// once hot. This execution stays interpreted; the
+					// thunk serves the next hit. Lookup returns const
+					// because readers shouldn't mutate blocks; the
+					// dispatch loop owns the tiering state.
+					constexpr uint8_t kJitHotThreshold = 16;
+					static const bool kLazyEmit = std::getenv("VCC_NO_LAZY") == nullptr;
+					CachedBlock* wb = const_cast<CachedBlock*>(block);
+					if (kLazyEmit && wb->exec_count < kJitHotThreshold &&
+					    ++wb->exec_count == kJitHotThreshold)
+					{
+						wb->native_entry = BlockJit::EmitBlock(*wb);
+						if (wb->native_entry == nullptr)
+						{
+							// Arena full? Reclaim: drop every thunk,
+							// reset the arena, and let hot blocks
+							// re-earn their slots. (A disabled or
+							// absent JIT reports arena_size 0 and
+							// never gets here with a full arena.)
+							const auto js = BlockJit::GetStats();
+							if (js.arena_size != 0 &&
+							    js.arena_used + (js.arena_size / 16) > js.arena_size)
+							{
+								blockCache.ClearAllNativeEntries();
+								BlockJit::Reset();
+								++gJitArenaFlushes;
+								wb->native_entry = BlockJit::EmitBlock(*wb);
+							}
+						}
+						if (wb->native_entry)
+						{
+							++gJitBlockRuns;
+							wb->native_entry();
+							if (JS_Ramp_Clock < 0xFFFF)
+								JS_Ramp_Clock += CycleCounter - PrevCycleCount;
+							PrevCycleCount = CycleCounter;
+							if (HaltedInsPending)
+								goto debugger_path;
+							continue;
+						}
+					}
+
 					const DecodedInst* ip = block->insns;
 					const DecodedInst* end = ip + block->num_insns;
 					unsigned short local_pc = PC_REG;
