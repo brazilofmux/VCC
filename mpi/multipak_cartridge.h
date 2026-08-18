@@ -58,6 +58,7 @@ public:
 
 	void reset() override;
 	void process_horizontal_sync() override;
+	bool wants_horizontal_sync() const override { return hsync_mask_ != 0; }
 	void write_port(unsigned char port_id, unsigned char value) override;
 	unsigned char read_port(unsigned char port_id) override;
 	unsigned char read_memory_byte(unsigned short memory_address) override;
@@ -92,6 +93,12 @@ private:
 	multipak_configuration& configuration_;
 	std::shared_ptr<callbacks_type> callbacks_;
 	std::array<VCC::Core::cartridge_slot, NUMSLOTS> slots_;
+
+	// Bit per slot that actually implements process_horizontal_sync;
+	// refreshed whenever a slot's cartridge changes. Keeps the
+	// per-scanline heartbeat from fanning out to empty-slot no-ops.
+	unsigned int hsync_mask_ = 0;
+	void refresh_hsync_mask();
 	unsigned char slot_register_ = default_slot_register_value;
 	slot_id_type switch_slot_ = default_switch_slot_value;
 	slot_id_type cached_cts_slot_ = default_switch_slot_value;

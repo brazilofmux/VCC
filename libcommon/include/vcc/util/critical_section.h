@@ -40,7 +40,10 @@ namespace VCC::Util
 
 		void lock() const
 		{
-			const std::thread::id self = std::this_thread::get_id();
+			// this_thread::get_id() resolves through pthread_self each
+			// call; cache it per thread (visible in profiles at tens of
+			// millions of locks per second).
+			static const thread_local std::thread::id self = std::this_thread::get_id();
 			if (owner_.load(std::memory_order_relaxed) == self)
 			{
 				++depth_;

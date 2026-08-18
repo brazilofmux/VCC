@@ -42,6 +42,7 @@ namespace VCC::Core
 
 		void reset() override;
 		void process_horizontal_sync() override;
+		bool wants_horizontal_sync() const override { return false; }
 		void write_port(unsigned char port_id, unsigned char value) override;
 		unsigned char read_port(unsigned char port_id) override;
 		unsigned char read_memory_byte(unsigned short memory_address) override;

@@ -139,12 +139,29 @@ void multipak_cartridge::reset()
 
 void multipak_cartridge::process_horizontal_sync()
 {
+	// Called every emulated scanline; only dispatch to slots whose
+	// cartridge actually implements the heartbeat.
+	if (hsync_mask_ == 0)
+		return;
+
 	VCC::Util::section_locker lock(mutex_);
 
-	for(const auto& cartridge_slot : slots_)
+	for (auto mpi_slot(0u); mpi_slot < slots_.size(); mpi_slot++)
 	{
-		cartridge_slot.process_horizontal_sync();
+		if (hsync_mask_ & (1u << mpi_slot))
+			slots_[mpi_slot].process_horizontal_sync();
 	}
+}
+
+void multipak_cartridge::refresh_hsync_mask()
+{
+	unsigned int mask = 0;
+	for (auto mpi_slot(0u); mpi_slot < slots_.size(); mpi_slot++)
+	{
+		if (slots_[mpi_slot].wants_horizontal_sync())
+			mask |= 1u << mpi_slot;
+	}
+	hsync_mask_ = mask;
 }
 
 void multipak_cartridge::write_port(unsigned char port_id, unsigned char value)
@@ -345,6 +362,7 @@ void multipak_cartridge::eject_cartridge(slot_id_type mpi_slot)
 	VCC::Util::section_locker lock(mutex_);
 	slots_[mpi_slot].stop();
 	slots_[mpi_slot] = {};
+	refresh_hsync_mask();
 	if (mpi_slot == cached_cts_slot_ || mpi_slot == switch_slot_)
 		SendMessage(gVccWnd,WM_VCC_CPU_RESET,(WPARAM) 0,(LPARAM) 0);
 	SendMessage(gVccWnd,WM_VCC_UPD_MENU,(WPARAM) 0,(LPARAM) 0);
@@ -423,6 +441,7 @@ multipak_cartridge::mount_status_type multipak_cartridge::mount_cartridge(
 
 	slots_[mpi_slot].start();
 	slots_[mpi_slot].reset();
+	refresh_hsync_mask();
 
 	SendMessage(gVccWnd,WM_VCC_UPD_MENU,(WPARAM) 0,(LPARAM) 0);
 	return loadedCartridge.load_result;

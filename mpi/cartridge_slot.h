@@ -94,6 +94,11 @@ namespace VCC::Core
 			cartridge_->process_horizontal_sync();
 		}
 
+		bool wants_horizontal_sync() const
+		{
+			return cartridge_->wants_horizontal_sync();
+		}
+
 		void write_port(unsigned char port_id, unsigned char value) const
 		{
 			cartridge_->write_port(port_id, value);

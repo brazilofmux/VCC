@@ -129,6 +129,8 @@ namespace VCC::Core
 		{
 			throw std::invalid_argument("Cannot initialize pak interface. Module does not export PakInitialize.");
 		}
+
+		wants_hsync_ = GetProcAddress(module_handle, "PakProcessHorizontalSync") != nullptr;
 	}
 
 	cpak_cartridge::name_type cpak_cartridge::name() const

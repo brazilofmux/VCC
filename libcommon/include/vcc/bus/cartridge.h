@@ -44,6 +44,12 @@ namespace VCC::Core
 		virtual void stop() = 0;
 		virtual void reset() = 0;
 		virtual void process_horizontal_sync() = 0;
+		// The pak bus calls process_horizontal_sync every emulated
+		// scanline; carts that do nothing there return false so the
+		// bus can skip the dispatch entirely (the per-scanline fan-out
+		// to no-ops was ~14% of CPU-bound wall time). Conservative
+		// default: true.
+		virtual bool wants_horizontal_sync() const { return true; }
 		virtual void write_port(unsigned char port_id, unsigned char value) = 0;
 		virtual unsigned char read_port(unsigned char port_id) = 0;
 		virtual unsigned char read_memory_byte(unsigned short memory_address) = 0;

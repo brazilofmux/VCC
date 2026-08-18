@@ -49,6 +49,7 @@ namespace VCC::Core
 
 		void reset() override;
 		void process_horizontal_sync() override;
+		bool wants_horizontal_sync() const override { return wants_hsync_; }
 		void status(char* text_buffer, size_t buffer_size) override;
 		void write_port(unsigned char port_id, unsigned char value) override;
 		unsigned char read_port(unsigned char port_id) override;
@@ -64,6 +65,8 @@ namespace VCC::Core
 		const HWND hVccWnd_;
 		const path_type configuration_path_;
 		const cpak_callbacks cpak_callbacks_;
+
+		bool wants_hsync_ = true;
 
 		// imported module functions
 		const PakInitializeModuleFunction initialize_;
