@@ -87,6 +87,13 @@ namespace BlockJit
         // signatures in tcc1014mmu.cpp.
         unsigned char (*mem_read8)(unsigned short);
         void (*mem_write8)(unsigned char, unsigned short);
+        // Appended for the indexed-mode inline family (arm64); the
+        // x86-32 backend ignores everything from here down.
+        uint8_t*  nat_cycles_32;  // indexed ,R++ / ,--R modes
+        uint8_t*  nat_cycles_53;  // indexed n16,PCR mode
+        uint8_t*  nat_cycles_65;  // TST indexed
+        unsigned short (*mem_read16)(unsigned short);
+        void (*mem_write16)(unsigned short, unsigned short);
     };
 
     // Handler addresses the level-2 emitter knows how to inline. The
@@ -168,6 +175,26 @@ namespace BlockJit
         InstHandler subb_m;       // SUBB # (0xC0)
         InstHandler adda_m;       // ADDA # (0x8B)  C,H,V,Z,N + A
         InstHandler addb_m;       // ADDB # (0xCB)
+
+        // Indexed-mode family (arm64 backend; ~28% of executed
+        // instructions under OS-9). The EA mode/register/offset are
+        // pre-decoded into DecodedInst, so the emitter resolves the
+        // addressing mode at emit time and inlines the direct modes.
+        InstHandler leax_x;       // LEAX (0x30)  X=EA, Z
+        InstHandler leay_x;       // LEAY (0x31)  Y=EA, Z
+        InstHandler leau_x;       // LEAU (0x33)  U=EA, no flags
+        InstHandler leas_x;       // LEAS (0x32)  S=EA, no flags
+        InstHandler lda_x;        // LDA  (0xA6)
+        InstHandler ldb_x;        // LDB  (0xE6)
+        InstHandler sta_x;        // STA  (0xA7)
+        InstHandler stb_x;        // STB  (0xE7)
+        InstHandler tst_x;        // TST  (0x6D)
+        InstHandler jmp_x;        // JMP  (0x6E)  terminator
+        InstHandler ldx_x;        // LDX  (0xAE)
+        InstHandler ldu_x;        // LDU  (0xEE)
+        InstHandler ldd_x;        // LDD  (0xEC)
+        InstHandler std_x;        // STD  (0xED)
+        InstHandler stx_x;        // STX  (0xAF)
 
         InstHandler tsta_i;       // TSTA (0x4D)
         InstHandler tstb_i;       // TSTB (0x5D)

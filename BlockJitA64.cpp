@@ -97,6 +97,9 @@ static uint32_t g_off_nat21 = 0;
 static uint32_t g_off_nat31 = 0;
 static uint32_t g_off_nat43 = 0;
 static uint32_t g_off_nat54 = 0;
+static uint32_t g_off_nat32 = 0;
+static uint32_t g_off_nat53 = 0;
+static uint32_t g_off_nat65 = 0;
 
 // ---------- cc[] bit ordering (matches BlockJit.cpp / hd6309.cpp) ----------
 
@@ -161,6 +164,9 @@ void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers)
         g_off_nat31 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_31 - base);
         g_off_nat43 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_43 - base);
         g_off_nat54 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_54 - base);
+        g_off_nat32 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_32 - base);
+        g_off_nat53 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_53 - base);
+        g_off_nat65 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_65 - base);
     }
 
     g_arena_used = 0;
@@ -674,6 +680,227 @@ static void EmitInlineArith8Imm(emit_t& e, const DecodedInst& insn,
     EmitCyclesConst(e, 2);
 }
 
+// ---------- indexed effective addresses ----------
+// The postbyte was resolved at decode time into ea_info (mode +
+// register) and operand, so the addressing mode is an emit-time
+// constant. The direct modes inline; indirect and 6309 W/E/F/D modes
+// fall back to the call path. Cycle adds mirror the EA_Fn_* helpers
+// in hd6309.cpp exactly.
+
+#include "EAModes.h"
+
+static bool EAModeSupported(uint8_t ea_info)
+{
+    switch (EA_MODE(ea_info))
+    {
+    case EA_POST_INC1: case EA_POST_INC2:
+    case EA_PRE_DEC1:  case EA_PRE_DEC2:
+    case EA_NO_OFFSET: case EA_5BIT:
+    case EA_OFFSET_8:  case EA_OFFSET_16:
+    case EA_PC_8:      case EA_PC_16:
+    case EA_OFFSET_A:  case EA_OFFSET_B:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static uint32_t EARegOffset(uint8_t ea_info)
+{
+    switch (EA_REG(ea_info))
+    {
+    case 0:  return g_off_x;
+    case 1:  return g_off_y;
+    case 2:  return g_off_u;
+    default: return g_off_s;
+    }
+}
+
+// Emit the EA into `dst` (masked to 16 bits) and add the mode's cycle
+// cost. Clobbers W2 and (for the cycle add) W9/W1 via the helpers.
+// Caller must have verified EAModeSupported.
+static void EmitEA(emit_t& e, uint8_t ea_info, uint16_t operand, a64_reg_t dst)
+{
+    const uint32_t reg_off = EARegOffset(ea_info);
+    switch (EA_MODE(ea_info))
+    {
+    case EA_NO_OFFSET:
+        emit_ldrh_imm(&e, dst, A64_W19, reg_off);
+        break;
+
+    case EA_5BIT:
+    case EA_OFFSET_8:
+    {
+        const int off = (EA_MODE(ea_info) == EA_5BIT)
+            ? (int16_t)operand
+            : (int)(signed char)(operand & 0xFF);
+        emit_ldrh_imm(&e, dst, A64_W19, reg_off);
+        if (off > 0)
+            emit_add_w32_imm(&e, dst, dst, (uint32_t)off);
+        else if (off < 0)
+            emit_sub_w32_imm(&e, dst, dst, (uint32_t)(-off));
+        if (off != 0)
+            EmitAndImm(e, dst, dst, 0xFFFF);
+        EmitCyclesConst(e, 1);
+        break;
+    }
+
+    case EA_OFFSET_16:
+        emit_ldrh_imm(&e, dst, A64_W19, reg_off);
+        emit_movz_w32(&e, A64_W2, operand, 0);
+        emit_add_w32(&e, dst, dst, A64_W2);
+        EmitAndImm(e, dst, dst, 0xFFFF);
+        EmitCyclesRuntime(e, g_off_nat43);
+        break;
+
+    case EA_PC_8:
+        emit_movz_w32(&e, dst, operand, 0);   // pre-computed absolute
+        EmitCyclesConst(e, 1);
+        break;
+
+    case EA_PC_16:
+        emit_movz_w32(&e, dst, operand, 0);   // pre-computed absolute
+        EmitCyclesRuntime(e, g_off_nat53);
+        break;
+
+    case EA_OFFSET_A:
+    case EA_OFFSET_B:
+        emit_ldrh_imm(&e, dst, A64_W19, reg_off);
+        emit_ldrsb_w32_imm(&e, A64_W2, A64_W19,
+                           EA_MODE(ea_info) == EA_OFFSET_A ? g_off_a : g_off_b);
+        emit_add_w32(&e, dst, dst, A64_W2);
+        EmitAndImm(e, dst, dst, 0xFFFF);
+        EmitCyclesConst(e, 1);
+        break;
+
+    case EA_POST_INC1:
+    case EA_POST_INC2:
+        // ea = *reg, then *reg += n
+        emit_ldrh_imm(&e, dst, A64_W19, reg_off);
+        emit_add_w32_imm(&e, A64_W2, dst,
+                         EA_MODE(ea_info) == EA_POST_INC1 ? 1u : 2u);
+        emit_strh_imm(&e, A64_W2, A64_W19, reg_off);
+        EmitCyclesRuntime(e, EA_MODE(ea_info) == EA_POST_INC1
+                             ? g_off_nat21 : g_off_nat32);
+        break;
+
+    case EA_PRE_DEC1:
+    case EA_PRE_DEC2:
+        // *reg -= n, then ea = *reg
+        emit_ldrh_imm(&e, dst, A64_W19, reg_off);
+        emit_sub_w32_imm(&e, dst, dst,
+                         EA_MODE(ea_info) == EA_PRE_DEC1 ? 1u : 2u);
+        EmitAndImm(e, dst, dst, 0xFFFF);
+        emit_strh_imm(&e, dst, A64_W19, reg_off);
+        EmitCyclesRuntime(e, EA_MODE(ea_info) == EA_PRE_DEC1
+                             ? g_off_nat21 : g_off_nat32);
+        break;
+
+    default:
+        break;   // unreachable per EAModeSupported
+    }
+}
+
+// LEAX/LEAY (Z from the 16-bit result) and LEAU/LEAS (no flags).
+static void EmitInlineLea(emit_t& e, const DecodedInst& insn,
+                          uint32_t dst_off, bool sets_z, uint8_t mask)
+{
+    EmitEA(e, insn.ea_info, insn.operand, A64_W0);
+    emit_strh_imm(&e, A64_W0, A64_W19, dst_off);
+    if (sets_z && (mask & CC_BIT_Z))
+    {
+        emit_cmp_w32_imm(&e, A64_W0, 0);
+        emit_cset_w32(&e, A64_W2, A64_COND_EQ);
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 2);
+    }
+    EmitCyclesConst(e, 4);
+}
+
+// LDA/LDB indexed: MemRead8(EA) -> acc, Z/N/V from the byte, +4.
+static void EmitInlineLd8Idx(emit_t& e, const DecodedInst& insn,
+                             uint32_t reg_off, uint8_t mask)
+{
+    EmitEA(e, insn.ea_info, insn.operand, A64_W0);
+    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read8);
+    emit_blr(&e, A64_W16);
+    EmitAndImm(e, A64_W0, A64_W0, 0xFF);
+    emit_strb_imm(&e, A64_W0, A64_W19, reg_off);
+    EmitFlagsZNVFromReg(e, A64_W0, mask);
+    EmitCyclesConst(e, 4);
+}
+
+// STA/STB indexed: MemWrite8(acc, EA), flags from acc, +4.
+static void EmitInlineSt8Idx(emit_t& e, const DecodedInst& insn,
+                             uint32_t reg_off, uint8_t mask)
+{
+    EmitEA(e, insn.ea_info, insn.operand, A64_W1);
+    emit_ldrb_imm(&e, A64_W0, A64_W19, reg_off);
+    EmitFlagsZNVFromReg(e, A64_W0, mask);
+    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_write8);
+    emit_blr(&e, A64_W16);
+    EmitCyclesConst(e, 4);
+}
+
+// TST indexed: flags from MemRead8(EA), no writeback, +NatEmuCycles65.
+static void EmitInlineTstIdx(emit_t& e, const DecodedInst& insn, uint8_t mask)
+{
+    EmitEA(e, insn.ea_info, insn.operand, A64_W0);
+    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read8);
+    emit_blr(&e, A64_W16);
+    EmitAndImm(e, A64_W0, A64_W0, 0xFF);
+    EmitFlagsZNVFromReg(e, A64_W0, mask);
+    EmitCyclesRuntime(e, g_off_nat65);
+}
+
+// LDX/LDU/LDD indexed: MemRead16(EA) -> reg16, Z/N(bit 15)/V=0, +5.
+static void EmitInlineLd16Idx(emit_t& e, const DecodedInst& insn,
+                              uint32_t reg_off, uint8_t mask)
+{
+    EmitEA(e, insn.ea_info, insn.operand, A64_W0);
+    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read16);
+    emit_blr(&e, A64_W16);
+    EmitAndImm(e, A64_W0, A64_W0, 0xFFFF);
+    emit_strh_imm(&e, A64_W0, A64_W19, reg_off);
+    if (mask & CC_BIT_Z)
+    {
+        emit_cmp_w32_imm(&e, A64_W0, 0);
+        emit_cset_w32(&e, A64_W2, A64_COND_EQ);
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 2);
+    }
+    if (mask & CC_BIT_N)
+    {
+        emit_lsr_w32_imm(&e, A64_W2, A64_W0, 15);
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 3);
+    }
+    if (mask & CC_BIT_V)
+        emit_strb_imm(&e, A64_WZR, A64_W19, g_off_cc + 1);
+    EmitCyclesConst(e, 5);
+}
+
+// STD/STX indexed: MemWrite16(reg16, EA), flags from reg16, +5.
+static void EmitInlineSt16Idx(emit_t& e, const DecodedInst& insn,
+                              uint32_t reg_off, uint8_t mask)
+{
+    EmitEA(e, insn.ea_info, insn.operand, A64_W1);
+    emit_ldrh_imm(&e, A64_W0, A64_W19, reg_off);
+    if (mask & CC_BIT_Z)
+    {
+        emit_cmp_w32_imm(&e, A64_W0, 0);
+        emit_cset_w32(&e, A64_W2, A64_COND_EQ);
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 2);
+    }
+    if (mask & CC_BIT_N)
+    {
+        emit_lsr_w32_imm(&e, A64_W2, A64_W0, 15);
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 3);
+    }
+    if (mask & CC_BIT_V)
+        emit_strb_imm(&e, A64_WZR, A64_W19, g_off_cc + 1);
+    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_write16);
+    emit_blr(&e, A64_W16);
+    EmitCyclesConst(e, 5);
+}
+
 // ---------- branch terminators ----------
 // A branch as the block's last instruction needs no handler call: the
 // fall-through PC is the running local_pc and the taken PC is
@@ -935,6 +1162,10 @@ static int InlineRank(InstHandler h)
         g_inlines.eora_m, g_inlines.eorb_m, g_inlines.bita_m, g_inlines.bitb_m,
         g_inlines.cmpa_m, g_inlines.cmpb_m, g_inlines.suba_m, g_inlines.subb_m,
         g_inlines.adda_m, g_inlines.addb_m,
+        g_inlines.leax_x, g_inlines.leay_x, g_inlines.leau_x, g_inlines.leas_x,
+        g_inlines.lda_x,  g_inlines.ldb_x,  g_inlines.sta_x,  g_inlines.stb_x,
+        g_inlines.tst_x,  g_inlines.ldx_x,  g_inlines.ldu_x,  g_inlines.ldd_x,
+        g_inlines.std_x,  g_inlines.stx_x,
     };
     for (int i = 0; i < (int)(sizeof(order) / sizeof(order[0])); i++)
         if (h == order[i]) return i;
@@ -999,6 +1230,30 @@ static bool TryEmitInline(emit_t& e, const DecodedInst& insn, uint8_t mask)
     if (h == g_inlines.subb_m) { EmitInlineArith8Imm(e, insn, g_off_b, false, true,  mask); return true; }
     if (h == g_inlines.adda_m) { EmitInlineArith8Imm(e, insn, g_off_a, true,  true,  mask); return true; }
     if (h == g_inlines.addb_m) { EmitInlineArith8Imm(e, insn, g_off_b, true,  true,  mask); return true; }
+    if ((h == g_inlines.leax_x || h == g_inlines.leay_x ||
+         h == g_inlines.leau_x || h == g_inlines.leas_x ||
+         h == g_inlines.lda_x  || h == g_inlines.ldb_x  ||
+         h == g_inlines.sta_x  || h == g_inlines.stb_x  ||
+         h == g_inlines.tst_x  ||
+         h == g_inlines.ldx_x  || h == g_inlines.ldu_x  ||
+         h == g_inlines.ldd_x  || h == g_inlines.std_x  ||
+         h == g_inlines.stx_x) && EAModeSupported(insn.ea_info))
+    {
+        if (h == g_inlines.leax_x) { EmitInlineLea(e, insn, g_off_x, true,  mask); return true; }
+        if (h == g_inlines.leay_x) { EmitInlineLea(e, insn, g_off_y, true,  mask); return true; }
+        if (h == g_inlines.leau_x) { EmitInlineLea(e, insn, g_off_u, false, mask); return true; }
+        if (h == g_inlines.leas_x) { EmitInlineLea(e, insn, g_off_s, false, mask); return true; }
+        if (h == g_inlines.lda_x)  { EmitInlineLd8Idx(e, insn, g_off_a, mask); return true; }
+        if (h == g_inlines.ldb_x)  { EmitInlineLd8Idx(e, insn, g_off_b, mask); return true; }
+        if (h == g_inlines.sta_x)  { EmitInlineSt8Idx(e, insn, g_off_a, mask); return true; }
+        if (h == g_inlines.stb_x)  { EmitInlineSt8Idx(e, insn, g_off_b, mask); return true; }
+        if (h == g_inlines.tst_x)  { EmitInlineTstIdx(e, insn, mask); return true; }
+        if (h == g_inlines.ldx_x)  { EmitInlineLd16Idx(e, insn, g_off_x, mask); return true; }
+        if (h == g_inlines.ldu_x)  { EmitInlineLd16Idx(e, insn, g_off_u, mask); return true; }
+        if (h == g_inlines.ldd_x)  { EmitInlineLd16Idx(e, insn, g_off_d, mask); return true; }
+        if (h == g_inlines.std_x)  { EmitInlineSt16Idx(e, insn, g_off_d, mask); return true; }
+        if (h == g_inlines.stx_x)  { EmitInlineSt16Idx(e, insn, g_off_x, mask); return true; }
+    }
     return false;
 }
 
@@ -1059,6 +1314,19 @@ NativeEntry EmitBlock(const CachedBlock& slot)
         {
             EmitInlineBranch(e, insn, bdesc, local_pc);
             pc_dirty = false;   // the branch stored PC itself
+            ++g_insns_inlined;
+            ++g_pc_writes_skipped;
+            continue;
+        }
+
+        // JMP indexed as terminator: PC = EA, +3 cycles.
+        if (i == (int)slot.num_insns - 1 && !g_no_inline &&
+            insn.handler == g_inlines.jmp_x && EAModeSupported(insn.ea_info))
+        {
+            EmitEA(e, insn.ea_info, insn.operand, A64_W0);
+            emit_strh_imm(&e, A64_W0, A64_W19, g_off_pc);
+            EmitCyclesConst(e, 3);
+            pc_dirty = false;
             ++g_insns_inlined;
             ++g_pc_writes_skipped;
             continue;
