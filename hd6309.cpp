@@ -141,15 +141,61 @@ typedef union
 
 static char RegName[16][10]={"D","X","Y","U","S","PC","W","V","A","B","CC","DP","ZERO","ZERO","E","F"};
 
-static wideregister q;
-static cpuregister pc, x, y, u, s, dp, v, z;
+// Hot CPU state gathered into one contiguous struct so a JIT backend
+// can reach every field from a single pinned base register (arm64:
+// [x19, #imm]; every offset fits the unsigned-immediate load/store
+// forms). The x86-32 backend keeps using the absolute per-field
+// addresses from CpuAddrs and doesn't care about layout. The reference
+// aliases below keep the several thousand existing use sites in this
+// file unchanged, at zero runtime cost.
+struct Hd6309State
+{
+	wideregister q;
+	cpuregister pc, x, y, u, s, dp, v, z;
+	unsigned char cc[8];
+	unsigned int md[8];
+	int CycleCounter = 0;
+	unsigned char ccbits = 0, mdbits = 0;
+	unsigned char NatEmuCycles65 = 6;
+	unsigned char NatEmuCycles64 = 6;
+	unsigned char NatEmuCycles32 = 3;
+	unsigned char NatEmuCycles21 = 2;
+	unsigned char NatEmuCycles54 = 5;
+	unsigned char NatEmuCycles97 = 9;
+	unsigned char NatEmuCycles85 = 8;
+	unsigned char NatEmuCycles51 = 5;
+	unsigned char NatEmuCycles31 = 3;
+	unsigned char NatEmuCycles1110 = 11;
+	unsigned char NatEmuCycles76 = 7;
+	unsigned char NatEmuCycles75 = 7;
+	unsigned char NatEmuCycles43 = 4;
+	unsigned char NatEmuCycles87 = 8;
+	unsigned char NatEmuCycles86 = 8;
+	unsigned char NatEmuCycles98 = 9;
+	unsigned char NatEmuCycles2726 = 27;
+	unsigned char NatEmuCycles3635 = 36;
+	unsigned char NatEmuCycles3029 = 30;
+	unsigned char NatEmuCycles2827 = 28;
+	unsigned char NatEmuCycles3726 = 37;
+	unsigned char NatEmuCycles3130 = 31;
+	unsigned char NatEmuCycles42 = 4;
+	unsigned char NatEmuCycles53 = 5;
+};
+
+static Hd6309State cpu_state;
+
+static wideregister& q = cpu_state.q;
+static cpuregister &pc = cpu_state.pc, &x = cpu_state.x, &y = cpu_state.y,
+                   &u = cpu_state.u, &s = cpu_state.s, &dp = cpu_state.dp,
+                   &v = cpu_state.v, &z = cpu_state.z;
+static unsigned char (&cc)[8] = cpu_state.cc;
+static unsigned int (&md)[8] = cpu_state.md;
+static int& CycleCounter = cpu_state.CycleCounter;
+static unsigned char &ccbits = cpu_state.ccbits, &mdbits = cpu_state.mdbits;
+
 static unsigned char InsCycles[2][25];
-static unsigned char cc[8];
-static unsigned int md[8];
-static unsigned char *ureg8[8]; 
-static unsigned char ccbits,mdbits;
+static unsigned char *ureg8[8];
 static unsigned short *xfreg16[8];
-static int CycleCounter=0;
 static unsigned int SyncWaiting=0;
 unsigned short temp16;
 static signed short stemp16;
@@ -169,30 +215,30 @@ static int gCycleFor;
 static std::vector<unsigned short> CPUBreakpoints;
 static std::vector<unsigned short> CPUTraceTriggers;
 
-static unsigned char NatEmuCycles65 = 6;
-static unsigned char NatEmuCycles64 = 6;
-static unsigned char NatEmuCycles32 = 3;
-static unsigned char NatEmuCycles21 = 2;
-static unsigned char NatEmuCycles54 = 5;
-static unsigned char NatEmuCycles97 = 9;
-static unsigned char NatEmuCycles85 = 8;
-static unsigned char NatEmuCycles51 = 5;
-static unsigned char NatEmuCycles31 = 3;
-static unsigned char NatEmuCycles1110 = 11;
-static unsigned char NatEmuCycles76 = 7;
-static unsigned char NatEmuCycles75 = 7;
-static unsigned char NatEmuCycles43 = 4;
-static unsigned char NatEmuCycles87 = 8;
-static unsigned char NatEmuCycles86 = 8;
-static unsigned char NatEmuCycles98 = 9;
-static unsigned char NatEmuCycles2726 = 27;
-static unsigned char NatEmuCycles3635 = 36;
-static unsigned char NatEmuCycles3029 = 30;
-static unsigned char NatEmuCycles2827 = 28;
-static unsigned char NatEmuCycles3726 = 37;
-static unsigned char NatEmuCycles3130 = 31;
-static unsigned char NatEmuCycles42 = 4;
-static unsigned char NatEmuCycles53 = 5;
+static unsigned char& NatEmuCycles65   = cpu_state.NatEmuCycles65;
+static unsigned char& NatEmuCycles64   = cpu_state.NatEmuCycles64;
+static unsigned char& NatEmuCycles32   = cpu_state.NatEmuCycles32;
+static unsigned char& NatEmuCycles21   = cpu_state.NatEmuCycles21;
+static unsigned char& NatEmuCycles54   = cpu_state.NatEmuCycles54;
+static unsigned char& NatEmuCycles97   = cpu_state.NatEmuCycles97;
+static unsigned char& NatEmuCycles85   = cpu_state.NatEmuCycles85;
+static unsigned char& NatEmuCycles51   = cpu_state.NatEmuCycles51;
+static unsigned char& NatEmuCycles31   = cpu_state.NatEmuCycles31;
+static unsigned char& NatEmuCycles1110 = cpu_state.NatEmuCycles1110;
+static unsigned char& NatEmuCycles76   = cpu_state.NatEmuCycles76;
+static unsigned char& NatEmuCycles75   = cpu_state.NatEmuCycles75;
+static unsigned char& NatEmuCycles43   = cpu_state.NatEmuCycles43;
+static unsigned char& NatEmuCycles87   = cpu_state.NatEmuCycles87;
+static unsigned char& NatEmuCycles86   = cpu_state.NatEmuCycles86;
+static unsigned char& NatEmuCycles98   = cpu_state.NatEmuCycles98;
+static unsigned char& NatEmuCycles2726 = cpu_state.NatEmuCycles2726;
+static unsigned char& NatEmuCycles3635 = cpu_state.NatEmuCycles3635;
+static unsigned char& NatEmuCycles3029 = cpu_state.NatEmuCycles3029;
+static unsigned char& NatEmuCycles2827 = cpu_state.NatEmuCycles2827;
+static unsigned char& NatEmuCycles3726 = cpu_state.NatEmuCycles3726;
+static unsigned char& NatEmuCycles3130 = cpu_state.NatEmuCycles3130;
+static unsigned char& NatEmuCycles42   = cpu_state.NatEmuCycles42;
+static unsigned char& NatEmuCycles53   = cpu_state.NatEmuCycles53;
 
 static unsigned char *NatEmuCycles[] =
 {
@@ -584,6 +630,7 @@ void HD6309Init()
 	// inline (currently the immediate-load family).
 	{
 		BlockJit::CpuAddrs addrs;
+		addrs.base           = &cpu_state;
 		addrs.pc             = &PC_REG;
 		addrs.a              = &A_REG;
 		addrs.b              = &B_REG;

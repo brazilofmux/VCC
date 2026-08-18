@@ -49,6 +49,15 @@ target_include_directories(vcc-libcommon PUBLIC
 set_target_properties(vcc-libcommon PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ---- Emulator core
+# Level-1/2 JIT backend: the arm64 emitter on Apple Silicon / arm64
+# Linux, the always-refuse null backend (interpreter + block cache)
+# everywhere else. BlockJit.cpp (x86-32) stays MSBuild-only.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+  set(VCC_BLOCKJIT_BACKEND BlockJitA64.cpp)
+else()
+  set(VCC_BLOCKJIT_BACKEND BlockJitNull.cpp)
+endif()
+
 add_library(vcc-core STATIC
   # CPU cores + decode/dispatch
   hd6309.cpp
@@ -56,7 +65,7 @@ add_library(vcc-core STATIC
   OpDecoder.cpp
   OpCodeTables.cpp
 
-  BlockJitNull.cpp
+  ${VCC_BLOCKJIT_BACKEND}
   Debugger.cpp
   DebuggerUtils.cpp
 

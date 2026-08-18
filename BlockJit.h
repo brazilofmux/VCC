@@ -52,6 +52,11 @@ namespace BlockJit
     // hd6309.cpp; the JIT needs the bare addresses, not the macros.
     struct CpuAddrs
     {
+        // Base of the contiguous Hd6309State struct that every field
+        // pointer below points into. Backends that pin a base register
+        // (arm64) derive each field's offset as (field - base); the
+        // x86-32 backend bakes the absolute addresses and ignores this.
+        void*     base;
         uint16_t* pc;             // PC_REG
         uint8_t*  a;              // A_REG
         uint8_t*  b;              // B_REG
