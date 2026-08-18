@@ -44,6 +44,9 @@ This file is part of VCC (Virtual Color Computer).
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <dlfcn.h>
+#include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -53,10 +56,13 @@ This file is part of VCC (Virtual Color Computer).
 #define __fastcall
 #define __cdecl
 #define CALLBACK
+#define WINAPI
+#define __declspec(x)
 
 // MSVC-isms that appear in the portable core.
 #define _inline inline
 #define __int64 long long
+#define _stricmp strcasecmp
 
 typedef void*           HWND;
 typedef void*           HINSTANCE;
@@ -76,6 +82,11 @@ typedef const char*     LPCSTR;
 typedef intptr_t        LPARAM;
 typedef uintptr_t       WPARAM;
 typedef intptr_t        LRESULT;
+typedef intptr_t        INT_PTR;
+typedef void*           LPVOID;
+typedef void*           PVOID;
+typedef uint8_t*        PBYTE;
+typedef uint32_t        ULONG;
 
 struct RECT  { LONG left; LONG top; LONG right; LONG bottom; };
 struct POINT { LONG x; LONG y; };
@@ -134,15 +145,22 @@ inline int MessageBoxA(HWND, const char* text, const char* caption, UINT)
 // FILE* in disguise, CreateFile maps the creation disposition onto an
 // fopen mode, and the printer-monitor "console" is stdout. The capture
 // feature works the same as on Windows.
-#define INVALID_HANDLE_VALUE    ((HANDLE)(intptr_t)-1)
-#define GENERIC_READ            0x80000000u
-#define GENERIC_WRITE           0x40000000u
-#define FILE_SHARE_READ         1u
-#define CREATE_ALWAYS           2u
-#define OPEN_EXISTING           3u
-#define OPEN_ALWAYS             4u
-#define FILE_ATTRIBUTE_NORMAL   0x80u
-#define STD_OUTPUT_HANDLE       ((DWORD)-11)
+#define INVALID_HANDLE_VALUE        ((HANDLE)(intptr_t)-1)
+#define GENERIC_READ                0x80000000u
+#define GENERIC_WRITE               0x40000000u
+#define FILE_SHARE_READ             1u
+#define CREATE_NEW                  1u
+#define CREATE_ALWAYS               2u
+#define OPEN_EXISTING               3u
+#define OPEN_ALWAYS                 4u
+#define FILE_ATTRIBUTE_NORMAL       0x80u
+#define FILE_BEGIN                  0u
+#define FILE_CURRENT                1u
+#define FILE_END                    2u
+#define INVALID_SET_FILE_POINTER    ((DWORD)-1)
+#define INVALID_FILE_SIZE           ((DWORD)-1)
+#define INVALID_FILE_ATTRIBUTES     ((DWORD)-1)
+#define STD_OUTPUT_HANDLE           ((DWORD)-11)
 
 inline HANDLE CreateFileA(const char* name, DWORD access, DWORD, void*,
                           DWORD disposition, DWORD, HANDLE)
@@ -150,6 +168,7 @@ inline HANDLE CreateFileA(const char* name, DWORD access, DWORD, void*,
     const char* mode;
     switch (disposition)
     {
+    case CREATE_NEW:    mode = "w+bx"; break;
     case CREATE_ALWAYS: mode = "w+b"; break;
     case OPEN_ALWAYS:   mode = (access & GENERIC_WRITE) ? "a+b" : "ab"; break;
     default:            mode = (access & GENERIC_WRITE) ? "r+b" : "rb"; break;
@@ -159,6 +178,111 @@ inline HANDLE CreateFileA(const char* name, DWORD access, DWORD, void*,
 }
 #define CreateFile CreateFileA
 
+inline BOOL ReadFile(HANDLE h, void* data, DWORD len,
+                     unsigned long* read, void*)
+{
+    if (h == nullptr || h == INVALID_HANDLE_VALUE)
+        return FALSE;
+    const size_t n = std::fread(data, 1, len, (FILE*)h);
+    if (read) *read = (unsigned long)n;
+    return TRUE;
+}
+
+inline BOOL ReadFile(HANDLE h, void* data, DWORD len,
+                     DWORD* read, void* overlapped)
+{
+    unsigned long n = 0;
+    const BOOL ok = ReadFile(h, data, len, &n, overlapped);
+    if (read) *read = (DWORD)n;
+    return ok;
+}
+
+inline DWORD SetFilePointer(HANDLE h, int32_t distance, int32_t* high,
+                            DWORD method)
+{
+    if (h == nullptr || h == INVALID_HANDLE_VALUE || high != nullptr)
+        return INVALID_SET_FILE_POINTER;
+    const int whence = (method == FILE_BEGIN) ? SEEK_SET
+                     : (method == FILE_CURRENT) ? SEEK_CUR : SEEK_END;
+    if (std::fseek((FILE*)h, distance, whence) != 0)
+        return INVALID_SET_FILE_POINTER;
+    const long pos = std::ftell((FILE*)h);
+    return pos < 0 ? INVALID_SET_FILE_POINTER : (DWORD)pos;
+}
+
+inline DWORD GetFileSize(HANDLE h, DWORD* high)
+{
+    if (h == nullptr || h == INVALID_HANDLE_VALUE)
+        return INVALID_FILE_SIZE;
+    if (high) *high = 0;
+    struct stat st;
+    if (fstat(fileno((FILE*)h), &st) != 0)
+        return INVALID_FILE_SIZE;
+    return (DWORD)st.st_size;
+}
+
+inline BOOL SetEndOfFile(HANDLE h)
+{
+    if (h == nullptr || h == INVALID_HANDLE_VALUE)
+        return FALSE;
+    FILE* f = (FILE*)h;
+    std::fflush(f);
+    const long pos = std::ftell(f);
+    return pos >= 0 && ftruncate(fileno(f), pos) == 0;
+}
+
+inline DWORD GetFileAttributesA(const char* name)
+{
+    struct stat st;
+    if (name == nullptr || stat(name, &st) != 0)
+        return INVALID_FILE_ATTRIBUTES;
+    return FILE_ATTRIBUTE_NORMAL;
+}
+#define GetFileAttributes GetFileAttributesA
+
+// Device-ioctl surface for the raw-floppy support in FD502/wd1793.cpp
+// (the fdrawcmd.sys driver is Windows-only). Defining CTL_CODE here also
+// keeps fdrawcmd.h from including <winioctl.h>. The shim always fails,
+// so InitController reports no raw-disk support and those paths stay
+// dormant - .dsk image files are the real path on every host.
+#define METHOD_BUFFERED     0
+#define METHOD_IN_DIRECT    1
+#define METHOD_OUT_DIRECT   2
+#define METHOD_NEITHER      3
+#define FILE_DEVICE_UNKNOWN 0x22
+#define FILE_ANY_ACCESS     0
+#define FILE_READ_DATA      1
+#define FILE_WRITE_DATA     2
+#define CTL_CODE(DeviceType, Function, Method, Access) \
+    (((DWORD)(DeviceType) << 16) | ((DWORD)(Access) << 14) | \
+     ((DWORD)(Function) << 2) | (DWORD)(Method))
+
+inline BOOL DeviceIoControl(HANDLE, DWORD, void*, DWORD, void*, DWORD,
+                            DWORD* returned, void*)
+{
+    if (returned) *returned = 0;
+    return FALSE;
+}
+
+// Window plumbing referenced by cartridge modules: no windows exist, so
+// handles are null and host notifications (menu rebuild, CPU reset
+// requests via WM_VCC_* messages) are quietly dropped. The SDL shell
+// replaces SendMessage with a real host-notification hook.
+inline HWND    GetActiveWindow()                   { return nullptr; }
+inline HWND    GetForegroundWindow()               { return nullptr; }
+inline LRESULT SendMessageA(HWND, UINT, WPARAM, LPARAM) { return 0; }
+#define SendMessage SendMessageA
+
+inline BOOL FlushFileBuffers(HANDLE h)
+{
+    if (h == nullptr || h == INVALID_HANDLE_VALUE)
+        return FALSE;
+    return std::fflush((FILE*)h) == 0;
+}
+
+// Win32 code spells the bytes-moved out-param as both DWORD* and
+// unsigned long* (identical types there, distinct on LP64) - overloads
+// cover both.
 inline BOOL WriteFile(HANDLE h, const void* data, DWORD len,
                       unsigned long* written, void*)
 {
@@ -168,6 +292,15 @@ inline BOOL WriteFile(HANDLE h, const void* data, DWORD len,
     std::fflush((FILE*)h);
     if (written) *written = (unsigned long)n;
     return n == len;
+}
+
+inline BOOL WriteFile(HANDLE h, const void* data, DWORD len,
+                      DWORD* written, void* overlapped)
+{
+    unsigned long n = 0;
+    const BOOL ok = WriteFile(h, data, len, &n, overlapped);
+    if (written) *written = (DWORD)n;
+    return ok;
 }
 
 inline BOOL CloseHandle(HANDLE h)
@@ -230,15 +363,60 @@ inline void GetLocalTime(SYSTEMTIME* st)
     st->wMilliseconds = 0;
 }
 
-// DLL cartridge loading does not exist off Windows - carts are statically
-// linked per docs/porting-macos.md. These keep the loader compiling; the
-// DLL path reports failure and callers take their error paths.
-inline HMODULE LoadLibraryA(const char*)           { return nullptr; }
+// Cartridge modules stay shared libraries off Windows, exactly as the
+// cartridge_loader/cpak_cartridge design intends: LoadLibrary is dlopen
+// with a name translation, GetProcAddress is dlsym. A Windows-flavored
+// module path like "C:/vcc/__bin/Win32/Debug/harddisk.dll" resolves by
+// basename to "<dir-of-executable>/harddisk.dylib" (then .so), so the
+// same vcc.ini drives both hosts.
+inline DWORD GetModuleFileNameA(HMODULE, char* out, DWORD nSize);
+
+inline HMODULE LoadLibraryA(const char* name)
+{
+    if (name == nullptr)
+        return nullptr;
+    const char* base = name;
+    for (const char* p = name; *p; ++p)
+    {
+        if (*p == '/' || *p == '\\')
+            base = p + 1;
+    }
+    std::string stem(base);
+    const size_t dot = stem.rfind('.');
+    if (dot != std::string::npos)
+        stem.resize(dot);
+
+    char exe[1024];
+    std::string dir;
+    if (GetModuleFileNameA(nullptr, exe, sizeof(exe)) > 0)
+    {
+        dir = exe;
+        const size_t slash = dir.rfind('/');
+        dir = (slash == std::string::npos) ? "" : dir.substr(0, slash + 1);
+    }
+
+    const std::string candidates[] = {
+        dir + stem + ".dylib",
+        dir + stem + ".so",
+        dir + "lib" + stem + ".dylib",
+        dir + "lib" + stem + ".so",
+        std::string(name),
+    };
+    for (const auto& candidate : candidates)
+    {
+        if (void* handle = dlopen(candidate.c_str(), RTLD_NOW | RTLD_LOCAL))
+            return handle;
+    }
+    return nullptr;
+}
 #define LoadLibrary LoadLibraryA
 inline HMODULE GetModuleHandleA(const char*)       { return nullptr; }
 #define GetModuleHandle GetModuleHandleA
-inline void*   GetProcAddress(HMODULE, const char*) { return nullptr; }
-inline BOOL    FreeLibrary(HMODULE)                { return TRUE; }
+inline void*   GetProcAddress(HMODULE h, const char* sym)
+{
+    return h ? dlsym(h, sym) : nullptr;
+}
+inline BOOL    FreeLibrary(HMODULE h)              { if (h) dlclose(h); return TRUE; }
 inline DWORD   GetLastError()                      { return 0; }
 
 // Path of the running executable (module handles other than null have no

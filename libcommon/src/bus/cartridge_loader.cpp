@@ -22,6 +22,7 @@
 #include <vcc/util/logger.h>
 #include <vector>
 #include <fstream>
+#include <cctype>
 #include <iterator>
 
 namespace VCC::Core
@@ -41,11 +42,32 @@ namespace VCC::Core
 		}
 	}
 
+	// True when the name carries a shared-library extension on any host.
+	static bool has_module_extension(const std::string& filename)
+	{
+		const size_t dot = filename.rfind('.');
+		if (dot == std::string::npos) {
+			return false;
+		}
+		std::string ext(filename.substr(dot + 1));
+		for (auto& ch : ext) {
+			ch = (char)std::tolower((unsigned char)ch);
+		}
+		return ext == "dll" || ext == "so" || ext == "dylib";
+	}
+
 	cartridge_file_type determine_cartridge_type(const std::string& filename)
 	{
 		std::ifstream input(filename, std::ios::binary);
 
 		if (!input.is_open()) {
+			// A module name that isn't openable as a literal path can
+			// still resolve through LoadLibrary's search rules (the
+			// POSIX dlopen shim maps "name.dll" to "<exedir>/name.so").
+			if (has_module_extension(filename)) {
+				DLOG_C("cartridge_loader unopenable module name; deferring to loader\n");
+				return cartridge_file_type::library;
+			}
 			return cartridge_file_type::not_opened;
 		}
 
@@ -59,8 +81,11 @@ namespace VCC::Core
 			return cartridge_file_type::rom_image;
 		}
 
-		// Check for magic 'MZ' DLL indicator
-		if (header[0] == 'M' && header[1] == 'Z') {
+		// Shared-library magic: PE 'MZ', ELF, Mach-O (thin/universal).
+		if ((header[0] == 'M' && header[1] == 'Z') ||
+		    (header[0] == 0x7F && header[1] == 'E') ||
+		    ((header[0] == 0xCF || header[0] == 0xCE) && header[1] == 0xFA) ||
+		    (header[0] == 0xCA && header[1] == 0xFE)) {
 			DLOG_C("cartridge_loader cartridge type library\n");
 			return cartridge_file_type::library;
 		}

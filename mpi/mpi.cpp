@@ -39,12 +39,15 @@ multipak_configuration gMultiPakConfiguration("MPI");
 // mpi cartridge object
 multipak_cartridge gMultiPakInterface(gMultiPakConfiguration, gHostCallbacks);
 
+#ifdef _WIN32
 // the config dialog
 configuration_dialog gConfigurationDialog(gMultiPakConfiguration, gMultiPakInterface);
+#endif
 
 // DLL exports
 extern "C"
 {
+#ifdef _WIN32
 	__declspec(dllexport) const char* PakGetName()
 	{
 		static char string_buffer[MAX_LOADSTRING];
@@ -58,6 +61,19 @@ extern "C"
 		LoadString(gModuleInstance, IDS_CATNUMBER, string_buffer, MAX_LOADSTRING);
 		return string_buffer;
 	}
+#else
+	// String resources from mpi.rc, which non-Windows builds cannot
+	// load at runtime.
+	__declspec(dllexport) const char* PakGetName()
+	{
+		return "MPI";
+	}
+
+	__declspec(dllexport) const char* PakGetCatalogId()
+	{
+		return "26-3124";
+	}
+#endif
 
 	//Initialize MPI -	capture callback addresses and build menus.
 	__declspec(dllexport) void PakInitialize(
@@ -79,7 +95,9 @@ extern "C"
 
 	__declspec(dllexport) void PakTerminate()
 	{
+#ifdef _WIN32
 		gConfigurationDialog.close();
+#endif
 		gMultiPakInterface.stop();
 	}
 
@@ -136,6 +154,7 @@ extern "C"
 	}
 }
 
+#ifdef _WIN32
 // DLLMain
 BOOL WINAPI DllMain(HINSTANCE module_instance, DWORD reason, LPVOID /*reserved*/)
 {
@@ -149,5 +168,6 @@ BOOL WINAPI DllMain(HINSTANCE module_instance, DWORD reason, LPVOID /*reserved*/
 	}
 	return TRUE;
 }
+#endif // _WIN32
 
 

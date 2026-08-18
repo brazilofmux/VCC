@@ -37,8 +37,10 @@
 #include <vcc/util/DialogOps.h>
 #include <vcc/util/RomBlockStore.h>
 #include <fstream>
-#include <Windows.h>
+#include <vcc/util/host_services.h>
+#ifdef _WIN32
 #include <commdlg.h>
+#endif
 
 using cartridge_loader_status = VCC::Core::cartridge_loader_status;
 using cartridge_loader_result = VCC::Core::cartridge_loader_result;
@@ -217,6 +219,7 @@ void BuildCartMenu()
 	}
 }
 
+#ifdef _WIN32
 void PakLoadCartridgeUI(int type)
 {
 	char inifile[MAX_PATH];
@@ -251,6 +254,7 @@ void PakLoadCartridgeUI(int type)
 		}
 	}
 }
+#endif // _WIN32
 
 cartridge_loader_status PakLoadCartridge(const char* filename)
 {
@@ -372,8 +376,12 @@ void UnloadPack()
 }
 
 void LoadPack(int type) {
+#ifdef _WIN32
     PakLoadCartridgeUI(type);
 	EmuState.ResetPending=2;
+#else
+	(void)type;   // file-picker UI is Windows shell only
+#endif
 }
 
 // CartMenuActivated is called from VCC main when a cartridge menu item is clicked.

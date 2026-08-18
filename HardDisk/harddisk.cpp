@@ -19,7 +19,7 @@
 //
 //======================================================================
 
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <stdio.h>
 #include<iostream>
 #include "resource.h"
@@ -89,6 +89,7 @@ unsigned char MemRead(unsigned short Address)
 extern "C"
 {
 
+#ifdef _WIN32
 	__declspec(dllexport) const char* PakGetName()
 	{
 		static char string_buffer[MAX_LOADSTRING];
@@ -115,6 +116,27 @@ extern "C"
 
 		return string_buffer;
 	}
+#else
+	// String resources from harddisk.rc, which non-Windows builds
+	// cannot load at runtime.
+	__declspec(dllexport) const char* PakGetName()
+	{
+		return "Hard Drive";
+	}
+
+	__declspec(dllexport) const char* PakGetCatalogId()
+	{
+		return "+ Cloud9 RTC";
+	}
+
+	__declspec(dllexport) const char* PakGetDescription()
+	{
+		return "Enable virtual hard drive emulation. Uses direct memory"
+		       " acces (DMA) to offload the CPU from data transfer tasks."
+		       " Two VHD hard disk files can be loaded. Also includes a"
+		       " Cloud9 clock.";
+	}
+#endif
 
 	__declspec(dllexport) void PakInitialize(
 		slot_id_type SlotId,
@@ -142,7 +164,9 @@ extern "C"
 
 	__declspec(dllexport) void PakTerminate()
 	{
+#ifdef _WIN32
 		CloseCartDialog(hConfDlg);
+#endif
 		UnmountHD(0);
 		UnmountHD(1);
 	}
@@ -158,29 +182,35 @@ extern "C"
     {
         switch (MenuID)
         {
+#ifdef _WIN32
         case 10:
             LoadHardDisk(0);
             break;
+#endif
 
         case 11:
             UnmountHD(0);
             *VHDfile0 = '\0';
             break;
 
+#ifdef _WIN32
         case 12:
             LoadHardDisk(1);
             break;
+#endif
 
         case 13:
             UnmountHD(1);
             *VHDfile1 = '\0';
             break;
 
+#ifdef _WIN32
         case 14:
             if (hConfDlg == nullptr)
                 hConfDlg = CreateDialog(gModuleInstance,(LPCTSTR)IDD_CONFIG,GetActiveWindow(),(DLGPROC)Config);
             ShowWindow(hConfDlg,1);
             return;
+#endif
         }
         SaveConfig();
         // FIXME should only rebuild menus if drive is changed
@@ -189,6 +219,7 @@ extern "C"
     }
 }
 
+#ifdef _WIN32
 LRESULT CALLBACK Config(HWND hDlg, UINT message, WPARAM wParam, LPARAM /*lParam*/)
 {
     switch (message)
@@ -226,6 +257,7 @@ LRESULT CALLBACK Config(HWND hDlg, UINT message, WPARAM wParam, LPARAM /*lParam*
     }
     return 0;
 }
+#endif // _WIN32
 
 // Export write to HD control port
 extern "C"
@@ -260,6 +292,7 @@ extern "C"
     }
 }
 
+#ifdef _WIN32
 BOOL WINAPI DllMain( HINSTANCE hinstDLL,  // handle to DLL module
                      DWORD fdwReason,     // reason for calling function
                      LPVOID lpReserved )  // reserved
@@ -324,6 +357,7 @@ void LoadHardDisk(int drive)
     }
     return;
 }
+#endif // _WIN32
 
 // Get configuration items from ini file
 void LoadConfig()
@@ -333,8 +367,9 @@ void LoadConfig()
 
     Setting().read("DefaultPaths","HardDiskPath","",HardDiskPath, MAX_PATH);
 
-    // Determine module name for config lookups
-    LoadString(gModuleInstance,IDS_MODULE_NAME, ModName, MAX_LOADSTRING);
+    // Determine module name for config lookups (PakGetName resolves the
+    // string resource on Windows and the literal elsewhere)
+    strncpy(ModName, PakGetName(), MAX_LOADSTRING - 1);
 
     // Verify HD0 image file exists and mount it.
     Setting().read(ModName,"VHDImage","",VHDfile0,MAX_PATH);
@@ -374,7 +409,7 @@ void LoadConfig()
 void SaveConfig()
 {
     char ModName[MAX_LOADSTRING]="";
-    LoadString(gModuleInstance,IDS_MODULE_NAME,ModName, MAX_LOADSTRING);
+    strncpy(ModName, PakGetName(), MAX_LOADSTRING - 1);
 
     ValidatePath(VHDfile0);
     ValidatePath(VHDfile1);
@@ -413,6 +448,7 @@ bool get_menu_item(menu_item_entry* item, size_t index)
 	return gDllCartMenu.copy_item(*item, index);
 }
 
+#ifdef _WIN32
 // Dialog for creating a new hard disk
 LRESULT CALLBACK NewDisk(HWND hDlg, UINT message, WPARAM wParam, LPARAM /*lParam*/)
 {
@@ -462,3 +498,4 @@ int CreateDisk(HWND hDlg, int hdsize)
     CloseHandle(hr);
     return 1;
 }
+#endif // _WIN32

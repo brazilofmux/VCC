@@ -27,6 +27,8 @@ This file is part of VCC (Virtual Color Computer).
 #include "defines.h"
 #include "MachineDefs.h"
 #include "coco3.h"
+#include <vcc/util/settings.h>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -43,6 +45,28 @@ void GetExtRomPath(char* path)
 int GetPaletteType()
 {
 	return 1;   // RGB
+}
+
+// Config lives at $XDG_CONFIG_HOME/vcc/vcc.ini (~/.config/vcc/vcc.ini) -
+// same file format as the Windows build, sensible host location.
+void GetIniFilePath(char* path)
+{
+	const char* xdg = std::getenv("XDG_CONFIG_HOME");
+	std::string dir = (xdg && *xdg) ? xdg
+	                                : std::string(std::getenv("HOME") ? std::getenv("HOME") : ".") + "/.config";
+	dir += "/vcc/vcc.ini";
+	std::strncpy(path, dir.c_str(), MAX_PATH - 1);
+	path[MAX_PATH - 1] = '\0';
+}
+
+VCC::Util::settings& Setting()
+{
+	static VCC::Util::settings* instance = [] {
+		char path[MAX_PATH];
+		GetIniFilePath(path);
+		return new VCC::Util::settings(path);
+	}();
+	return *instance;
 }
 
 // ---- Vcc.cpp shell ----
@@ -65,10 +89,90 @@ void SetTurboMode(unsigned char data)
 }
 
 // ---- keyboard.cpp / keyboardEdit.cpp ----
+//
+// Scripted CoCo keyboard matrix in place of the Win32 scan-code
+// translator: the driver queues text with HeadlessTypeText and ticks
+// once per frame; the PIA scan sees each key held for a few frames
+// with a gap before the next, which is plenty for the ROM's debounce.
 
-extern "C" unsigned char vccKeyboardGetScan(unsigned char)
+namespace
 {
-	return 0xFF;   // no keys down (active-low rows)
+	struct MatrixKey
+	{
+		unsigned char col;
+		unsigned char row;
+	};
+
+	// Standard CoCo keyboard matrix: rows PA0-PA6, columns PB0-PB7.
+	bool KeyForChar(char ch, MatrixKey& key)
+	{
+		if (ch >= 'a' && ch <= 'z')
+			ch = (char)(ch - 'a' + 'A');
+		if (ch == '\r' || ch == '\n') { key = {0, 6}; return true; }   // ENTER
+		if (ch == ' ')                { key = {7, 3}; return true; }
+		if (ch >= '@' && ch <= 'Z')
+		{
+			const unsigned char i = (unsigned char)(ch - '@');
+			key = {(unsigned char)(i & 7), (unsigned char)(i >> 3)};
+			return true;
+		}
+		if (ch >= '0' && ch <= '7') { key = {(unsigned char)(ch - '0'), 4}; return true; }
+		if (ch == '8' || ch == '9') { key = {(unsigned char)(ch - '8'), 5}; return true; }
+		switch (ch)
+		{
+		case ':': key = {2, 5}; return true;
+		case ';': key = {3, 5}; return true;
+		case ',': key = {4, 5}; return true;
+		case '-': key = {5, 5}; return true;
+		case '.': key = {6, 5}; return true;
+		case '/': key = {7, 5}; return true;
+		}
+		return false;   // unsupported (shifted) character: skipped
+	}
+
+	std::string   gTypeText;
+	size_t        gTypeIndex = 0;
+	int           gTypePhase = 0;
+	constexpr int kHoldFrames = 4;
+	constexpr int kGapFrames  = 4;
+}
+
+void HeadlessTypeText(const char* text)
+{
+	gTypeText  = text ? text : "";
+	gTypeIndex = 0;
+	gTypePhase = 0;
+}
+
+void HeadlessKeyboardTick()
+{
+	if (gTypeIndex >= gTypeText.size())
+		return;
+	// '~' in the script is a one-second pause (60 frames), not a key.
+	const int frames_for_char =
+		(gTypeText[gTypeIndex] == '~') ? 60 : kHoldFrames + kGapFrames;
+	if (++gTypePhase >= frames_for_char)
+	{
+		gTypePhase = 0;
+		++gTypeIndex;
+	}
+}
+
+extern "C" unsigned char vccKeyboardGetScan(unsigned char Col)
+{
+	unsigned char rows = 0;
+	if (gTypeIndex < gTypeText.size() && gTypePhase < kHoldFrames)
+	{
+		MatrixKey key;
+		if (KeyForChar(gTypeText[gTypeIndex], key))
+		{
+			const unsigned char active = (unsigned char)~Col;
+			if (active & (unsigned char)(1u << key.col))
+				rows = (unsigned char)(1u << key.row);
+		}
+	}
+	// Rows are active-low; bit 7 (joystick comparator) idles high.
+	return (unsigned char)((~rows & 0x7F) | 0x80);
 }
 
 void PasteIntoQueue(const std::string&)
@@ -134,39 +238,6 @@ unsigned char PauseAudio(unsigned char)
 	return 0;
 }
 
-// ---- pakinterface.cpp (no cartridge inserted) ----
-
-void PakTimer()
-{
-}
-
-unsigned char PakReadPort(unsigned char)
-{
-	return 0;
-}
-
-void PakWritePort(unsigned char, unsigned char)
-{
-}
-
-unsigned char PackMem8Read(unsigned short)
-{
-	return 0;
-}
-
-unsigned short PackAudioSample()
-{
-	return 0;
-}
-
-void ResetBus()
-{
-}
-
-void UpdateBusPointer()
-{
-}
-
 // ---- DirectDrawInterface.cpp ----
 
 unsigned char LockScreen()
@@ -207,18 +278,3 @@ namespace VCC
 	}
 }
 
-// ---- FileOps.cpp ----
-
-BOOL PathRemoveFileSpec(char* path)
-{
-	char* last = nullptr;
-	for (char* p = path; *p; ++p)
-	{
-		if (*p == '/' || *p == '\\')
-			last = p;
-	}
-	if (last == nullptr)
-		return FALSE;
-	*last = '\0';
-	return TRUE;
-}

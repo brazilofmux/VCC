@@ -18,8 +18,13 @@
 #pragma once
 #include <vcc/util/fileutil.h>
 #include <vcc/util/logger.h>
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <string>
+
+// Win32 dialog helpers. Off Windows this header is intentionally empty:
+// callers keep the include, but every use of FileDialog / the dialog
+// helpers is shell UI and sits behind #ifdef _WIN32 in the modules.
+#ifdef _WIN32
 
 //-------------------------------------------------------------------------------------------
 // CloseCartDialog closes DLL dialog or force exits Vcc if it can not be.
@@ -161,3 +166,5 @@ private:
 	DWORD flags_;
 };
 
+
+#endif // _WIN32

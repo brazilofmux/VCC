@@ -16,7 +16,7 @@
 //	VCC (Virtual Color Computer). If not, see <http://www.gnu.org/licenses/>.
 ////////////////////////////////////////////////////////////////////////////////
 #pragma once
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <string>
 
 // I think winapi is intended to contain windows api calls. Not sure why it

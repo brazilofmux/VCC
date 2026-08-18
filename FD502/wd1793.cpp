@@ -33,10 +33,12 @@ This file is part of VCC (Virtual Color Computer).
 ********************************************************************************/
 //#define USE_LOGGING
 
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef _WIN32
 #include <winioctl.h>
+#endif
 #include "defines.h"
 #include <vcc/util/interrupts.h>
 #include <vcc/util/logger.h>
@@ -1366,6 +1368,37 @@ unsigned short ccitt_crc16(unsigned short crc, const unsigned char *buffer, unsi
 
 //Stolen from fdrawcmd.sys Demo Disk Utility by Simon Owen <simon@simonowen.com>
 
+#ifndef _WIN32
+
+// No fdrawcmd.sys off Windows: report no raw-floppy support. The
+// helpers exist only so the (unreachable) raw-disk paths link.
+unsigned short InitController ()
+{
+	return 0;
+}
+
+HANDLE OpenFloppy (int)
+{
+	return nullptr;
+}
+
+bool SetDataRate (HANDLE, BYTE)
+{
+	return false;
+}
+
+bool FormatTrack (HANDLE, BYTE, BYTE, BYTE)
+{
+	return false;
+}
+
+bool CmdFormat (HANDLE, PFD_FORMAT_PARAMS, ULONG)
+{
+	return false;
+}
+
+#else
+
 DWORD GetDriverVersion ()
 {
     DWORD dwVersion = 0;
@@ -1441,3 +1474,4 @@ unsigned short InitController ()
 
 	return 1;
 }
+#endif // _WIN32

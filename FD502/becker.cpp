@@ -25,7 +25,7 @@
 
 #include <WinSock2.h>
 #include <ws2tcpip.h>
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <process.h>
 #include <stdio.h>
 #include <vcc/util/logger.h>

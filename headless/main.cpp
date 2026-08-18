@@ -18,14 +18,19 @@ This file is part of VCC (Virtual Color Computer).
 */
 
 // Headless driver (docs/porting-macos.md stage 1): boot the CoCo 3 core
-// with no shell at all - no window, no audio, no throttle, no carts -
-// run it flat out for a number of frames, then print the effective
-// speed and an ASCII dump of the text screen. With a coco3.rom next to
-// the binary (or passed as argv[1]) the dump shows the BASIC copyright
-// banner: proof the whole portable core works on this host.
+// with no shell - no window, no audio, no throttle - run it flat out,
+// then print the effective speed and an ASCII dump of the text screen.
+//
+// Reads the same vcc.ini as the full emulator (~/.config/vcc/vcc.ini):
+// RAM size, CPU type, and the [Module] OnBoot cartridge - so an MPI
+// with FD502 + hard disk configuration boots here exactly as it would
+// on Windows, including NitrOS-9 from the configured boot floppy/VHD.
+// Cartridge modules load from <exedir>/<name>.so via the dlopen shim;
+// FD502 finds disk11.rom/rgbdos.rom in <exedir> too.
 //
 // The boot sequence mirrors DoHardReset() in Vcc.cpp minus the UI.
-// Usage: vcc-headless [rom-path] [frames]
+// Usage: vcc-headless [rom-path] [frames] [text-to-type]
+//        (text is typed starting at frame 150; "\n" means ENTER)
 
 #include "defines.h"
 #include "MachineDefs.h"
@@ -38,6 +43,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "mc6809.h"
 #include "pakinterface.h"
 #include "Vcc.h"
+#include <vcc/util/settings.h>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -57,13 +63,18 @@ VCC::CPUState (*CPUGetState)() = nullptr;
 // ROM path handed to the GetExtRomPath stub in stubs.cpp.
 char gHeadlessRomPath[512] = "coco3.rom";
 
+// Provided by headless/stubs.cpp.
+VCC::Util::settings& Setting();
+void HeadlessTypeText(const char* text);
+void HeadlessKeyboardTick();
+
 // 32-bit render target; the GIME renderer needs somewhere to draw even
 // though nobody looks at it here.
 static unsigned int Framebuffer[640 * 480];
 
 // CoCo VDG screen code -> printable ASCII (both the inverse 0x00-0x3F
 // and normal 0x40-0x7F ranges fold to the same glyphs).
-static char ScreenChar(unsigned char c)
+static char VdgChar(unsigned char c)
 {
 	const unsigned char v = c & 0x3F;
 	const char ch = (v < 32) ? (char)(v + 64) : (char)v;
@@ -72,50 +83,74 @@ static char ScreenChar(unsigned char c)
 
 static void DumpTextScreen()
 {
+	const int bpr = GetBytesPerRow();
+	if (bpr == 40 || bpr == 80)
+	{
+		// GIME hardware text: 2 bytes per cell (character, attribute),
+		// near-ASCII character codes. Same walk as coco3.cpp CopyText.
+		const unsigned int start = GetStartOfVidram();
+		std::printf("GIME %d-column text screen (vidram 0x%06X):\n", bpr, start);
+		for (int row = 0; row < 24; ++row)
+		{
+			std::printf("|");
+			for (int col = 0; col < bpr; ++col)
+			{
+				const unsigned char c =
+					(unsigned char)GetMem(start + (unsigned long)row * bpr * 2 + col * 2);
+				std::printf("%c", (c >= 32 && c <= 126) ? c : ' ');
+			}
+			std::printf("|\n");
+		}
+		return;
+	}
+
+	std::printf("VDG 32-column text screen:\n");
 	std::printf("+--------------------------------+\n");
 	for (int row = 0; row < 16; ++row)
 	{
 		char line[33];
 		for (int col = 0; col < 32; ++col)
-			line[col] = ScreenChar(SafeMemRead8((unsigned short)(0x0400 + row * 32 + col)));
+			line[col] = VdgChar(SafeMemRead8((unsigned short)(0x0400 + row * 32 + col)));
 		line[32] = '\0';
 		std::printf("|%s|\n", line);
 	}
 	std::printf("+--------------------------------+\n");
 }
 
-int main(int argc, char** argv)
+static void HardResetMachine()
 {
-	if (argc > 1)
-		std::snprintf(gHeadlessRomPath, sizeof(gHeadlessRomPath), "%s", argv[1]);
-	const int frames = (argc > 2) ? std::atoi(argv[2]) : 600;
-
-	EmuState.RamSize = 1;           // 512K
-	EmuState.CpuType = 1;           // HD6309
-	EmuState.FrameSkip = 1;
-	EmuState.EmulationRunning = 1;
-	EmuState.BitDepth = 3;          // 32-bit surface
-	EmuState.PTRsurface32 = Framebuffer;
-	EmuState.SurfacePitch = 640;
-
-	// DoHardReset(), sans UI.
 	EmuState.RamBuffer = MmuInit(EmuState.RamSize);
 	EmuState.WRamBuffer = (unsigned short*)EmuState.RamBuffer;
 	if (EmuState.RamBuffer == nullptr)
 	{
 		std::fprintf(stderr, "vcc-headless: MmuInit failed\n");
-		return 1;
+		std::exit(1);
 	}
 
-	CPUInit             = HD6309Init;
-	CPUExec             = HD6309Exec;
-	CPUReset            = HD6309Reset;
-	CPUAssertInterupt   = HD6309AssertInterupt;
-	CPUDeAssertInterupt = HD6309DeAssertInterupt;
-	CPUForcePC          = HD6309ForcePC;
-	CPUSetBreakpoints   = HD6309SetBreakpoints;
-	CPUGetState         = HD6309GetState;
-	CPUSetTraceTriggers = HD6309SetTraceTriggers;
+	if (EmuState.CpuType == 1)
+	{
+		CPUInit             = HD6309Init;
+		CPUExec             = HD6309Exec;
+		CPUReset            = HD6309Reset;
+		CPUAssertInterupt   = HD6309AssertInterupt;
+		CPUDeAssertInterupt = HD6309DeAssertInterupt;
+		CPUForcePC          = HD6309ForcePC;
+		CPUSetBreakpoints   = HD6309SetBreakpoints;
+		CPUGetState         = HD6309GetState;
+		CPUSetTraceTriggers = HD6309SetTraceTriggers;
+	}
+	else
+	{
+		CPUInit             = MC6809Init;
+		CPUExec             = MC6809Exec;
+		CPUReset            = MC6809Reset;
+		CPUAssertInterupt   = MC6809AssertInterupt;
+		CPUDeAssertInterupt = MC6809DeAssertInterupt;
+		CPUForcePC          = MC6809ForcePC;
+		CPUSetBreakpoints   = MC6809SetBreakpoints;
+		CPUGetState         = MC6809GetState;
+		CPUSetTraceTriggers = MC6809SetTraceTriggers;
+	}
 
 	PiaReset();
 	mc6883_reset();
@@ -127,13 +162,56 @@ int main(int argc, char** argv)
 	ResetBus();
 	SetCPUMultiplyerFlag(0);
 	SetClockSpeed(1);
+}
 
-	std::printf("vcc-headless: rom=%s frames=%d cpu=HD6309 ram=512K\n",
-	            gHeadlessRomPath, frames);
+int main(int argc, char** argv)
+{
+	if (argc > 1)
+		std::snprintf(gHeadlessRomPath, sizeof(gHeadlessRomPath), "%s", argv[1]);
+	const int frames = (argc > 2) ? std::atoi(argv[2]) : 600;
+	const char* type_text = (argc > 3) ? argv[3] : nullptr;
+
+	EmuState.RamSize = (unsigned char)Setting().read("Memory", "RamSize", 1);
+	EmuState.CpuType = (unsigned char)Setting().read("CPU", "CpuType", 1);
+	EmuState.FrameSkip = 1;
+	EmuState.EmulationRunning = 1;
+	EmuState.BitDepth = 3;          // 32-bit surface
+	EmuState.PTRsurface32 = Framebuffer;
+	EmuState.SurfacePitch = 640;
+
+	HardResetMachine();
+
+	// Load the boot cartridge the same way Vcc.cpp does at startup.
+	char onboot[MAX_PATH] = "";
+	Setting().read("Module", "OnBoot", "", onboot, MAX_PATH);
+	if (onboot[0] != '\0')
+	{
+		const auto status = PakLoadCartridge(onboot);
+		std::printf("vcc-headless: OnBoot module %s -> %s\n", onboot,
+		            status == VCC::Core::cartridge_loader_status::success ? "loaded" : "FAILED");
+		if (EmuState.ResetPending == 2)
+		{
+			HardResetMachine();
+			EmuState.ResetPending = 0;
+		}
+	}
+
+	std::printf("vcc-headless: rom=%s frames=%d cpu=%s ram=%s\n",
+	            gHeadlessRomPath, frames,
+	            EmuState.CpuType == 1 ? "HD6309" : "MC6809",
+	            EmuState.RamSize == 0 ? "128K" : EmuState.RamSize == 1 ? "512K"
+	          : EmuState.RamSize == 2 ? "2M" : "8M");
+	if (type_text)
+		std::printf("vcc-headless: will type %s at frame 150\n", type_text);
 
 	const auto start = std::chrono::steady_clock::now();
 	for (int i = 0; i < frames; ++i)
+	{
+		if (type_text && i == 150)
+			HeadlessTypeText(type_text);
+		HeadlessKeyboardTick();
 		RenderFrame(&EmuState);
+	}
 	const auto end = std::chrono::steady_clock::now();
 
 	const double wall = std::chrono::duration<double>(end - start).count();
@@ -144,9 +222,15 @@ int main(int argc, char** argv)
 	            frames, emulated, wall, ratio);
 	std::printf("effective CPU speed ~%.1f MHz (0.894 MHz machine)\n", 0.894 * ratio);
 
-	char jitstats[512];
-	HD6309GetBlockStatsText(jitstats, sizeof(jitstats));
-	std::printf("%s\n", jitstats);
+	if (EmuState.CpuType == 1)
+	{
+		char jitstats[512];
+		HD6309GetBlockStatsText(jitstats, sizeof(jitstats));
+		std::printf("%s\n", jitstats);
+	}
+
+	GetModuleStatus(&EmuState);
+	std::printf("module status: %s\n", EmuState.StatusLine);
 
 	DumpTextScreen();
 	return 0;

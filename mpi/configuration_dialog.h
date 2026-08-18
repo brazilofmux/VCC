@@ -18,7 +18,7 @@
 #pragma once
 #include "multipak_cartridge.h"
 #include "multipak_configuration.h"
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 
 class configuration_dialog
 {

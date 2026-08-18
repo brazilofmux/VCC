@@ -51,7 +51,7 @@ This file is part of VCC (Virtual Color Computer).
 *   Note: This is not an issue for Vcc.
 ****************************************************************************/
 
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <stdio.h>
 #include "cc3vhd.h"
 #include "harddisk.h"

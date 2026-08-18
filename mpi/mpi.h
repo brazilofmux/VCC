@@ -18,7 +18,7 @@
 #include "multipak_cartridge.h"
 #include "host_cartridge_callbacks.h"
 #include "configuration_dialog.h"
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 
 extern HWND	gVccWnd;
 extern const std::shared_ptr<host_cartridge_callbacks> gHostCallbacks;

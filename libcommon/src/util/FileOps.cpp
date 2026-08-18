@@ -18,9 +18,10 @@
 
 // TODO: FileOps should be depreciated and functions moved to fileutil.cpp
 
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 #include <vcc/util/FileOps.h>
 
 void ValidatePath(char *Path)
@@ -81,21 +82,23 @@ void PathStripPath ( char *TextBuffer)
 	strcpy(TextBuffer, TempBuffer);
 }
 
+// Treats '/' and '\\' alike: Windows APIs accept both, VCC ini files
+// use forward slashes, and POSIX hosts only have '/'.
 BOOL PathRemoveFileSpec(char *Path)
 {
 	size_t Index=strlen(Path),Lenth=Index;
 	if ( (Index==0) || (Index > MAX_PATH))
 		return false;
-	
-	while ( (Index>0) && (Path[Index] != '\\') )
+
+	while ( (Index>0) && (Path[Index] != '\\') && (Path[Index] != '/') )
 		Index--;
-	while ( (Index>0) && (Path[Index] == '\\') )
+	while ( (Index>0) && ((Path[Index] == '\\') || (Path[Index] == '/')) )
 		Index--;
 	if (Index==0)
 		return false;
 	Path[Index+2]=0;
 	return( !(strlen(Path) == Lenth));
-}		
+}
 
 BOOL PathRemoveExtension(char *Path)
 {

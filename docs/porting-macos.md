@@ -148,10 +148,17 @@ regardless of layout, so CI stays green while it lands.
    the stray `MessageBox` calls (route through a small host-services
    header), and MSVC-isms. Fold in the CPU-state struct refactor above
    while this code is being touched. Doable on the Mac itself.
-2. **SDL shell:** SDL window hosting the OpenGL renderer, SDL audio,
-   `std::chrono` throttle, SDL input, ini shim. Boot to BASIC, then OS-9.
-3. **Carts:** statically link FD502 + HardDisk + mpi behind the cartridge
-   interface, config via ini. Others follow.
+2. **Carts** *(done, headless-first)*: MPI + FD502 + HardDisk build as
+   dlopen-able shared libraries behind the existing LoadLibrary seam —
+   truer to the DLL architecture than static linking, and MPI's slot
+   loading works unchanged. `vcc-headless` boots NitrOS-9/6309 Level 2
+   and Basic09 from the Hatsuhara vcc.ini via a scripted keyboard.
+   Remaining modules (sdc, becker, GMC, orch90, acia, Ramdisk,
+   SuperIDE) follow the same pattern; becker needs its winsock code
+   ported to BSD sockets.
+3. **SDL shell:** SDL window hosting the OpenGL renderer, SDL audio,
+   `std::chrono` throttle, SDL input. The stubs in `headless/stubs.cpp`
+   are the exact list of functions it must provide.
 4. **arm64 JIT backend:** drop in `emit_a64.h`, split the backend seam in
    `BlockJit.cpp`, emit level-1 trampolines, then port the level-2
    inline emitters; bring up shadow-verify before trusting either.

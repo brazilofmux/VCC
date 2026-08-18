@@ -28,7 +28,7 @@
 
 #pragma warning( disable : 4800 ) // For legacy builds
 
-#include <Windows.h>
+#include <vcc/util/host_services.h>
 #include <stdio.h>
 #include <iostream>
 #include "resource.h"
@@ -110,6 +110,7 @@ static VCC::Util::settings* gpSettings = nullptr; // Pointer to settings object
 extern "C"
 {
 
+#ifdef _WIN32
 	__declspec(dllexport) const char* PakGetName()
 	{
 		static char string_buffer[MAX_LOADSTRING];
@@ -136,6 +137,29 @@ extern "C"
 
 		return string_buffer;
 	}
+#else
+	// String resources from fd502.rc, which non-Windows builds cannot
+	// load at runtime.
+	__declspec(dllexport) const char* PakGetName()
+	{
+		return "FD-502";
+	}
+
+	__declspec(dllexport) const char* PakGetCatalogId()
+	{
+		return "26-3133";
+	}
+
+	__declspec(dllexport) const char* PakGetDescription()
+	{
+		return "Emulate FD502 floppy controller with four floppy drives."
+		       "  Loads Disk Extended Color Basic (disl11.rom) or user"
+		       " selectable disk rom.  Also includes Becker Port for"
+		       " communicating with Drivewire and a Disto Clock for use"
+		       " with OS-9.  Uses SCS selectable disk ports.  Plugs into"
+		       " the Program Pak port or Multi-Pak Interface.";
+	}
+#endif
 
 	__declspec(dllexport) void PakInitialize(
 		slot_id_type SlotId,
@@ -165,7 +189,9 @@ extern "C"
 #ifdef COMBINE_BECKER
 		becker_enable(0);
 #endif
+#ifdef _WIN32
 		CloseCartDialog(g_hConfDlg);
+#endif
 		for (unsigned char dnum = 0; dnum <= 3; dnum++)
 		{
 			unmount_disk_image(dnum);
@@ -180,38 +206,39 @@ extern "C"
 
 	__declspec(dllexport) void PakMenuItemClicked(unsigned char MenuID)
 	{
-		HWND h_own = GetActiveWindow();
 		switch (MenuID)
 		{
+#ifdef _WIN32
 			case 10:
 				Load_Disk(0);
-				break;
-			case 11:
-				Unload_Disk(0);
 				break;
 			case 12:
 				Load_Disk(1);
 				break;
-			case 13:
-				Unload_Disk(1);
-				break;
 			case 14:
 				Load_Disk(2);
-				break;
-			case 15:
-				Unload_Disk(2);
 				break;
 			case 17:
 				Load_Disk(3);
 				break;
-			case 18:
-				Unload_Disk(3);
-				break;
 			case 16:
 				if (g_hConfDlg == nullptr)
 					g_hConfDlg = CreateDialog(
-							gModuleInstance,(LPCTSTR)IDD_CONFIG,h_own,(DLGPROC)Config);
+							gModuleInstance,(LPCTSTR)IDD_CONFIG,GetActiveWindow(),(DLGPROC)Config);
 				ShowWindow(g_hConfDlg,1);
+				break;
+#endif
+			case 11:
+				Unload_Disk(0);
+				break;
+			case 13:
+				Unload_Disk(1);
+				break;
+			case 15:
+				Unload_Disk(2);
+				break;
+			case 18:
+				Unload_Disk(3);
 				break;
 		}
 		return;
@@ -271,6 +298,7 @@ extern "C"
 	}
 }
 
+#ifdef _WIN32
 BOOL WINAPI DllMain(
     HINSTANCE hinstDLL,  // handle to DLL module
     DWORD reason,        // reason for calling function
@@ -283,6 +311,9 @@ BOOL WINAPI DllMain(
 	}
 	return TRUE;
 }
+
+// Config and NewDisk dialog procs, Load_Disk, and CreateDisk are file-
+// picker / dialog UI - Windows shell only.
 
 LRESULT CALLBACK Config(HWND hDlg, UINT message, WPARAM wParam, LPARAM /*lParam*/)
 {
@@ -422,6 +453,8 @@ LRESULT CALLBACK Config(HWND hDlg, UINT message, WPARAM wParam, LPARAM /*lParam*
     return FALSE;
 }
 
+#endif // _WIN32
+
 // Access the settings object
 VCC::Util::settings& Setting()
 {
@@ -434,6 +467,7 @@ void Unload_Disk(unsigned char disk) {
 	SaveConfig();
 }
 
+#ifdef _WIN32
 void Load_Disk(unsigned char disk)
 {
 	HWND h_own = GetActiveWindow();
@@ -471,6 +505,7 @@ void Load_Disk(unsigned char disk)
 	}
 	return;
 }
+#endif // _WIN32
 
 unsigned char SetChip(unsigned char Tmp)
 {
@@ -512,6 +547,7 @@ bool get_menu_item(menu_item_entry* item, size_t index)
 	return gDllCartMenu.copy_item(*item, index);
 }
 
+#ifdef _WIN32
 long CreateDisk (unsigned char Disk)
 {
 	NewDiskNumber=Disk;
@@ -607,6 +643,7 @@ LRESULT CALLBACK NewDisk(HWND hDlg, UINT message, WPARAM wParam, LPARAM /*lParam
 	}
     return FALSE;
 }
+#endif // _WIN32
 
 long CreateDiskHeader(const char *FileName,unsigned char Type,unsigned char Tracks,unsigned char DblSided)
 {

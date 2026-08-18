@@ -51,6 +51,7 @@ multipak_cartridge::multipak_cartridge(
 	callbacks_(move(callbacks))
 { }
 
+#ifdef _WIN32
 multipak_cartridge::name_type multipak_cartridge::name() const
 {
 	return ::VCC::Util::load_string(gModuleInstance, IDS_MODULE_NAME);
@@ -65,6 +66,24 @@ multipak_cartridge::description_type multipak_cartridge:: description() const
 {
 	return ::VCC::Util::load_string(gModuleInstance, IDS_CATNUMBER);
 }
+#else
+// String resources from mpi.rc, which non-Windows builds cannot load
+// at runtime.
+multipak_cartridge::name_type multipak_cartridge::name() const
+{
+	return "MPI";
+}
+
+multipak_cartridge::catalog_id_type multipak_cartridge::catalog_id() const
+{
+	return "26-3124";
+}
+
+multipak_cartridge::description_type multipak_cartridge:: description() const
+{
+	return "26-3124";
+}
+#endif
 
 
 void multipak_cartridge::start()
@@ -92,7 +111,9 @@ void multipak_cartridge::start()
 
 void multipak_cartridge::stop()
 {
+#ifdef _WIN32
 	gConfigurationDialog.close();
+#endif
 
 	for (auto mpi_slot(0u); mpi_slot < slots_.size(); mpi_slot++)
 	{
@@ -233,7 +254,9 @@ void multipak_cartridge::menu_item_clicked(unsigned char menu_item_id)
 
 	if (menu_item_id == 19)	//MPI Config
 	{
+#ifdef _WIN32
 		gConfigurationDialog.open();
+#endif
 	}
 
 	// Each slot is allocated 50 menu items and items were
