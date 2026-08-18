@@ -173,7 +173,17 @@ int main(int argc, char** argv)
 
 	EmuState.RamSize = (unsigned char)Setting().read("Memory", "RamSize", 1);
 	EmuState.CpuType = (unsigned char)Setting().read("CPU", "CpuType", 1);
+	// The GIME renderer dominates headless wall time (~85% in
+	// UpdateScreen32 at FrameSkip=1). VCC_FRAMESKIP=N renders only
+	// every Nth frame - emulation is unaffected (HLINE still runs per
+	// line) - so CPU-tier benchmarks measure the CPU, not the painter.
 	EmuState.FrameSkip = 1;
+	if (const char* fs = std::getenv("VCC_FRAMESKIP"))
+	{
+		const int n = std::atoi(fs);
+		if (n >= 1 && n <= 255)
+			EmuState.FrameSkip = (unsigned char)n;
+	}
 	EmuState.EmulationRunning = 1;
 	EmuState.BitDepth = 3;          // 32-bit surface
 	EmuState.PTRsurface32 = Framebuffer;

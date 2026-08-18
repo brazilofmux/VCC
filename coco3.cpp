@@ -209,6 +209,13 @@ void DebugDrawAudio()
 float RenderFrame (SystemState *RFState)
 {
 	static unsigned int FrameCounter=0;
+	// FrameCounter was never incremented, leaving it at 0 forever -
+	// (0 % FrameSkip) == 0 is always true, so FrameSkip has been
+	// silently non-functional: every frame rendered regardless of the
+	// setting. With FrameSkip=1 (the default) this increment changes
+	// nothing; with higher values the draw calls are now actually
+	// skipped (emulation timing is unaffected - HLINE still runs).
+	FrameCounter++;
 
 	// once per frame
 	LastMotorState = GetMotorState();
