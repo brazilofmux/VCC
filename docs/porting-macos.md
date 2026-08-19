@@ -267,6 +267,26 @@ regardless of layout, so CI stays green while it lands.
    byte loads), MAX_BLOCK_INSNS growth (512-byte slots), or spending
    the effort on user-facing shell features instead.
 
+   *The two hidden taxes (same day, one more honest shot):* guard
+   cost was never the problem. Profiling the long sieve showed
+   ReplayBlock itself as the top consumer - trace blocks were running
+   through the INTERPRETER: (1) the exec-end path cancelled any
+   recording in progress, and trace-length recordings crossed the
+   ~114-cycle slice seam at coin-flip odds (32,000 cancels/run -> 5
+   after BlockCache::RebaseCycles lets recordings survive seams);
+   (2) large blocks failed the slice-budget check near every slice
+   end and the budget-miss path replays interpretively - fixed by
+   kBudgetSlack=48 in both budget checks, with CPUCycle's drift
+   accounting absorbing the bounded overshoot exactly as it always
+   absorbed last-instruction overshoot. Taken traces now DEFAULT ON
+   (VCC_NO_TAKEN=1 to disable): interleaved A/B measures sieve +14%,
+   DECB +22%, OS-9 parity - and the taxes were general, lifting
+   traces-off DECB +32% by themselves. DECB record: 3203x realtime,
+   ~2.9 GHz effective. Lesson for the notebook: when a feature that
+   should win keeps losing, profile the LOSING configuration before
+   redesigning the feature - both taxes were dispatch-policy bugs
+   visible in one sample profile, not properties of the feature.
+
 Smoke tests per AGENTS.md conventions: boot path, disk attach, cartridge
 load, keyboard input, debugger flow — plus OS-9 Level 2 boot and Basic09,
 the status-bar effective-MHz readout to compare interpreter/JIT tiers,
