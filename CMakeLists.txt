@@ -154,6 +154,35 @@ if(SDL2_FOUND)
   add_executable(vcc-sdl sdl/main.cpp)
   target_link_libraries(vcc-sdl PRIVATE vcc-shell SDL2::SDL2)
   add_dependencies(vcc-sdl harddisk fd502 mpi)
+
+  # VCC.app: the same shell as a double-clickable macOS bundle. The
+  # cartridge modules and any disk ROMs sitting in the build dir are
+  # copied beside the binary, where the dlopen shim and fd502's
+  # exedir search expect them. Config still comes from
+  # ~/.config/vcc/vcc.ini (the bare-launch path), so Finder launches
+  # find everything. Icon: the DECB boot screen, naturally.
+  if(APPLE)
+    add_executable(vcc-app MACOSX_BUNDLE sdl/main.cpp
+                   ${CMAKE_CURRENT_SOURCE_DIR}/sdl/resources/vcc.icns)
+    target_link_libraries(vcc-app PRIVATE vcc-shell SDL2::SDL2)
+    add_dependencies(vcc-app harddisk fd502 mpi)
+    set_target_properties(vcc-app PROPERTIES
+      OUTPUT_NAME "VCC"
+      MACOSX_BUNDLE_BUNDLE_NAME "VCC"
+      MACOSX_BUNDLE_GUI_IDENTIFIER "org.tinymux.vcc"
+      MACOSX_BUNDLE_BUNDLE_VERSION "2.1.9"
+      MACOSX_BUNDLE_SHORT_VERSION_STRING "2.1.9"
+      MACOSX_BUNDLE_ICON_FILE "vcc.icns")
+    set_source_files_properties(
+      ${CMAKE_CURRENT_SOURCE_DIR}/sdl/resources/vcc.icns
+      PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+    add_custom_command(TARGET vcc-app POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:harddisk> $<TARGET_FILE:fd502> $<TARGET_FILE:mpi>
+        $<TARGET_FILE_DIR:vcc-app>
+      COMMAND sh -c "cp -f '${CMAKE_BINARY_DIR}'/*.rom \"$<TARGET_FILE_DIR:vcc-app>/\" 2>/dev/null || true"
+      VERBATIM)
+  endif()
 else()
   message(STATUS "SDL2 not found - skipping vcc-sdl")
 endif()
