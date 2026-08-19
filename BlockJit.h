@@ -116,6 +116,16 @@ namespace BlockJit
         uint64_t*      chain_runs;       // stub transitions (VCC_JIT_STATS)
     };
 
+    // Budget overshoot allowance, shared by the dispatcher's fits-check
+    // and the chain stub's. A block may start while (total_cycles -
+    // slack) still fits the remaining slice budget; CPUCycle's drift
+    // accounting absorbs the overshoot exactly (the same mechanism that
+    // always absorbed last-instruction overshoot), so average timing is
+    // unchanged and event jitter stays under half a scanline. Without
+    // slack, large blocks (superblock traces especially) fail the check
+    // near every slice end and the tail runs through the interpreter.
+    inline constexpr int kBudgetSlack = 48;
+
     // Handler addresses the level-2 emitter knows how to inline. The
     // JIT compares each DecodedInst's handler pointer against these and
     // emits a precomputed body when it matches; otherwise it falls

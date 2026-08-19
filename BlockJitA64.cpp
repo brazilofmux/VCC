@@ -1471,10 +1471,13 @@ static void EnsureChainStub()
     fixups[nfix++] = { e.offset, 0, A64_COND_NE, A64_W0 };
     emit_b_cond(&e, A64_COND_NE, 0);
 
-    // Whole next block must fit the budget: cycles + total <= CycleFor
-    // (same test as the dispatcher's total_cycles <= remaining).
+    // Whole next block must fit the budget with the shared overshoot
+    // slack: cycles + total - kBudgetSlack <= CycleFor (same test as
+    // the dispatcher's total_cycles <= remaining + slack). The
+    // subtraction can go negative; the compare is signed.
     emit_ldrb_imm(&e, A64_W17, A64_W14, (uint32_t)offsetof(CachedBlock, total_cycles));
     emit_add_w32(&e, A64_W17, A64_W17, A64_W21);
+    emit_sub_w32_imm(&e, A64_W17, A64_W17, (uint32_t)kBudgetSlack);
     emit_cmp_w32_w32(&e, A64_W17, A64_W22);
     fixups[nfix++] = { e.offset, 0, A64_COND_GT, A64_W0 };
     emit_b_cond(&e, A64_COND_GT, 0);

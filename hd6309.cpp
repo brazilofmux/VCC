@@ -7924,7 +7924,7 @@ int HD6309Exec(int CycleFor)
 			const CachedBlock* block = blockCache.Lookup(PC_REG);
 			int remaining = CycleFor - CycleCounter;
 
-			if (block && block->total_cycles <= remaining)
+			if (block && block->total_cycles <= remaining + BlockJit::kBudgetSlack)
 			{
 				// CRITICAL: if a recording is in progress, end it HERE before
 				// the cached sub-block dispatches. The recording's instructions
@@ -8130,14 +8130,16 @@ int HD6309Exec(int CycleFor)
 			// outcome diverges from its recorded direction.
 			static const bool no_trace = std::getenv("VCC_NO_TRACE") != nullptr;
 			// Taken-direction tracing (following taken branches to
-			// unroll loops) stays OFF by default. With per-page trace
-			// invalidation and the ChainBreak deliverability byte it is
-			// fully correct, but interleaved A/B on the compiled-C
-			// sieve benchmark still measures ~19% AGAINST it: per-
-			// iteration guard costs plus recording churn outweigh the
-			// hop savings at MAX_BLOCK_INSNS=14. VCC_TRACE_TAKEN=1
-			// enables it for experiments.
-			static const bool trace_taken = std::getenv("VCC_TRACE_TAKEN") != nullptr;
+			// unroll loops) is ON by default. It measured as a loss
+			// until two hidden taxes fell: recordings now survive
+			// slice boundaries (RebaseCycles) instead of being
+			// cancelled at ~50% odds, and the budget checks carry
+			// kBudgetSlack so large trace blocks run as thunks near
+			// slice ends instead of falling to interpreter replay.
+			// With those fixed, interleaved A/B on the compiled-C
+			// sieve measures ~14% FOR traces. VCC_NO_TAKEN=1 disables
+			// for A/B runs.
+			static const bool trace_taken = std::getenv("VCC_NO_TAKEN") == nullptr;
 			const bool is_guardable = !no_trace &&
 				(opcode >= (trace_taken ? 0x20 : 0x21)) && opcode <= 0x2F;
 			bool is_terminator = IsBlockTerminator(insn_pc, opcode) && !is_guardable;
@@ -8199,7 +8201,11 @@ int HD6309Exec(int CycleFor)
 
 	} // End fast instruction loop
 
-	blockCache.CancelRecord();
+	// Budget exhausted mid-recording: keep the recording alive across
+	// the slice boundary (see BlockCache::RebaseCycles). Interrupts
+	// delivered at the seam cancel through the dispatch loop's normal
+	// interrupted-while-recording path.
+	blockCache.RebaseCycles(CycleCounter);
 
 	return(CycleFor-CycleCounter);
 

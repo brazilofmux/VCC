@@ -314,6 +314,20 @@ public:
         recording_ = false;
     }
 
+    // A recording may survive an HD6309Exec slice boundary: PC is
+    // untouched between slices and an interrupt delivered at the seam
+    // cancels through the normal path. Only the cycle bookkeeping needs
+    // adjusting, because CycleCounter resets to zero each exec call -
+    // shift the recording's start so (CycleCounter - start) still
+    // yields the true accumulated cost. Without this, every recording
+    // that crossed a ~114-cycle slice was thrown away, which was most
+    // of them once traces made recordings long.
+    void RebaseCycles(int consumed)
+    {
+        if (recording_)
+            rec_cycle_start_ -= consumed;
+    }
+
     bool IsRecording() const { return recording_; }
 
     void SetCycleStart(int cycles) { rec_cycle_start_ = cycles; }
