@@ -10,6 +10,9 @@
 
 cmake_minimum_required(VERSION 3.20)
 project(vcc-core CXX)
+if(WIN32)
+  enable_language(RC)   # cartridge modules carry string/dialog resources
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +20,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# Windows: same preprocessor posture as vcc-base.props (the MSBuild
+# projects), so <Windows.h> keeps its min/max macros out of std:: calls.
+if(WIN32)
+  add_compile_definitions(NOMINMAX _CRT_SECURE_NO_WARNINGS)
 endif()
 
 # Cross-TU inlining for the per-scanline hot path (HLINE -> CPUCycle ->
@@ -53,6 +62,16 @@ target_include_directories(vcc-libcommon PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/libcommon/include
 )
+
+# Windows: the _WIN32 paths in the cartridge modules reference the real
+# dialog and winapi helpers, so they join the portable set here (they
+# are inert until a config menu opens them).
+if(WIN32)
+  target_sources(vcc-libcommon PRIVATE
+    libcommon/src/util/DialogOps.cpp
+    libcommon/src/util/winapi.cpp
+  )
+endif()
 
 set_target_properties(vcc-libcommon PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -92,6 +111,10 @@ add_library(vcc-core STATIC
 )
 
 target_link_libraries(vcc-core PUBLIC vcc-libcommon)
+if(WIN32)
+  # joystickinput.cpp's _WIN32 half is the DirectInput scan path.
+  target_link_libraries(vcc-core PUBLIC dinput8 dxguid)
+endif()
 
 # ---- Cartridge modules: shared libraries loaded at runtime through the
 # LoadLibrary->dlopen shim, so the same vcc.ini module names work on
@@ -108,6 +131,13 @@ vcc_cartridge_module(harddisk
   HardDisk/cc3vhd.cpp
 )
 target_include_directories(harddisk PRIVATE HardDisk)
+if(WIN32)
+  # PakGetName/PakGetCatalogId/PakGetDescription read string resources
+  # on _WIN32 (non-Windows builds return hardcoded strings instead), so
+  # each module needs its .rc compiled in or the config sections it
+  # reads/writes end up named "".
+  target_sources(harddisk PRIVATE HardDisk/harddisk.rc)
+endif()
 
 vcc_cartridge_module(fd502
   FD502/fd502.cpp
@@ -116,6 +146,10 @@ vcc_cartridge_module(fd502
   FD502/becker.cpp
 )
 target_include_directories(fd502 PRIVATE FD502)
+if(WIN32)
+  target_link_libraries(fd502 PRIVATE ws2_32)   # becker's winsock half
+  target_sources(fd502 PRIVATE FD502/fd502.rc)  # string/dialog resources
+endif()
 
 vcc_cartridge_module(mpi
   mpi/mpi.cpp
@@ -124,6 +158,9 @@ vcc_cartridge_module(mpi
   mpi/cartridge_slot.cpp
 )
 target_include_directories(mpi PRIVATE mpi)
+if(WIN32)
+  target_sources(mpi PRIVATE mpi/configuration_dialog.cpp mpi/mpi.rc)
+endif()
 
 # ---- Shells. shell/ holds the machine bootstrap and device-absent
 # stubs shared by every non-Windows front end; each shell adds its own
@@ -153,12 +190,31 @@ add_executable(vcc-headless headless/main.cpp headless/stubs.cpp)
 target_link_libraries(vcc-headless PRIVATE vcc-shell)
 add_dependencies(vcc-headless harddisk fd502 mpi)
 
-# SDL shell: built when SDL2 is available (brew install sdl2).
+# SDL shell: built when SDL2 is available (brew install sdl2; on
+# Windows, unzip SDL2-devel-<ver>-VC.zip into external/ and its cmake
+# config is picked up from here).
+if(WIN32)
+  file(GLOB _vcc_sdl2_local "${CMAKE_CURRENT_SOURCE_DIR}/external/SDL2-*")
+  if(_vcc_sdl2_local)
+    list(GET _vcc_sdl2_local 0 _vcc_sdl2_root)
+    list(APPEND CMAKE_PREFIX_PATH "${_vcc_sdl2_root}")
+  endif()
+endif()
 find_package(SDL2 QUIET)
 if(SDL2_FOUND)
   add_executable(vcc-sdl sdl/main.cpp)
   target_link_libraries(vcc-sdl PRIVATE vcc-shell SDL2::SDL2)
+  if(TARGET SDL2::SDL2main)
+    # Windows: SDL.h renames main to SDL_main; SDL2main supplies the
+    # real entry point that calls it.
+    target_link_libraries(vcc-sdl PRIVATE SDL2::SDL2main)
+  endif()
   add_dependencies(vcc-sdl harddisk fd502 mpi)
+  if(WIN32)
+    add_custom_command(TARGET vcc-sdl POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:vcc-sdl>)
+  endif()
 
   # VCC.app: the same shell as a double-clickable macOS bundle. The
   # cartridge modules and any disk ROMs sitting in the build dir are

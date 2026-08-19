@@ -307,6 +307,66 @@ regardless of layout, so CI stays green while it lands.
    BASIC09 workflow sugar (b09 source -> pack -> run), a DriveWire
    server integration test, Cmd+C of graphics screens as PNG.
 
+## The x86-64 backend arc (Windows/Hatsuhara, 2026-08-19)
+
+Back on a Windows box (Hatsuhara) to verify the Windows side and fill
+the missing backend. `BlockJitX64.cpp` + `emit_x64.h` are the arm64
+backend's 1:1 sibling on x86-64 — Win64 AND SysV ABIs (arg registers
+and shadow space are the only differences, decided at compile time):
+
+- Pinned registers (callee-saved on both ABIs, established by the
+  emitted thunk runner): r13 = &cpu_state, ebx = CycleCounter,
+  r12d = CycleFor, r15 = slot base, r14 = per-thunk &insns[0].
+- Same chain stub, guard exits, ChainBreak back-edge checks, branch
+  terminators, indexed EA family, and cc[] liveness DSE as arm64.
+- Where arm64 computes 6309 flags explicitly, x86 recovers the old
+  32-bit backend's tricks base-relative: byte RMW directly on state
+  memory + setcc into cc[] (inc/dec OF = the exact V wraps, neg's
+  CF/OF = the NEG rules, 1-bit shl OF = the ASL V formula, add/sub/cmp
+  give C,V,Z,N in one instruction). Only ADD's half-carry H needs
+  arithmetic (no setcc reads AF).
+- The encoder (`emit_x64.h`) is adapted from ~/riscv/dbt/emit_x64.h:
+  general [base+disp] operands replace the donor's RBX/R12 SIB forms;
+  handles the RSP/R12-needs-SIB and RBP/R13-needs-disp8 ModRM
+  irregularities.
+- Arena: VirtualAlloc RWX on Windows, mmap elsewhere; x86 icache is
+  coherent, so no flush/W^X bracketing. No Win64 unwind info is
+  registered (nothing throws through emitted frames).
+
+CMake picks the backend by processor (arm64 -> A64, x86_64/AMD64 ->
+X64, else null), and the same CMakeLists now builds vcc-headless and
+vcc-sdl on Windows x64 with MSVC (NOMINMAX, module .rc resources so
+PakGetName works, ws2_32/dinput8, SDL2 from external/). Validation on
+Hatsuhara: DECB boot + BASIC identical across interpreter/JIT/no-inline/
+no-link/no-taken, VCC_VERIFY_PURE clean over DECB and NitrOS-9 boots,
+NitrOS-9/6309 Level 2 boots to Shell+ and mdir matches the interpreter
+byte-for-byte. Quick DECB idle A/B on this AWS instance: interpreter
+368x -> JIT 587x realtime, taken traces +8% — same shape as the Mac
+results, though these were short frameskip runs (boot + renderer in
+the denominator), not the tests/bench methodology behind the M5's
+2.9 GHz / 640 MIPS figure; a proper sieve benchmark here still wants
+the cmoc container.
+
+Two latent core bugs the Windows verification flushed out (both
+platform-independent, both now fixed):
+
+- **MmuReset never mapped the ROM.** It zeroes RomMap/MapType directly,
+  then calls SetRomMap(0)/SetMapType(0) — which early-return on "no
+  change" (a this-fork optimization) — so UpdateMmuArray never ran and
+  8000-FFFF stayed RAM after every reset. The 6309 masked it: the
+  prepopulated block cache executes the boot ROM from decoded blocks
+  (no fetches) until the GIME writes rebuild the map. The 6809 fetches
+  honestly and derailed on instruction one into a NEG-<direct> march
+  through zeroed RAM. MmuReset now calls UpdateMmuArray directly.
+- **op_JMP_E jumped two bytes past every target**: `pc.Reg =
+  EA_EXTENDED()` where the macro's second statement `pc.Reg += 2` runs
+  after the assignment. The 6809 threaded-handler table had never been
+  exercised (every test config is CpuType=1).
+
+Diagnostics added: VCC_LOG_PC in vcc-headless (once-a-second register
+dump + bytes at PC) and a first-24-fetches trace in MC6809Exec behind
+the same variable.
+
 ## The DriveWire file-flow arc (pyDriveWire, 2026-08)
 
 Goal: reach files on the Mac from inside NitrOS-9 over the becker

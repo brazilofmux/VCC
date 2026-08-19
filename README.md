@@ -83,7 +83,26 @@ cmake --build build -j
 ```
 
 Targets: `vcc-sdl` (windowed), `vcc-app` (builds `VCC.app`),
-`vcc-headless` (no window, for scripting and tests). You supply your
+`vcc-headless` (no window, for scripting and tests).
+
+## Building the portable shells on Windows (x64)
+
+The same CMake build produces 64-bit `vcc-headless` and `vcc-sdl`
+binaries on Windows with the **x86-64 JIT backend** (`BlockJitX64.cpp`,
+the arm64 backend's sibling — same block linking, registerized state,
+and superblock traces). This sits beside the classic Win32 MSBuild
+build, which is untouched and still carries the original 32-bit shell.
+
+```powershell
+cmake -B build-x64 -A x64
+cmake --build build-x64 --config Release
+```
+
+For `vcc-sdl`, unzip `SDL2-devel-<ver>-VC.zip` into `external/` first
+(the CMake config is picked up automatically; `SDL2.dll` is copied
+beside the exe). The cartridge modules build as 64-bit DLLs with their
+string/dialog resources, so the same `vcc.ini` sections work; point
+`VCC_INI` at a config whose MPI slots reference the x64 DLLs. You supply your
 own CoCo 3 ROM; point `ExternalBasicImage` in
 `~/.config/vcc/vcc.ini` at it (same ini format as the Windows build)
 or pass the path on the command line. Optional extras: a libutf

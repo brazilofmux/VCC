@@ -34,4 +34,6 @@ __bin
 *~
 diag.log
 build/
+build-*/
+external/
 .cache/
