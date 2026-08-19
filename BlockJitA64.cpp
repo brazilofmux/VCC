@@ -109,6 +109,7 @@ static uint32_t g_off_nat54 = 0;
 static uint32_t g_off_nat32 = 0;
 static uint32_t g_off_nat53 = 0;
 static uint32_t g_off_nat65 = 0;
+static int64_t  g_off_pending = -1;   // packed pending quadword in cpu_state
 
 // ---------- cc[] bit ordering (matches BlockJit.cpp / hd6309.cpp) ----------
 
@@ -182,6 +183,10 @@ void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers)
         g_off_nat32 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_32 - base);
         g_off_nat53 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_53 - base);
         g_off_nat65 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_65 - base);
+        g_off_pending = (g_addrs.pending != nullptr)
+            ? (int64_t)((uint8_t*)g_addrs.pending - base) : -1;
+        if (g_off_pending < 0 || g_off_pending >= 4096 * 8 || (g_off_pending % 8) != 0)
+            g_off_pending = -1;
     }
 
     g_arena_used = 0;
@@ -1574,15 +1579,18 @@ NativeEntry EmitBlock(const CachedBlock& slot)
     // taken way must store its taken PC and leave through the block
     // tail. The conditional jumps are emitted with placeholder offsets
     // and patched once the exit snippets exist after the main tail.
+    // kind: 0 = cbz w1, 1 = cbnz w1 (guard direction diverged),
+    //       2 = b.ne (called guard, bare exit),
+    //       3 = cbnz x12 (interrupt pending at a loop back-edge; exit
+    //           along the RECORDED path so the dispatcher can deliver).
     struct GuardExit
     {
-        uint32_t branch_at;   // offset of the cbz/cbnz to patch
-        bool     use_cbz;     // cbz (taken_when_zero) vs cbnz
-        uint16_t taken_pc;    // PC to store on exit
-        uint32_t extra_cycles;// taken-minus-fall cycle delta (long branches)
-        bool     bare;        // called-guard: PC/cycles already correct, b.ne patch
+        uint32_t branch_at;   // offset of the branch insn to patch
+        uint8_t  kind;
+        uint16_t exit_pc;     // PC to store on exit (kinds 0/1/3)
+        uint32_t extra_cycles;// exit-minus-recorded cycle delta (long branches)
     };
-    GuardExit guard_exits[BlockCache::MAX_BLOCK_INSNS];
+    GuardExit guard_exits[BlockCache::MAX_BLOCK_INSNS * 2];   // direction + pending per guard
     int num_guard_exits = 0;
 
     for (int i = 0; i < (int)slot.num_insns; ++i)
@@ -1603,20 +1611,39 @@ NativeEntry EmitBlock(const CachedBlock& slot)
             continue;
         }
 
-        // Mid-block branch = superblock guard. The recorded path is
-        // fall-through; emit the predicate and exit the block when the
-        // branch goes its taken way instead.
+        // Mid-block branch = trace guard. taken_mask says which way the
+        // recording went: bit clear = fall-through (exit if taken), bit
+        // set = taken (the trace FOLLOWS the branch; exit if it falls
+        // through). Either exit stores the not-recorded successor PC
+        // and leaves through the block tail.
         if (i < (int)slot.num_insns - 1 && LookupBranch(insn.handler, bdesc))
         {
+            const bool taken_dir = ((slot.taken_mask >> i) & 1u) != 0;
             const uint16_t taken_pc = bdesc.is_long
                 ? (uint16_t)(local_pc + (int16_t)insn.operand)
                 : (uint16_t)(local_pc + (int8_t)(insn.operand & 0xFF));
+            const uint16_t fall_pc = local_pc;
+            // The PC the recorded path continues at, and the PC a
+            // diverging outcome exits with.
+            const uint16_t cont_pc = taken_dir ? taken_pc : fall_pc;
+            const uint16_t exit_pc = taken_dir ? fall_pc : taken_pc;
 
-            if (!g_no_inline && bdesc.pred != BranchPred::Always)
+            // Impossible direction/predicate pairs (Always not-taken,
+            // Never taken) mean corrupted block data - refuse.
+            if ((bdesc.pred == BranchPred::Always && !taken_dir) ||
+                (bdesc.pred == BranchPred::Never && taken_dir))
             {
-                if (bdesc.pred == BranchPred::Never)
+                ++g_emit_failures;
+                return nullptr;
+            }
+
+            if (!g_no_inline)
+            {
+                if (bdesc.pred == BranchPred::Never ||
+                    bdesc.pred == BranchPred::Always)
                 {
-                    // BRN/LBRN: a costed no-op, no exit possible.
+                    // BRN (fall) / BRA (taken): a costed unconditional,
+                    // no exit possible.
                     if (bdesc.is_long)
                         EmitCyclesRuntime(e, g_off_nat54);
                     else
@@ -1625,29 +1652,48 @@ NativeEntry EmitBlock(const CachedBlock& slot)
                 else
                 {
                     EmitBranchPredicate(e, bdesc.pred);
-                    // Fall-path cycles now; the exit snippet adds the
-                    // taken-fall delta (long branches cost one more).
-                    EmitCyclesConst(e, bdesc.is_long ? 5u : 3u);
+                    // Recorded-path cycles now; the exit snippet adds
+                    // the delta (long branches: taken costs one more).
+                    const uint32_t cont_cyc = bdesc.is_long ? (taken_dir ? 6u : 5u) : 3u;
+                    const uint32_t exit_cyc = bdesc.is_long ? (taken_dir ? 5u : 6u) : 3u;
+                    EmitCyclesConst(e, cont_cyc);
+                    // Exit when the runtime outcome is NOT the recorded
+                    // direction: for fall-recordings that's "taken", for
+                    // taken-recordings it's "not taken" - which flips
+                    // the cbz/cbnz sense.
+                    const bool exit_on_zero = taken_dir ? !bdesc.taken_when_zero
+                                                        : bdesc.taken_when_zero;
                     guard_exits[num_guard_exits++] = {
-                        e.offset, bdesc.taken_when_zero, taken_pc,
-                        bdesc.is_long ? 1u : 0u, false };
-                    if (bdesc.taken_when_zero)
+                        e.offset, (uint8_t)(exit_on_zero ? 0 : 1), exit_pc,
+                        (exit_cyc > cont_cyc) ? exit_cyc - cont_cyc : 0u };
+                    if (exit_on_zero)
                         emit_cbz_w32(&e, A64_W1, 0);
                     else
                         emit_cbnz_w32(&e, A64_W1, 0);
                 }
-                pc_dirty = true;    // fall PC still deferred
+                // Loop back-edge (taken direction): bound interrupt
+                // latency to one loop iteration - if anything is
+                // pending, exit along the RECORDED path and let the
+                // dispatcher deliver. One load + one branch.
+                if (taken_dir && g_off_pending >= 0)
+                {
+                    emit_ldr_x64_imm(&e, A64_W12, A64_W19, (uint32_t)g_off_pending);
+                    guard_exits[num_guard_exits++] = {
+                        e.offset, 3, cont_pc, 0u };
+                    emit_cbnz_x64(&e, A64_W12, 0);
+                }
+                local_pc = cont_pc;
+                pc_dirty = true;    // recorded-path PC still deferred
                 ++g_insns_inlined;
                 ++g_pc_writes_skipped;
                 continue;
             }
 
-            // Inlining off (or an Always branch, which the recorder
-            // never produces mid-block): call the handler, then check
-            // whether it left the recorded path. PC and cycles are
-            // already correct either way.
+            // Inlining off: call the handler, then check whether it
+            // left the recorded path. PC and cycles are already correct
+            // either way, so the exit is bare.
             g_emit_had_side_effects = true;
-            emit_movz_w32(&e, A64_W1, local_pc, 0);
+            emit_movz_w32(&e, A64_W1, fall_pc, 0);
             emit_strh_imm(&e, A64_W1, A64_W19, g_off_pc);
             ++g_pc_writes_emitted;
             emit_str_w32_imm(&e, A64_W21, A64_W19, g_off_cyc);
@@ -1656,13 +1702,22 @@ NativeEntry EmitBlock(const CachedBlock& slot)
             emit_blr(&e, A64_W16);
             emit_ldr_w32_imm(&e, A64_W21, A64_W19, g_off_cyc);
             emit_ldrh_imm(&e, A64_W2, A64_W19, g_off_pc);
-            emit_movz_w32(&e, A64_W3, local_pc, 0);
+            emit_movz_w32(&e, A64_W3, cont_pc, 0);
             emit_cmp_w32_w32(&e, A64_W2, A64_W3);
-            guard_exits[num_guard_exits++] = { e.offset, false, 0, 0, true };
+            guard_exits[num_guard_exits++] = { e.offset, 2, 0, 0u };
             emit_b_cond(&e, A64_COND_NE, 0);
+            local_pc = cont_pc;
             pc_dirty = false;
             ++g_insns_called;
             continue;
+        }
+
+        // A taken_mask bit on anything but a recognized branch means
+        // the PC chain below would be wrong - refuse the block.
+        if (i < (int)slot.num_insns - 1 && ((slot.taken_mask >> i) & 1u))
+        {
+            ++g_emit_failures;
+            return nullptr;
         }
 
         // JMP indexed as terminator: PC = EA, +3 cycles.
@@ -1733,7 +1788,7 @@ NativeEntry EmitBlock(const CachedBlock& slot)
     {
         GuardExit& ge = guard_exits[gi];
         uint32_t target;
-        if (ge.bare)
+        if (ge.kind == 2)
         {
             if (!bare_exit_emitted)
             {
@@ -1751,7 +1806,7 @@ NativeEntry EmitBlock(const CachedBlock& slot)
         else
         {
             target = e.offset;
-            emit_movz_w32(&e, A64_W2, ge.taken_pc, 0);
+            emit_movz_w32(&e, A64_W2, ge.exit_pc, 0);
             emit_strh_imm(&e, A64_W2, A64_W19, g_off_pc);
             if (ge.extra_cycles != 0)
                 emit_add_w32_imm(&e, A64_W21, A64_W21, ge.extra_cycles);
@@ -1765,12 +1820,13 @@ NativeEntry EmitBlock(const CachedBlock& slot)
 
         emit_t p { entry + ge.branch_at, 0, 4 };
         const int32_t delta = (int32_t)(target - ge.branch_at);
-        if (ge.bare)
-            emit_b_cond(&p, A64_COND_NE, delta);
-        else if (ge.use_cbz)
-            emit_cbz_w32(&p, A64_W1, delta);
-        else
-            emit_cbnz_w32(&p, A64_W1, delta);
+        switch (ge.kind)
+        {
+        case 0:  emit_cbz_w32(&p, A64_W1, delta); break;
+        case 1:  emit_cbnz_w32(&p, A64_W1, delta); break;
+        case 2:  emit_b_cond(&p, A64_COND_NE, delta); break;
+        default: emit_cbnz_x64(&p, A64_W12, delta); break;
+        }
     }
 
     jit_writable_end();

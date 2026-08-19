@@ -407,6 +407,22 @@ unsigned char SafeMemRead8(unsigned short address)
 
 void MemWrite8(unsigned char data,unsigned short address)
 {
+	// Temporary diagnostic (VCC_LOG_WRITES=N): log the first N writes
+	// so two runs' guest-visible write streams can be diffed.
+	static long log_writes = -1;
+	if (log_writes != 0)
+	{
+		if (log_writes < 0)
+		{
+			const char* lw = getenv("VCC_LOG_WRITES");
+			log_writes = lw ? atol(lw) : 0;
+		}
+		if (log_writes > 0)
+		{
+			--log_writes;
+			fprintf(stderr, "W %04X %02X\n", address, data);
+		}
+	}
 	if (address<0xFE00)
 	{
 		unsigned short page = MmuRegisters[MmuState][address>>13];

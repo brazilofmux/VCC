@@ -33,6 +33,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "string.h"
 #include "OpDecoder.h"
 #include "Disassembler.h"
+#include <climits>
 
 #if defined(_WIN64)
 #define MSABI 
@@ -335,8 +336,16 @@ BOOL DoingTFM = false;
 //--- Block Cache ---
 static BlockCache blockCache;
 
+// Set whenever a memory write lands on cached code. The recorder ends
+// its recording after any instruction that trips this, so a self-
+// modifying sequence (write, then execute the written bytes) always
+// splits into separate blocks - the later block re-decodes AFTER the
+// write, exactly like the pre-trace behavior for DECB's CHRGET.
+static bool gCodeWriteTripped = false;
+
 static void HD6309BlockInvalidate(unsigned short address) {
-	blockCache.InvalidateIfCached(address);
+	if (blockCache.InvalidateIfCached(address))
+		gCodeWriteTripped = true;
 }
 static void HD6309BlockInvalidateAll() {
 	blockCache.InvalidateAll();
@@ -7745,6 +7754,98 @@ static inline bool DebuggerActive()
 		|| EmuState.Debugger.IsTracingEnabled();
 }
 
+// Replay a cached block's decoded instructions through the interpreter
+// handlers, honoring taken-guard directions: after each instruction the
+// CPU must be at the recorded path's next address (fall-through, or the
+// branch target for taken_mask bits) or the block exits early - the
+// same semantics the emitted thunks implement with guard exits. Stops
+// when CycleCounter reaches cycle_limit (pass INT_MAX for a full run);
+// the stop PC is always an instruction boundary.
+// Diagnostic (VCC_LOG_PC=N): per-instruction PC log for the first N
+// instructions on the interpreter paths, comparable across runs
+// regardless of block boundaries. Found the taken-trace overlap bug.
+static long gPcLogBudget = -1;
+static inline void LogPcDiag(unsigned short pc)
+{
+	if (gPcLogBudget != 0)
+	{
+		if (gPcLogBudget < 0)
+		{
+			const char* lp = std::getenv("VCC_LOG_PC");
+			gPcLogBudget = lp ? std::atol(lp) : 0;
+		}
+		if (gPcLogBudget > 0)
+		{
+			--gPcLogBudget;
+			fprintf(stderr, "P %04X\n", pc);
+		}
+	}
+}
+
+static inline void ReplayBlock(const CachedBlock* block, int cycle_limit)
+{
+	const DecodedInst* ip = block->insns;
+	const DecodedInst* end = ip + block->num_insns;
+	const uint32_t entry_gen = block->generation;
+	unsigned short lpc = PC_REG;
+
+	if (block->taken_mask == 0)
+	{
+		// Contiguous block (the overwhelmingly common case): no guard
+		// direction bookkeeping, no back-edge checks. The generation
+		// check stays: a contiguous block can still contain a write to
+		// its own later bytes (DECB's CHRGET page-cross path).
+		while (ip < end && CycleCounter < cycle_limit)
+		{
+			LogPcDiag(lpc);
+			lpc += ip->length;
+			PC_REG = lpc;
+			ip->handler(ip);
+			if (PC_REG != lpc)
+				break;
+			ip++;
+			if (block->generation != entry_gen)
+				break;
+		}
+		return;
+	}
+
+	// Taken-direction trace (VCC_TRACE_TAKEN experiments).
+	uint16_t mask = block->taken_mask;
+	while (ip < end && CycleCounter < cycle_limit)
+	{
+		LogPcDiag(lpc);
+		lpc += ip->length;
+		PC_REG = lpc;
+		ip->handler(ip);
+		const bool back_edge = (mask & 1u) != 0;
+		const unsigned short expect = back_edge
+			? (unsigned short)(lpc + (signed char)(ip->operand & 0xFF))
+			: lpc;
+		if (PC_REG != expect)
+			break;
+		lpc = expect;
+		mask >>= 1;
+		ip++;
+		// Self-modifying code: if this instruction's write invalidated
+		// THIS block (DECB's CHRGET rewrites its own LDA operand every
+		// call), the remaining pre-decoded instructions may be stale -
+		// stop at this boundary and let the dispatcher re-decode.
+		if (block->generation != entry_gen)
+			break;
+		// Loop back-edge (taken guard): bound interrupt latency to one
+		// loop iteration, like the short pre-trace blocks did - an
+		// unrolled polling loop must not run 14 instructions past a
+		// deliverable interrupt (DECB's timing code notices). Test the
+		// LINES, not the latch - the latch only clocks at dispatch top.
+		if (back_edge && InterruptLineOR != 0 &&
+		    ((InterruptLineOR & Bit(INT_NMI)) ||
+		     ((InterruptLineOR & Bit(INT_FIRQ)) && !CC(F)) ||
+		     ((InterruptLineOR & Bit(INT_IRQ)) && !CC(I))))
+			break;
+	}
+}
+
 int HD6309Exec(int CycleFor)
 {
     extern int JS_Ramp_Clock;
@@ -7757,6 +7858,7 @@ int HD6309Exec(int CycleFor)
 
 	// Fast path: no debugger overhead, with block execution
 	while (CycleCounter < CycleFor) {
+
 
 		// One-compare gate: no line asserted, nothing in flight through
 		// the latch. Clock(0) with D=Q=0 is a no-op and every check
@@ -7860,23 +7962,7 @@ int HD6309Exec(int CycleFor)
 						RunThunk(block->native_entry);
 						Hd6309State post_jit = cpu_state;
 						cpu_state = snap;
-						{
-							const DecodedInst* ip = block->insns;
-							const DecodedInst* end = ip + block->num_insns;
-							unsigned short lpc = PC_REG;
-							while (ip < end)
-							{
-								lpc += ip->length;
-								PC_REG = lpc;
-								ip->handler(ip);
-								// Superblock guard: a mid-block branch
-								// that went its taken way leaves the
-								// recorded path - stop replaying.
-								if (PC_REG != lpc)
-									break;
-								ip++;
-							}
-						}
+						ReplayBlock(block, INT_MAX);
 						if (memcmp(&post_jit, &cpu_state, sizeof(Hd6309State)) != 0)
 						{
 							static int reports = 0;
@@ -7967,20 +8053,7 @@ int HD6309Exec(int CycleFor)
 						}
 					}
 
-					const DecodedInst* ip = block->insns;
-					const DecodedInst* end = ip + block->num_insns;
-					unsigned short local_pc = PC_REG;
-					while (ip < end)
-					{
-						local_pc += ip->length;
-						PC_REG = local_pc;
-						ip->handler(ip);
-						// Superblock guard: taken mid-block branch
-						// leaves the recorded path - stop replaying.
-						if (PC_REG != local_pc)
-							break;
-						ip++;
-					}
+					ReplayBlock(block, INT_MAX);
 				}
 
 				if (JS_Ramp_Clock < 0xFFFF)
@@ -8005,18 +8078,7 @@ int HD6309Exec(int CycleFor)
 				if (blockCache.IsRecording())
 					blockCache.EndRecord(PC_REG, CycleCounter);
 
-				const DecodedInst* ip = block->insns;
-				const DecodedInst* end = ip + block->num_insns;
-				unsigned short lpc = PC_REG;
-				while (ip < end && CycleCounter < CycleFor)
-				{
-					lpc += ip->length;
-					PC_REG = lpc;
-					ip->handler(ip);
-					if (PC_REG != lpc)
-						break;   // superblock guard went its taken way
-					ip++;
-				}
+				ReplayBlock(block, CycleFor);
 
 				if (JS_Ramp_Clock < 0xFFFF)
 					JS_Ramp_Clock += CycleCounter - PrevCycleCount;
@@ -8036,18 +8098,35 @@ int HD6309Exec(int CycleFor)
 			blockCache.RecordSingleStep();
 			uint16_t insn_pc = PC_REG;
 			unsigned char opcode = MemFetch8(insn_pc); // peek, don't consume
-			// Superblocks: a conditional short branch (0x21 BRN through
-			// 0x2F BGE-family; BRA 0x20 stays a hard terminator) is
-			// "guardable" - observed NOT-taken it becomes a mid-block
-			// guard and the recording continues along the fall-through
-			// path; observed TAKEN it ends the block exactly like a
-			// terminator. Replay (interpreter and thunk alike) exits a
-			// block early whenever a guard's outcome diverges.
-			const bool is_guardable = (opcode >= 0x21 && opcode <= 0x2F);
+			// Taken-direction traces: every short branch (0x20 BRA
+			// through 0x2F) is "guardable" - it never ends a recording.
+			// Observed NOT-taken it guards the fall-through; observed
+			// TAKEN the trace FOLLOWS the branch (a taken_mask bit
+			// records the direction), which is what lets hot loops
+			// unroll into a single block. Replay (interpreter and thunk
+			// alike) exits a block early whenever a guard's runtime
+			// outcome diverges from its recorded direction.
+			static const bool no_trace = std::getenv("VCC_NO_TRACE") != nullptr;
+			// Taken-direction tracing (following taken branches to
+			// unroll loops) is OFF by default: it is correct, but the
+			// overlap churn between staggered trace blocks eats the
+			// unrolling win at this cache architecture (see
+			// docs/porting-macos.md). VCC_TRACE_TAKEN=1 re-enables it
+			// for future experiments.
+			static const bool trace_taken = std::getenv("VCC_TRACE_TAKEN") != nullptr;
+			const bool is_guardable = !no_trace &&
+				(opcode >= (trace_taken ? 0x20 : 0x21)) && opcode <= 0x2F;
 			bool is_terminator = IsBlockTerminator(insn_pc, opcode) && !is_guardable;
 			uint16_t expected_next_pc = (uint16_t)(insn_pc + GetInstructionLengthAt(insn_pc));
+			gCodeWriteTripped = false;
+			LogPcDiag(insn_pc);
 			PC_REG = insn_pc + 1;
 			JmpVec1[opcode](nullptr);
+			// An instruction that wrote over cached code ends the block:
+			// anything decoded after it must be re-decoded post-write
+			// (self-modifying sequences like DECB's CHRGET).
+			if (gCodeWriteTripped)
+				is_terminator = true;
 
 			if (blockCache.IsRecording())
 			{
@@ -8055,11 +8134,18 @@ int HD6309Exec(int CycleFor)
 				// to its statically decoded next PC. If it does not, some hidden
 				// control flow or decode-table mismatch exists; drop the recording
 				// rather than caching a block that cannot be replayed safely.
-				// Exception: a guardable branch that went its taken way simply
-				// closes the block with itself as the final instruction.
+				// Exception: a guardable branch observed at its (verified)
+				// taken target continues the trace with a taken_mask bit.
+				bool taken_guard = false;
 				if (!is_terminator && PC_REG != expected_next_pc)
 				{
-					if (is_guardable)
+					// Short branch handlers can only produce fall-through
+					// or their taken target, so a diverging guardable
+					// branch IS a taken branch. With taken-tracing off,
+					// it closes the block as its final instruction.
+					if (is_guardable && trace_taken)
+						taken_guard = true;
+					else if (is_guardable)
 						is_terminator = true;
 					else
 					{
@@ -8068,7 +8154,7 @@ int HD6309Exec(int CycleFor)
 					}
 				}
 
-				if (!blockCache.RecordInstruction(PC_REG, CycleCounter))
+				if (!blockCache.RecordInstruction(PC_REG, CycleCounter, taken_guard))
 				{
 					// Max block size reached
 				}
@@ -8270,6 +8356,17 @@ void cpu_firq()
 
 void cpu_irq()
 {
+	// Temporary diagnostic (VCC_LOG_IRQ): delivery index, PC, and
+	// intra-slice cycle position - to compare delivery points between
+	// runs.
+	static const bool log_irq = std::getenv("VCC_LOG_IRQ") != nullptr;
+	if (log_irq)
+	{
+		static uint64_t irq_n = 0;
+		fprintf(stderr, "I %llu %04X %d\n",
+		        (unsigned long long)++irq_n, PC_REG, CycleCounter);
+	}
+
 	if (EmuState.Debugger.IsTracing())
 		EmuState.Debugger.TraceCaptureInterruptServicing(INT_IRQ, CycleCounter, HD6309GetState());
 

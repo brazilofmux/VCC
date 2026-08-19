@@ -213,7 +213,14 @@ inline int DecodeIndexedPostbyte(uint8_t pb, uint16_t pc_at_postbyte,
 // Decode a block of num_insns instructions starting at start_pc.
 // Fills the out[] array with handler, operand, ea_info, and length.
 // Returns the PC after the last decoded instruction.
-inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
+//
+// taken_mask: bit i set means instruction i is a short branch the
+// recording observed TAKEN - the decode walk follows its target
+// instead of falling through (taken-direction traces). Bit values for
+// non-branch instructions are ignored on the last position and must
+// be zero elsewhere.
+inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out,
+                            uint16_t taken_mask = 0)
 {
     uint16_t pc = start_pc;
 
@@ -441,6 +448,12 @@ inline uint16_t DecodeBlock(uint16_t start_pc, int num_insns, DecodedInst* out)
         }
 
         pc += inst.length;
+        if ((taken_mask >> i) & 1u)
+        {
+            // Followed taken branch: short Bcc/BRA, operand is the
+            // signed 8-bit displacement from the fall-through address.
+            pc = (uint16_t)(pc + (int8_t)(inst.operand & 0xFF));
+        }
     }
 
     return pc;

@@ -63,6 +63,11 @@ struct alignas(256) CachedBlock
     // snapshot and compare. Set alongside native_entry.
     uint8_t  pure_thunk;
     uint32_t generation;    // generation when this block was cached
+    // Taken-direction traces: bit i set means insns[i] is a short
+    // branch recorded TAKEN - execution continues at its target, and
+    // replay/thunks exit the block if the runtime outcome differs.
+    // Zero for purely contiguous blocks.
+    uint16_t taken_mask;
 
     // Optional level-1 JIT thunk: a small chunk of native x86 that
     // replaces the per-instruction dispatch loop with a straight
@@ -119,6 +124,27 @@ public:
     }
 
     // Look up a block by its starting PC. Returns nullptr if not cached.
+    // Is this address inside a LIVE block that starts elsewhere?
+    // Recording from such an address would create an overlapping block
+    // that the one-owner reverse-map invariant then kills the incumbent
+    // for - churn that dismantles unrolled loops every time an
+    // interrupt resumes mid-loop. The caller single-steps without
+    // recording instead; a few instructions later it reaches the
+    // incumbent's start and chains normally.
+    bool CoveredByLiveBlock(uint16_t pc) const
+    {
+        const uint16_t owner = reverseMap_[pc];
+        if (owner == NO_BLOCK || owner == pc)
+            return false;
+        const CachedBlock& b = blocks_[owner & CACHE_MASK];
+        return b.generation == generation_ && b.start_pc == owner;
+    }
+
+    // Debug forensics.
+    uint16_t DebugMapOwner(uint16_t addr) const { return reverseMap_[addr]; }
+    int DebugPageBit(uint16_t addr) const
+    { return (pageBitmap_[addr >> 11] >> ((addr >> 8) & 7)) & 1; }
+
     // Raw slot storage and generation counter, exposed so the JIT can
     // emit a chain stub that revalidates a slot exactly the way
     // Lookup() does (tag + generation) before jumping into its thunk.
@@ -137,30 +163,35 @@ public:
     // Called from MemWrite8 on every RAM write. Must be VERY fast.
     // The coarse bitmap (32 bytes, fits in L1) rejects 99.99% of writes
     // before touching the 128KB reverse map.
-    void InvalidateIfCached(uint16_t address)
+    // Returns true when a live block was actually invalidated by this
+    // write (the recorder uses that to split self-modifying sequences).
+    bool InvalidateIfCached(uint16_t address)
     {
         // Fast reject: check coarse bitmap (one bit per 256-byte page).
         // This 32-byte array stays in L1 cache. Almost all writes bail here.
         if (!(pageBitmap_[address >> 11] & (1 << ((address >> 8) & 7))))
-            return;
+            return false;
 
         // Slow path: a block exists on this page. Use reverse map.
         uint16_t block_pc = reverseMap_[address];
         if (block_pc == NO_BLOCK)
-            return;
+            return false;
 
         CachedBlock& b = blocks_[block_pc & CACHE_MASK];
         if (b.generation == generation_ && b.start_pc == block_pc)
         {
-            ClearReverseMap(b.start_pc, b.end_pc);
+            ForEachBlockRange(b.start_pc, b.num_insns, b.insns, b.taken_mask,
+                              [this, &b](uint16_t s, uint16_t e) {
+                                  ReleaseReverseMap(b.start_pc, s, e);
+                              });
             b.generation = 0;  // invalidate
             stats_.invalidations++;
+            return true;
         }
-        else
-        {
-            // Stale reverse map entry — block was already evicted or generation changed.
-            reverseMap_[address] = NO_BLOCK;
-        }
+
+        // Stale reverse map entry — block was already evicted or generation changed.
+        reverseMap_[address] = NO_BLOCK;
+        return false;
     }
 
     // Begin recording a new block at the given PC.
@@ -170,14 +201,20 @@ public:
         rec_start_pc_ = pc;
         rec_insn_count_ = 0;
         rec_cycle_start_ = 0;  // caller sets this
+        rec_taken_mask_ = 0;
     }
 
     // Called after each instruction during recording.
     // Returns true if the block should continue, false if it should end.
-    bool RecordInstruction(uint16_t next_pc, int cycle_counter)
+    // taken_guard: the instruction was a short branch that went its
+    // taken way - the trace follows it (taken-direction traces).
+    bool RecordInstruction(uint16_t next_pc, int cycle_counter,
+                           bool taken_guard = false)
     {
         if (!recording_) return false;
 
+        if (taken_guard)
+            rec_taken_mask_ |= (uint16_t)(1u << rec_insn_count_);
         rec_insn_count_++;
 
         if (rec_insn_count_ >= MAX_BLOCK_INSNS)
@@ -249,7 +286,7 @@ public:
     CachedBlock* InsertPrebuiltBlock(const CachedBlock& block)
     {
         if (!ValidateDecodedBlock(block.start_pc, block.num_insns,
-                                  block.insns, block.end_pc))
+                                  block.insns, block.end_pc, block.taken_mask))
         {
             stats_.rejected_blocks++;
             return nullptr;
@@ -261,23 +298,23 @@ public:
         // its reverse-map entries are already invisible (generation
         // mismatch); no cleanup needed.
         if (slot.generation == generation_)
-            ClearReverseMap(slot.start_pc, slot.end_pc);
+            ForEachBlockRange(slot.start_pc, slot.num_insns, slot.insns,
+                              slot.taken_mask,
+                              [this, &slot](uint16_t s, uint16_t e) {
+                                  ReleaseReverseMap(slot.start_pc, s, e);
+                              });
 
         slot = block;
         slot.generation = generation_;
         slot.exec_count = 0;
         slot.pure_thunk = 0;
 
-        SetReverseMap(slot.start_pc, slot.end_pc);
-        // Mark the page bitmap. Block lengths are bounded by
-        // MAX_BLOCK_INSNS * max_insn_length, well under 256 bytes, so
-        // a block spans either 1 or 2 256-byte pages - never more.
-        // Mark the start page; if the last byte is on a different
-        // page, mark that one too.
-        SetPageBit(slot.start_pc);
-        uint16_t last_byte = (uint16_t)(slot.end_pc - 1);
-        if ((last_byte & 0xFF00) != (slot.start_pc & 0xFF00))
-            SetPageBit(last_byte);
+        ForEachBlockRange(slot.start_pc, slot.num_insns, slot.insns,
+                          slot.taken_mask,
+                          [this, &slot](uint16_t s, uint16_t e) {
+                              ClaimReverseMap(slot.start_pc, s, e);
+                              MarkPageBits(s, e);
+                          });
 
         stats_.blocks_recorded++;
         return &slot;
@@ -289,7 +326,10 @@ public:
         CachedBlock& b = blocks_[pc & CACHE_MASK];
         if (b.generation == generation_ && b.start_pc == pc)
         {
-            ClearReverseMap(b.start_pc, b.end_pc);
+            ForEachBlockRange(b.start_pc, b.num_insns, b.insns, b.taken_mask,
+                              [this, &b](uint16_t s, uint16_t e) {
+                                  ReleaseReverseMap(b.start_pc, s, e);
+                              });
             b.generation = 0;
             stats_.invalidations++;
         }
@@ -342,6 +382,7 @@ private:
     uint16_t rec_start_pc_ = 0;
     int rec_insn_count_ = 0;
     int rec_cycle_start_ = 0;
+    uint16_t rec_taken_mask_ = 0;   // taken-guard bits for the recording
 
     // Performance counters (reset by GetAndResetStats)
     BlockCacheStats stats_ = {};
@@ -369,24 +410,47 @@ private:
     }
 
     // Mark the reverse map for a block's address range.
-    void SetReverseMap(uint16_t start_pc, uint16_t end_pc)
+    // Claim [range_start, range_end) for the block whose start PC is
+    // `owner` (which is NOT the range start for the secondary ranges of
+    // a taken-direction trace!). INVARIANT: every live block's every
+    // byte maps to that block, so a write invalidates the one true
+    // owner and no stale overlapping block can survive. Traces overlap
+    // freely - several trace blocks can each contain the same
+    // self-modified instruction (DECB's CHRGET taught us this the hard
+    // way) - so claiming an address owned by a DIFFERENT live block
+    // invalidates that block; its other map entries go stale and
+    // lazy-clean in InvalidateIfCached.
+    void ClaimReverseMap(uint16_t owner, uint16_t range_start, uint16_t range_end)
     {
-        for (uint16_t a = start_pc; a != end_pc; a++)
-            reverseMap_[a] = start_pc;
+        // Overlapping blocks are a design feature (the ROM prepopulator
+        // seeds blocks at every instruction boundary; superblocks
+        // stagger); later claimants simply take over the map entry. An
+        // eager kill-the-previous-owner variant proved correct but
+        // dismantled the prepopulated fabric wholesale (-7%). The
+        // residual hazard - a write invalidating only the mapped owner
+        // while an unmapped overlapping block goes stale - is closed
+        // for the self-modifying case by the recorder's code-write
+        // split plus ReplayBlock's generation check, and bulk MMU
+        // invalidations cover code reloads in practice. A per-page
+        // epoch scheme would close it fully; see docs.
+        for (uint16_t a = range_start; a != range_end; a++)
+            reverseMap_[a] = owner;
     }
 
-    // Clear the reverse map for a block's address range.
-    void ClearReverseMap(uint16_t start_pc, uint16_t end_pc)
+    // Release [range_start, range_end): clear only entries this owner
+    // still holds (a later claimant's entries are left alone).
+    void ReleaseReverseMap(uint16_t owner, uint16_t range_start, uint16_t range_end)
     {
-        for (uint16_t a = start_pc; a != end_pc; a++)
+        for (uint16_t a = range_start; a != range_end; a++)
         {
-            if (reverseMap_[a] == start_pc)
+            if (reverseMap_[a] == owner)
                 reverseMap_[a] = NO_BLOCK;
         }
     }
 
     bool ValidateDecodedBlock(uint16_t start_pc, int num_insns,
-                              const DecodedInst* insns, uint16_t decode_end_pc) const
+                              const DecodedInst* insns, uint16_t decode_end_pc,
+                              uint16_t taken_mask = 0) const
     {
         if (num_insns <= 0 || num_insns > MAX_BLOCK_INSNS)
             return false;
@@ -397,9 +461,35 @@ private:
             if (insns[i].handler == nullptr || insns[i].length == 0)
                 return false;
             pc = (uint16_t)(pc + insns[i].length);
+            if ((taken_mask >> i) & 1u)
+                pc = (uint16_t)(pc + (int8_t)(insns[i].operand & 0xFF));
         }
 
         return pc == decode_end_pc;
+    }
+
+    // Walk a (possibly non-contiguous) block's contiguous address
+    // ranges, calling fn(start, end) for each. Taken-direction traces
+    // jump at every taken_mask bit; everything between two jumps is
+    // one range. Used for reverse-map and page-bitmap maintenance.
+    template <typename Fn>
+    static void ForEachBlockRange(uint16_t start_pc, int num_insns,
+                                  const DecodedInst* insns,
+                                  uint16_t taken_mask, Fn fn)
+    {
+        uint16_t run_start = start_pc;
+        uint16_t pc = start_pc;
+        for (int i = 0; i < num_insns; i++)
+        {
+            pc = (uint16_t)(pc + insns[i].length);
+            if (((taken_mask >> i) & 1u) && i < num_insns - 1)
+            {
+                fn(run_start, pc);
+                pc = (uint16_t)(pc + (int8_t)(insns[i].operand & 0xFF));
+                run_start = pc;
+            }
+        }
+        fn(run_start, pc);
     }
 
     void FinishRecord(uint16_t end_pc, int cycle_counter)
@@ -411,94 +501,128 @@ private:
         // Only cache if we got useful data
         if (rec_insn_count_ > 0 && total_cycles > 0 && total_cycles < 256)
         {
-            // Pre-decode instructions for the block execution path.
+            // Pre-decode instructions for the block execution path,
+            // following the recorded taken-guard directions.
             DecodedInst decoded[MAX_BLOCK_INSNS];
-            uint16_t decode_end_pc = DecodeBlock(rec_start_pc_, rec_insn_count_, decoded);
-            if (!ValidateDecodedBlock(rec_start_pc_, rec_insn_count_, decoded, decode_end_pc))
+            uint16_t decode_end_pc = DecodeBlock(rec_start_pc_, rec_insn_count_,
+                                                 decoded, rec_taken_mask_);
+            if (!ValidateDecodedBlock(rec_start_pc_, rec_insn_count_, decoded,
+                                      decode_end_pc, rec_taken_mask_))
             {
                 stats_.rejected_blocks++;
                 return;
             }
 
+            // Temporary diagnostic (VCC_LOG_TRACE): dump every cached
+            // taken-trace block and flag mask bits on non-branch shapes.
+            static const bool log_trace = getenv("VCC_LOG_TRACE") != nullptr;
+            if (log_trace && rec_taken_mask_ != 0)
+            {
+                fprintf(stderr, "[TRACE] pc=%04X n=%d mask=%04X end=%04X |",
+                        rec_start_pc_, rec_insn_count_, rec_taken_mask_,
+                        decode_end_pc);
+                for (int i = 0; i < rec_insn_count_; ++i)
+                {
+                    fprintf(stderr, " %02X/%d%s",
+                            (unsigned)(decoded[i].operand & 0xFF),
+                            decoded[i].length,
+                            ((rec_taken_mask_ >> i) & 1u) ? "T" : "");
+                    if (((rec_taken_mask_ >> i) & 1u) && decoded[i].length != 2)
+                        fprintf(stderr, "(BAD)");
+                }
+                fprintf(stderr, "\n");
+            }
+
             CachedBlock& old = blocks_[rec_start_pc_ & CACHE_MASK];
 
-            // If replacing a valid block, clear its reverse map first.
-            if (old.generation == generation_)
-                ClearReverseMap(old.start_pc, old.end_pc);
-
-            // Thunk survival: a thunk's validity depends only on the
-            // slot's start_pc and insns[] contents (it bakes handler
-            // pointers, operands, and the PC chain derived from them).
-            // Bulk invalidations - every MMU remap under OS-9 - leave
-            // the slot bytes intact, and the hot code usually re-records
-            // to the identical block. When the freshly decoded contents
-            // match what the slot already holds, keep the thunk and the
-            // hotness count instead of throwing both away; this is what
-            // lets the JIT survive an MMU-heavy workload at all.
-            const bool identical =
-                old.native_entry != nullptr &&
-                old.start_pc == rec_start_pc_ &&
-                old.end_pc == decode_end_pc &&
-                old.num_insns == (uint8_t)rec_insn_count_ &&
-                memcmp(old.insns, decoded,
-                       (size_t)rec_insn_count_ * sizeof(DecodedInst)) == 0;
-
-            // Superblock subsumption: a re-record that observed a guard
-            // going its TAKEN way produces a shorter block that is a
-            // strict prefix of the cached superblock. The superblock's
-            // guard handles both outcomes, so as long as the FULL old
-            // block still matches memory, the longer form (and its
-            // thunk and hotness) is the one to keep - otherwise every
-            // flip of a guard's bias would flush the thunk.
-            if (!identical &&
-                old.native_entry != nullptr &&
-                old.start_pc == rec_start_pc_ &&
-                old.num_insns > rec_insn_count_ &&
-                memcmp(old.insns, decoded,
-                       (size_t)rec_insn_count_ * sizeof(DecodedInst)) == 0)
+            // Incumbent survival: a thunk's validity depends only on
+            // the slot's start_pc, insns[], and taken_mask (it bakes
+            // handler pointers, operands, guard directions, and the PC
+            // chain derived from them). Bulk invalidations - every MMU
+            // remap under OS-9 - leave the slot bytes intact. If the
+            // incumbent block still matches MEMORY along its own
+            // recorded path, it stays - its guards make it correct for
+            // every branch outcome, so a re-record that merely observed
+            // different guard directions must not flush the thunk and
+            // hotness. Only a genuine code change replaces the block.
+            if (old.native_entry != nullptr &&
+                old.start_pc == rec_start_pc_)
             {
-                DecodedInst full[MAX_BLOCK_INSNS];
-                const uint16_t full_end =
-                    DecodeBlock(rec_start_pc_, old.num_insns, full);
-                if (full_end == old.end_pc &&
-                    memcmp(old.insns, full,
-                           (size_t)old.num_insns * sizeof(DecodedInst)) == 0)
+                // Fast path: same shape as the new recording - compare
+                // against the decode we already have instead of
+                // re-decoding (the overwhelmingly common re-record).
+                bool matches;
+                if (old.num_insns == (uint8_t)rec_insn_count_ &&
+                    old.taken_mask == rec_taken_mask_)
+                {
+                    matches = old.end_pc == decode_end_pc &&
+                              memcmp(old.insns, decoded,
+                                     (size_t)rec_insn_count_ * sizeof(DecodedInst)) == 0;
+                }
+                else
+                {
+                    DecodedInst cur[MAX_BLOCK_INSNS];
+                    const uint16_t cur_end =
+                        DecodeBlock(rec_start_pc_, old.num_insns, cur, old.taken_mask);
+                    matches = cur_end == old.end_pc &&
+                              memcmp(old.insns, cur,
+                                     (size_t)old.num_insns * sizeof(DecodedInst)) == 0;
+                }
+                if (matches)
                 {
                     old.generation = generation_;
-                    SetReverseMap(old.start_pc, old.end_pc);
+                    ForEachBlockRange(old.start_pc, old.num_insns, old.insns,
+                                      old.taken_mask,
+                                      [this, &old](uint16_t s, uint16_t e) {
+                                          ClaimReverseMap(old.start_pc, s, e);
+                                          MarkPageBits(s, e);
+                                      });
                     return;
                 }
             }
+
+            // If replacing a valid block, clear its reverse map first.
+            if (old.generation == generation_)
+                ForEachBlockRange(old.start_pc, old.num_insns, old.insns,
+                                  old.taken_mask,
+                                  [this, &old](uint16_t s, uint16_t e) {
+                                      ReleaseReverseMap(old.start_pc, s, e);
+                                  });
 
             old.start_pc = rec_start_pc_;
             old.end_pc = decode_end_pc;
             old.num_insns = (uint8_t)rec_insn_count_;
             old.total_cycles = (uint8_t)total_cycles;
             old.generation = generation_;
-            if (!identical)
-            {
-                // Different contents: any thunk in this slot bakes the
-                // OLD block's instructions - drop it so the dispatch
-                // loop uses the interpreter path (and the block earns a
-                // fresh thunk once hot again).
-                old.native_entry = nullptr;
-                old.exec_count = 0;
-                old.pure_thunk = 0;
-                memcpy(old.insns, decoded, sizeof(decoded));
-            }
+            old.taken_mask = rec_taken_mask_;
+            // New contents: any thunk in this slot bakes the OLD
+            // block's instructions - drop it so the dispatch loop uses
+            // the interpreter path (and the block earns a fresh thunk
+            // once hot again).
+            old.native_entry = nullptr;
+            old.exec_count = 0;
+            old.pure_thunk = 0;
+            memcpy(old.insns, decoded, sizeof(decoded));
 
-            SetReverseMap(rec_start_pc_, decode_end_pc);
+            ForEachBlockRange(old.start_pc, old.num_insns, old.insns,
+                              old.taken_mask,
+                              [this, &old](uint16_t s, uint16_t e) {
+                                  ClaimReverseMap(old.start_pc, s, e);
+                                  MarkPageBits(s, e);
+                              });
             stats_.blocks_recorded++;
-
-            // Mark page bitmap. Block lengths are bounded so a block
-            // spans either 1 or 2 256-byte pages. The previous form
-            // (for a = start; a < end; a += 256) had a uint16_t wrap
-            // bug for blocks straddling the top of the address space:
-            // a += 256 wraps and a < end remains true forever.
-            SetPageBit(rec_start_pc_);
-            uint16_t last_byte = (uint16_t)(decode_end_pc - 1);
-            if ((last_byte & 0xFF00) != (rec_start_pc_ & 0xFF00))
-                SetPageBit(last_byte);
         }
+    }
+
+    // Mark page bitmap bits for one contiguous range. Ranges are
+    // bounded by MAX_BLOCK_INSNS instruction lengths, so a range spans
+    // one or two 256-byte pages; marking both endpoints avoids the old
+    // uint16_t wraparound loop bug for ranges straddling 0xFFFF.
+    void MarkPageBits(uint16_t start, uint16_t end)
+    {
+        SetPageBit(start);
+        uint16_t last_byte = (uint16_t)(end - 1);
+        if ((last_byte & 0xFF00) != (start & 0xFF00))
+            SetPageBit(last_byte);
     }
 };

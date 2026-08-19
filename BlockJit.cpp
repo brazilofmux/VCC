@@ -1005,7 +1005,8 @@ NativeEntry EmitBlock(const CachedBlock& slot)
     for (int gi = 0; gi + 1 < (int)slot.num_insns; ++gi)
     {
         const InstHandler h = slot.insns[gi].handler;
-        if (h == g_inlines.brn_r || h == g_inlines.bhi_r ||
+        if (h == g_inlines.bra_r ||
+            h == g_inlines.brn_r || h == g_inlines.bhi_r ||
             h == g_inlines.bls_r || h == g_inlines.bhs_r ||
             h == g_inlines.blo_r || h == g_inlines.bne_r ||
             h == g_inlines.beq_r || h == g_inlines.bvc_r ||

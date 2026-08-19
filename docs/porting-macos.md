@@ -221,6 +221,35 @@ regardless of layout, so CI stays green while it lands.
    taken-direction traces (non-contiguous blocks, multi-range
    invalidation), a full arc of its own.
 
+   *Taken-trace arc (same day):* the full machinery landed - taken
+   branches recorded via a per-block taken_mask, mask-following
+   decode/validate, per-range reverse-map maintenance, guard emission
+   for both directions with loop back-edge interrupt bounds - but it
+   ships DEFAULT-OFF (VCC_TRACE_TAKEN=1 to experiment): loop unrolling
+   measured as a net LOSS here because trace blocks overlap staggered
+   entry points and the write-invalidation map holds one owner per
+   address. An eager kill-the-previous-claimant invariant was correct
+   but dismantled the prepopulated ROM fabric (Microsoft deliberately
+   overlapped instruction decodings in the ROM to save space, so dense
+   overlap is a design fact, not an accident). What the arc left
+   behind PERMANENTLY: three real correctness fixes found by write-
+   stream and per-instruction differential tracing - (1) ReplayBlock
+   stops when the block's own generation changes mid-run (a block can
+   contain a write to its own later bytes: DECB's CHRGET rewrites its
+   LDA operand, latent in the fall-only design on page crossings),
+   (2) the recorder ends a recording after any instruction that
+   invalidated cached code, restoring the write-then-execute split,
+   (3) owner-aware reverse-map bookkeeping (a trace block's secondary
+   ranges were claimed under the RANGE start, not the block start,
+   silently orphaning their invalidation). Residual known-theoretical
+   hole: a write invalidates only the mapped owner while an unmapped
+   overlapping block goes stale - closed in practice by (1)+(2) plus
+   bulk MMU invalidations; a per-page epoch scheme would close it
+   fully. Interrupt-latency lesson: guard loops need back-edge
+   deliverable-interrupt checks or polling code observes the latency
+   (DECB's keyboard debounce did). Cost of the hardening: ~2-5% vs
+   the prior peak; benchmarks ~1985x DECB / ~4980x OS-9.
+
 Smoke tests per AGENTS.md conventions: boot path, disk attach, cartridge
 load, keyboard input, debugger flow — plus OS-9 Level 2 boot and Basic09,
 the status-bar effective-MHz readout to compare interpreter/JIT tiers,
