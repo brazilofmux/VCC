@@ -4,6 +4,7 @@
 #   tools/coco-run hello.c            build only; loader on clipboard
 #   tools/coco-run --sdl hello.c      ...and launch vcc-sdl, disk in drive 1
 #   tools/coco-run --headless prog.c  batch-run in vcc-headless, print screen
+#   tools/coco-run --os9 prog.c       OS-9 module on an OS-9 floppy instead
 #
 # Accepts C (CMOC), assembly (.asm/.s via lwasm --decb), and BASIC
 # (.bas, written as an ASCII file to LOAD). The build runs in the local
@@ -16,12 +17,14 @@
 set -euo pipefail
 
 MODE=build
+TARGET=decb
 FRAMES=6000
 SRC=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --sdl)      MODE=sdl ;;
         --headless) MODE=headless ;;
+        --os9)      TARGET=os9 ;;
         --frames)   FRAMES="$2"; shift ;;
         -h|--help)  sed -n '2,16p' "$0"; exit 0 ;;
         *)          SRC="$1" ;;
@@ -41,6 +44,56 @@ NAME="$(printf '%s' "$STEM" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9' | cut
 WORK="${TMPDIR:-/tmp}/coco-run/$STEM"
 mkdir -p "$WORK"
 DSK="$WORK/$STEM.dsk"
+
+if [ "$TARGET" = os9 ]; then
+    # OS-9 side: compile a module, place it in CMDS on a freshly
+    # formatted OS-9 floppy (35T SS, same geometry as the NitrOS-9
+    # boot disk, so the stock /d1 descriptor reads it).
+    MOD="$(printf '%s' "$STEM" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | cut -c1-8)"
+    case "$EXT" in
+        c)
+            cp "$SRC" "$WORK/"
+            ls "$SRCDIR"/*.h >/dev/null 2>&1 && cp "$SRCDIR"/*.h "$WORK/" || true
+            rm -f "$DSK"
+            podman run --rm -v "$WORK":/work localhost/cmoc:freshen sh -c "
+                cd /work &&
+                cmoc --os9 -o $MOD '$BASE' &&
+                os9 format -e -t35 -ss -dd -q '$(basename "$DSK")' &&
+                os9 makdir '$(basename "$DSK")',CMDS &&
+                os9 copy $MOD '$(basename "$DSK")',CMDS/$MOD &&
+                os9 attr -q -e -pe -r -pr '$(basename "$DSK")',CMDS/$MOD"
+            ;;
+        *)
+            echo "coco-run --os9: only .c is wired so far" >&2; exit 2 ;;
+    esac
+    LOADER="chx /d1/cmds
+$MOD
+"
+    TYPE=$'DOS\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~chx /d1/cmds\n~~'"$MOD"$'\n~~~~~'
+    echo "coco-run: built $DSK (CMDS/$MOD)"
+    case "$MODE" in
+        build)
+            printf '%s' "$LOADER" | pbcopy 2>/dev/null || true
+            echo "loader on clipboard - launch with:"
+            echo "  VCC_DISK1=$DSK $REPO/build/vcc-sdl    (boot OS-9, then Cmd+V)"
+            ;;
+        sdl)
+            printf '%s' "$LOADER" | pbcopy 2>/dev/null || true
+            echo "loader on clipboard - boot OS-9, then Cmd+V"
+            VCC_DISK1="$DSK" exec "$REPO/build/vcc-sdl"
+            ;;
+        headless)
+            # The user's own config boots NitrOS-9 (VHD /DD plus the
+            # boot floppy in d0); our module disk rides in d1.
+            VCC_DISK1="$DSK" VCC_FRAMESKIP=100 VCC_SHOT_TEXT="$WORK/screen.txt" \
+                "$REPO/build/vcc-headless" "$HOME/roms/coco3.rom" "${FRAMES/6000/9500}" \
+                "$TYPE" 2>/dev/null | grep -E 'realtime' || true
+            echo "--- final screen ---"
+            cat "$WORK/screen.txt"
+            ;;
+    esac
+    exit 0
+fi
 
 # Fresh DECB-formatted blank disk (35x18x256 of 0xFF, as DSKINI writes).
 python3 -c "open('$DSK','wb').write(b'\xff' * 161280)"
