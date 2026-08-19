@@ -252,6 +252,16 @@ namespace BlockJit
     // block falls back to the interpreter dispatch loop.
     NativeEntry EmitBlock(const CachedBlock& slot);
 
+    // Registerized block state: arm64 thunks keep CycleCounter in w21
+    // (with the dispatch budget in w22) across whole chains, so they
+    // must be entered through this runner, which syncs the registers
+    // with cpu_state on the way in and out. Null when the backend does
+    // not registerize (x86-32, null backend) - call native_entry
+    // directly in that case. Re-query after Reset: the runner is
+    // re-emitted with the arena.
+    using ThunkRunner = void (*)(NativeEntry);
+    ThunkRunner GetThunkRunner();
+
     // Diagnostics.
     struct Stats
     {

@@ -81,9 +81,12 @@ static uint32_t           g_cc_writes_elided    = 0;
 static bool               g_emit_had_side_effects = false;   // diag: see EmitBlockWasPure
 
 // Block linking: one shared chain stub per arena epoch (see
-// EnsureChainStub below). Null means "not emitted yet"; g_no_link
+// EnsureChainInfra below). Null means "not emitted yet"; g_no_link
 // disables linking entirely (env kill switch or a verify mode).
+// g_thunk_runner is the registerized-state entry trampoline - thunks
+// keep CycleCounter in w21, so they may ONLY be entered through it.
 static uint8_t*           g_chain_stub = nullptr;
+static uint8_t*           g_thunk_runner = nullptr;
 static bool               g_no_link    = false;
 
 // Field offsets from CpuAddrs.base, computed once at Init. Every one
@@ -191,6 +194,7 @@ void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers)
     g_cc_writes_requested = 0;
     g_cc_writes_elided    = 0;
     g_chain_stub = nullptr;
+    g_thunk_runner = nullptr;
 }
 
 void Reset()
@@ -205,6 +209,7 @@ void Reset()
     g_cc_writes_requested = 0;
     g_cc_writes_elided    = 0;
     g_chain_stub = nullptr;
+    g_thunk_runner = nullptr;
 }
 
 // ---------- size budget (bytes of arm64 code) ----------
@@ -221,21 +226,24 @@ static constexpr size_t kEpilogueBytes = (2 + 1 + 2) * 4;
 
 // ---------- small emit helpers ----------
 
-// CycleCounter += constant  (3 insns)
+// Registerized block state: CycleCounter lives in w21 for the entire
+// thunk chain (the dispatch budget rides along in w22 for the chain
+// stub's compares). The emitted runner (EnsureChainInfra) loads both
+// on entry and spills w21 on exit; called handlers see the memory
+// copy, so their call sites spill/reload around the BLR. Both are
+// callee-saved, so mem_read/mem_write calls preserve them for free.
+
+// CycleCounter += constant  (1 insn, was 3)
 static void EmitCyclesConst(emit_t& e, uint32_t n)
 {
-    emit_ldr_w32_imm(&e, A64_W9, A64_W19, g_off_cyc);
-    emit_add_w32_imm(&e, A64_W9, A64_W9, n);
-    emit_str_w32_imm(&e, A64_W9, A64_W19, g_off_cyc);
+    emit_add_w32_imm(&e, A64_W21, A64_W21, n);
 }
 
-// CycleCounter += NatEmuCyclesNN (live byte)  (4 insns)
+// CycleCounter += NatEmuCyclesNN (live byte)  (2 insns, was 4)
 static void EmitCyclesRuntime(emit_t& e, uint32_t nat_offset)
 {
     emit_ldrb_imm(&e, A64_W1, A64_W19, nat_offset);
-    emit_ldr_w32_imm(&e, A64_W9, A64_W19, g_off_cyc);
-    emit_add_w32(&e, A64_W9, A64_W9, A64_W1);
-    emit_str_w32_imm(&e, A64_W9, A64_W19, g_off_cyc);
+    emit_add_w32(&e, A64_W21, A64_W21, A64_W1);
 }
 
 // cc[idx] = 0 or 1  (1-2 insns)
@@ -1062,9 +1070,7 @@ static void EmitInlineBranch(emit_t& e, const DecodedInst& insn,
     emit_strh_imm(&e, A64_W2, A64_W19, g_off_pc);
     if (desc.is_long)
     {
-        emit_ldr_w32_imm(&e, A64_W9, A64_W19, g_off_cyc);
-        emit_add_w32(&e, A64_W9, A64_W9, A64_W3);
-        emit_str_w32_imm(&e, A64_W9, A64_W19, g_off_cyc);
+        emit_add_w32(&e, A64_W21, A64_W21, A64_W3);
     }
     else
     {
@@ -1327,6 +1333,51 @@ static bool TryEmitInline(emit_t& e, const DecodedInst& insn, uint8_t mask)
 // address: HD6309BlockInvalidate clearing a slot, or a generation
 // bump, severs every link to it with no unlink bookkeeping.
 
+// The registerized-state runner: C-callable entry that loads w21
+// (CycleCounter) and w22 (CycleFor) from cpu_state, calls the thunk in
+// x0, and spills w21 back when the thunk - or the chain it started -
+// finally returns. Thunks and the chain stub treat w21/w22 as live
+// throughout, which is also why any thunk entry MUST come through here.
+static void EnsureThunkRunner()
+{
+    if (g_thunk_runner != nullptr)
+        return;
+    if (g_addrs.cycle_for == nullptr)
+        return;
+
+    constexpr size_t kRunnerBytes = 96;
+    if (g_arena_used + kRunnerBytes > kArenaSize)
+        return;
+
+    uint8_t* const entry = g_arena_base + g_arena_used;
+    emit_t e { entry, 0, (uint32_t)kRunnerBytes };
+    const int64_t off_cycle_for = (const uint8_t*)g_addrs.cycle_for
+                                - (const uint8_t*)g_addrs.base;
+    if (off_cycle_for < 0 || off_cycle_for >= 4096 * 4 || (off_cycle_for % 4) != 0)
+        return;
+
+    jit_writable_begin();
+    emit_stp_pre_sp(&e, A64_W29, A64_W30, -32);
+    emit_stp_x64_off(&e, A64_W21, A64_W22, A64_SP, 16);
+    emit_add_x64_imm(&e, A64_W29, A64_SP, 0);
+    emit_mov_x64_imm64(&e, A64_W10, (uint64_t)(uintptr_t)g_addrs.base);
+    emit_ldr_w32_imm(&e, A64_W21, A64_W10, g_off_cyc);
+    emit_ldr_w32_imm(&e, A64_W22, A64_W10, (uint32_t)off_cycle_for);
+    emit_blr(&e, A64_W0);
+    emit_mov_x64_imm64(&e, A64_W10, (uint64_t)(uintptr_t)g_addrs.base);
+    emit_str_w32_imm(&e, A64_W21, A64_W10, g_off_cyc);
+    emit_ldp_x64_off(&e, A64_W21, A64_W22, A64_SP, 16);
+    emit_ldp_x64_post(&e, A64_W29, A64_W30, A64_SP, 32);
+    emit_ret(&e);
+    jit_writable_end();
+
+    if (e.offset > e.capacity)
+        return;
+    __builtin___clear_cache((char*)entry, (char*)entry + e.offset);
+    g_arena_used += e.offset;
+    g_thunk_runner = entry;
+}
+
 static void EnsureChainStub()
 {
     if (g_chain_stub != nullptr || g_no_link)
@@ -1378,11 +1429,10 @@ static void EnsureChainStub()
 
     jit_writable_begin();
 
-    // w9 = CycleCounter, w11 = CycleFor; budget exhausted -> bail
+    // Budget exhausted -> bail. CycleCounter and CycleFor are LIVE in
+    // w21/w22 (registerized state) - no loads at all.
     emit_mov_x64_imm64(&e, A64_W10, (uint64_t)(uintptr_t)g_addrs.base);
-    emit_ldr_w32_imm(&e, A64_W9, A64_W10, g_off_cyc);
-    emit_ldr_w32_imm(&e, A64_W11, A64_W10, (uint32_t)off_cycle_for);
-    emit_cmp_w32_w32(&e, A64_W9, A64_W11);
+    emit_cmp_w32_w32(&e, A64_W21, A64_W22);
     fixups[nfix++] = { e.offset, 0, A64_COND_GE, A64_W0 };
     emit_b_cond(&e, A64_COND_GE, 0);
 
@@ -1413,8 +1463,8 @@ static void EnsureChainStub()
     // Whole next block must fit the budget: cycles + total <= CycleFor
     // (same test as the dispatcher's total_cycles <= remaining).
     emit_ldrb_imm(&e, A64_W17, A64_W14, (uint32_t)offsetof(CachedBlock, total_cycles));
-    emit_add_w32(&e, A64_W17, A64_W17, A64_W9);
-    emit_cmp_w32_w32(&e, A64_W17, A64_W11);
+    emit_add_w32(&e, A64_W17, A64_W17, A64_W21);
+    emit_cmp_w32_w32(&e, A64_W17, A64_W22);
     fixups[nfix++] = { e.offset, 0, A64_COND_GT, A64_W0 };
     emit_b_cond(&e, A64_COND_GT, 0);
 
@@ -1472,6 +1522,11 @@ NativeEntry EmitBlock(const CachedBlock& slot)
         g_addrs.base == nullptr || g_addrs.pc == nullptr)
         return nullptr;
 
+    // Thunks assume the registerized-state convention (CycleCounter in
+    // w21); without the runner to establish it, refuse to emit.
+    EnsureThunkRunner();
+    if (g_thunk_runner == nullptr)
+        return nullptr;
     EnsureChainStub();
 
     const size_t needed =
@@ -1556,11 +1611,14 @@ NativeEntry EmitBlock(const CachedBlock& slot)
             ++g_pc_writes_emitted;
             pc_dirty = false;
 
-            // handler(&slot.insns[i])
+            // handler(&slot.insns[i]) - handlers read and add cycles in
+            // cpu_state, so sync the registerized counter around the call.
             g_emit_had_side_effects = true;
+            emit_str_w32_imm(&e, A64_W21, A64_W19, g_off_cyc);
             emit_add_x64_imm(&e, A64_W0, A64_W20, (uint32_t)(i * sizeof(DecodedInst)));
             emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)insn.handler);
             emit_blr(&e, A64_W16);
+            emit_ldr_w32_imm(&e, A64_W21, A64_W19, g_off_cyc);
             ++g_insns_called;
         }
     }
@@ -1605,6 +1663,11 @@ NativeEntry EmitBlock(const CachedBlock& slot)
 // True when the most recent EmitBlock produced a thunk with no memory
 // accesses or handler calls - safe to run twice from a snapshot for
 // differential verification (VCC_VERIFY_PURE in hd6309.cpp).
+ThunkRunner GetThunkRunner()
+{
+    return (ThunkRunner)(void*)g_thunk_runner;
+}
+
 bool EmitBlockWasPure()
 {
     return !g_emit_had_side_effects;

@@ -47,6 +47,11 @@ NativeEntry EmitBlock(const CachedBlock&)
     return nullptr;
 }
 
+ThunkRunner GetThunkRunner()
+{
+    return nullptr;   // no registerized state without an emitter
+}
+
 bool EmitBlockWasPure()
 {
     return false;

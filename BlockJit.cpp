@@ -986,6 +986,11 @@ static bool TryEmitInline(uint8_t*& p, const DecodedInst& insn, uint8_t flag_mas
 
 // ---------- block emitter ----------
 
+ThunkRunner GetThunkRunner()
+{
+    return nullptr;   // x86-32 thunks keep no state in registers
+}
+
 NativeEntry EmitBlock(const CachedBlock& slot)
 {
     if (g_arena_base == nullptr || g_addrs.pc == nullptr)

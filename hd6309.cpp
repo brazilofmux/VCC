@@ -7824,6 +7824,18 @@ int HD6309Exec(int CycleFor)
 					// thunk runs the whole block. The thunk pre-sets
 					// PC_REG before each handler call and uses
 					// __cdecl, exactly matching the loop below.
+					// Registerized-state thunks (arm64) must be entered
+					// through the backend's runner, which syncs the
+					// w21/w22 register convention with cpu_state; the
+					// x86 and null backends return no runner and are
+					// called directly. Re-queried each dispatch because
+					// an arena flush re-emits it.
+					const auto RunThunk = [](BlockJit::NativeEntry entry) {
+						if (const auto runner = BlockJit::GetThunkRunner())
+							runner(entry);
+						else
+							entry();
+					};
 					++gJitBlockRuns;
 
 					// Temporary in-vivo differential (VCC_VERIFY_PC):
@@ -7845,7 +7857,7 @@ int HD6309Exec(int CycleFor)
 					     (verify_pure && block->pure_thunk)))
 					{
 						Hd6309State snap = cpu_state;
-						block->native_entry();
+						RunThunk(block->native_entry);
 						Hd6309State post_jit = cpu_state;
 						cpu_state = snap;
 						{
@@ -7889,7 +7901,7 @@ int HD6309Exec(int CycleFor)
 						goto jit_block_done;
 					}
 
-					block->native_entry();
+					RunThunk(block->native_entry);
 				jit_block_done:;
 				}
 				else
@@ -7937,7 +7949,10 @@ int HD6309Exec(int CycleFor)
 						if (wb->native_entry)
 						{
 							++gJitBlockRuns;
-							wb->native_entry();
+							if (const auto runner = BlockJit::GetThunkRunner())
+								runner(wb->native_entry);
+							else
+								wb->native_entry();
 							if (JS_Ramp_Clock < 0xFFFF)
 								JS_Ramp_Clock += CycleCounter - PrevCycleCount;
 							PrevCycleCount = CycleCounter;
