@@ -55,6 +55,7 @@ void GimeReset();
 void SetVideoBank(unsigned char);
 unsigned char SetMonitorType(unsigned char );
 void SetBoarderChange ();
+unsigned char GetBoarderChange ();
 int GetBytesPerRow();
 unsigned char GetHorizontalBorderSize();
 unsigned short GetDisplayedPixelsPerLine();

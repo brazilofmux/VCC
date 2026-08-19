@@ -9721,8 +9721,13 @@ void SetBoarderChange ()
 {
 	if (BoarderChange >0)
 		BoarderChange--;
-	
+
 	return;
+}
+
+unsigned char GetBoarderChange ()
+{
+	return BoarderChange;
 }
 
 void InvalidateBoarder()

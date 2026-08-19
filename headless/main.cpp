@@ -40,6 +40,7 @@ This file is part of VCC (Virtual Color Computer).
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
 
 // Provided by headless/stubs.cpp.
 void HeadlessTypeText(const char* text);
@@ -150,6 +151,37 @@ int main(int argc, char** argv)
 	std::printf("module status: %s\n", EmuState.StatusLine);
 
 	DumpTextScreen();
+
+	// VCC_SHOT_FILE: save the rendered framebuffer as a BMP (32-bit
+	// BGRX, top-down) - the renderer's XRGB8888 words are already in
+	// BMP byte order. Visual regression hook, no SDL needed.
+	if (const char* shot = std::getenv("VCC_SHOT_FILE"))
+	{
+		FILE* f = std::fopen(shot, "wb");
+		if (f != nullptr)
+		{
+			const uint32_t data_size = 640 * 480 * 4;
+			uint8_t hdr[54] = {};
+			hdr[0] = 'B'; hdr[1] = 'M';
+			const uint32_t file_size = 54 + data_size;
+			std::memcpy(hdr + 2, &file_size, 4);
+			const uint32_t data_off = 54;
+			std::memcpy(hdr + 10, &data_off, 4);
+			const uint32_t info_size = 40;
+			std::memcpy(hdr + 14, &info_size, 4);
+			const int32_t w = 640, h = -480;   // negative: top-down rows
+			std::memcpy(hdr + 18, &w, 4);
+			std::memcpy(hdr + 22, &h, 4);
+			const uint16_t planes = 1, bpp = 32;
+			std::memcpy(hdr + 26, &planes, 2);
+			std::memcpy(hdr + 28, &bpp, 2);
+			std::memcpy(hdr + 34, &data_size, 4);
+			std::fwrite(hdr, 1, 54, f);
+			std::fwrite(VccShell::Framebuffer, 1, data_size, f);
+			std::fclose(f);
+			std::printf("framebuffer saved to %s\n", shot);
+		}
+	}
 
 	// VCC_DUMP_PIXELS: print a strip of framebuffer words so a shell
 	// author can learn the renderer's channel order empirically.

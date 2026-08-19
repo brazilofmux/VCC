@@ -162,6 +162,12 @@ bool BootMachine()
 	EmuState.BitDepth = 3;          // 32-bit XRGB8888 surface
 	EmuState.PTRsurface32 = Framebuffer;
 	EmuState.SurfacePitch = 640;
+	// The border painters size themselves from WindowSize (the Windows
+	// shell fills it from the DirectX surface). Left at zero they paint
+	// nothing, so a screen-geometry change leaves stale pixels in the
+	// border region (e.g. slivers of the NitrOS-9 boot screen after its
+	// 199-line mode gives way to the 192-line term window).
+	EmuState.WindowSize = { 640, 480 };
 
 	HardResetMachine();
 	if (EmuState.RamBuffer == nullptr)

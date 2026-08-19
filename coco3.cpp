@@ -217,6 +217,23 @@ float RenderFrame (SystemState *RFState)
 	// skipped (emulation timing is unaffected - HLINE still runs).
 	FrameCounter++;
 
+	// VCC_LOG_MODE: frame-stamped trace of screen-geometry changes, for
+	// debugging stale-border artifacts.
+	static const bool log_mode = getenv("VCC_LOG_MODE") != nullptr;
+	if (log_mode)
+	{
+		static int last_tb = -1, last_bb = -1, last_lps = -1, last_bc = -1;
+		const int bc = GetBoarderChange();
+		if (TopBoarder != last_tb || BottomBoarder != last_bb ||
+		    LinesperScreen != last_lps || bc != last_bc)
+		{
+			printf("MODE f=%u top=%d lps=%d bottom=%d bc=%d\n",
+			       FrameCounter, TopBoarder, LinesperScreen, BottomBoarder, bc);
+			last_tb = TopBoarder; last_bb = BottomBoarder;
+			last_lps = LinesperScreen; last_bc = bc;
+		}
+	}
+
 	// once per frame
 	LastMotorState = GetMotorState();
 	AudioFreeBlockCount = GetFreeBlockCount();
