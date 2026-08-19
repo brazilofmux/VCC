@@ -167,8 +167,23 @@ regardless of layout, so CI stays green while it lands.
 4. **arm64 JIT backend:** drop in `emit_a64.h`, split the backend seam in
    `BlockJit.cpp`, emit level-1 trampolines, then port the level-2
    inline emitters; bring up shadow-verify before trusting either.
-5. **Beyond:** compare/lazy-CC inlining using the donor flag identities;
-   block linking à la `~/z80/dbt` if block-exit overhead ever shows up.
+5. **Beyond** *(block linking done; Abrash arc 2026-08-18)*: profile-
+   driven overhead removal roughly doubled both benchmark workloads
+   (NitrOS-9 boot+idle 2513x -> ~4900x realtime, DECB busy-poll 830x ->
+   ~1540x): CPUCycle slice-loop thinning + LTO, demand-driven pak
+   heartbeat (PakHsyncDemand module export - the idle FDC tick chain was
+   22% of wall), one CPU burst per scanline when no hsync IRQ is armed,
+   an interrupt quiet-gate in the dispatch loop, block linking through a
+   shared chain stub (indirect via the live cache slot, so invalidation
+   severs links for free; operands live in Hd6309State so the stub runs
+   base-relative), and the indexed inline family unblocked (its
+   writes-masks were missing, which had also hidden a W1-clobber bug in
+   the indexed store emitters and a purity-flag gap - found by rank
+   bisection + VCC_VERIFY_PURE). Diagnostics added along the way:
+   VCC_PAK_STATS, VCC_CYCLE_STATS, VCC_NO_LINK, chain:N in the stats
+   line. Next levers: registerized block state across chains (the chain
+   stub is now the hottest single PC cluster), trace formation /
+   superblocks, and the CPUCycle metronome floor.
 
 Smoke tests per AGENTS.md conventions: boot path, disk attach, cartridge
 load, keyboard input, debugger flow — plus OS-9 Level 2 boot and Basic09,
