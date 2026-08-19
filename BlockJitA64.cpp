@@ -1333,11 +1333,14 @@ static bool TryEmitInline(emit_t& e, const DecodedInst& insn, uint8_t mask)
 // address: HD6309BlockInvalidate clearing a slot, or a generation
 // bump, severs every link to it with no unlink bookkeeping.
 
-// The registerized-state runner: C-callable entry that loads w21
-// (CycleCounter) and w22 (CycleFor) from cpu_state, calls the thunk in
-// x0, and spills w21 back when the thunk - or the chain it started -
-// finally returns. Thunks and the chain stub treat w21/w22 as live
-// throughout, which is also why any thunk entry MUST come through here.
+// The registerized-state runner: C-callable entry that establishes the
+// chain register convention - w21 = CycleCounter, w22 = CycleFor,
+// x23 = &cpu_state, x24 = cache slot base - calls the thunk in x0, and
+// spills w21 back when the thunk (or the chain it started) finally
+// returns. All four are callee-saved, so thunk-internal calls to
+// handlers and mem_read/mem_write preserve them for free. Thunks and
+// the chain stub treat them as live throughout, which is also why any
+// thunk entry MUST come through here.
 static void EnsureThunkRunner()
 {
     if (g_thunk_runner != nullptr)
@@ -1345,7 +1348,7 @@ static void EnsureThunkRunner()
     if (g_addrs.cycle_for == nullptr)
         return;
 
-    constexpr size_t kRunnerBytes = 96;
+    constexpr size_t kRunnerBytes = 112;
     if (g_arena_used + kRunnerBytes > kArenaSize)
         return;
 
@@ -1357,17 +1360,19 @@ static void EnsureThunkRunner()
         return;
 
     jit_writable_begin();
-    emit_stp_pre_sp(&e, A64_W29, A64_W30, -32);
+    emit_stp_pre_sp(&e, A64_W29, A64_W30, -48);
     emit_stp_x64_off(&e, A64_W21, A64_W22, A64_SP, 16);
+    emit_stp_x64_off(&e, A64_W23, A64_W24, A64_SP, 32);
     emit_add_x64_imm(&e, A64_W29, A64_SP, 0);
-    emit_mov_x64_imm64(&e, A64_W10, (uint64_t)(uintptr_t)g_addrs.base);
-    emit_ldr_w32_imm(&e, A64_W21, A64_W10, g_off_cyc);
-    emit_ldr_w32_imm(&e, A64_W22, A64_W10, (uint32_t)off_cycle_for);
+    emit_mov_x64_imm64(&e, A64_W23, (uint64_t)(uintptr_t)g_addrs.base);
+    emit_mov_x64_imm64(&e, A64_W24, (uint64_t)(uintptr_t)g_addrs.chain_slot_base);
+    emit_ldr_w32_imm(&e, A64_W21, A64_W23, g_off_cyc);
+    emit_ldr_w32_imm(&e, A64_W22, A64_W23, (uint32_t)off_cycle_for);
     emit_blr(&e, A64_W0);
-    emit_mov_x64_imm64(&e, A64_W10, (uint64_t)(uintptr_t)g_addrs.base);
-    emit_str_w32_imm(&e, A64_W21, A64_W10, g_off_cyc);
+    emit_str_w32_imm(&e, A64_W21, A64_W23, g_off_cyc);
     emit_ldp_x64_off(&e, A64_W21, A64_W22, A64_SP, 16);
-    emit_ldp_x64_post(&e, A64_W29, A64_W30, A64_SP, 32);
+    emit_ldp_x64_off(&e, A64_W23, A64_W24, A64_SP, 32);
+    emit_ldp_x64_post(&e, A64_W29, A64_W30, A64_SP, 48);
     emit_ret(&e);
     jit_writable_end();
 
@@ -1430,24 +1435,23 @@ static void EnsureChainStub()
     jit_writable_begin();
 
     // Budget exhausted -> bail. CycleCounter and CycleFor are LIVE in
-    // w21/w22 (registerized state) - no loads at all.
-    emit_mov_x64_imm64(&e, A64_W10, (uint64_t)(uintptr_t)g_addrs.base);
+    // w21/w22 and &cpu_state in x23 (runner convention) - no imm64
+    // materializations and no state loads at all.
     emit_cmp_w32_w32(&e, A64_W21, A64_W22);
     fixups[nfix++] = { e.offset, 0, A64_COND_GE, A64_W0 };
     emit_b_cond(&e, A64_COND_GE, 0);
 
     // Any reason to leave the chain - interrupt lines, either latch
     // stage, SYNC wait, halted-insn - is one packed quadword.
-    emit_ldr_x64_imm(&e, A64_W12, A64_W10, (uint32_t)off_pending);
+    emit_ldr_x64_imm(&e, A64_W12, A64_W23, (uint32_t)off_pending);
     fixups[nfix++] = { e.offset, 3, A64_COND_EQ, A64_W12 };
     emit_cbnz_x64(&e, A64_W12, 0);
 
-    // w15 = next PC; x14 = &slot = base + (pc & MASK) << slot_shift
-    emit_ldrh_imm(&e, A64_W15, A64_W10, g_off_pc);
+    // w15 = next PC; x14 = &slot = slot_base(x24) + (pc & MASK) << shift
+    emit_ldrh_imm(&e, A64_W15, A64_W23, g_off_pc);
     EmitAndImm(e, A64_W16, A64_W15, (uint32_t)BlockCache::CACHE_MASK);
     emit_lsl_x64_imm(&e, A64_W16, A64_W16, slot_shift);
-    emit_mov_x64_imm64(&e, A64_W14, (uint64_t)(uintptr_t)g_addrs.chain_slot_base);
-    emit_add_x64(&e, A64_W14, A64_W14, A64_W16);
+    emit_add_x64(&e, A64_W14, A64_W24, A64_W16);
 
     // Slot must hold this PC in the current generation, with a thunk.
     emit_ldrh_imm(&e, A64_W17, A64_W14, (uint32_t)offsetof(CachedBlock, start_pc));
@@ -1455,7 +1459,7 @@ static void EnsureChainStub()
     fixups[nfix++] = { e.offset, 0, A64_COND_NE, A64_W0 };
     emit_b_cond(&e, A64_COND_NE, 0);
     emit_ldr_w32_imm(&e, A64_W17, A64_W14, (uint32_t)offsetof(CachedBlock, generation));
-    emit_ldr_w32_imm(&e, A64_W12, A64_W10, (uint32_t)off_gen);
+    emit_ldr_w32_imm(&e, A64_W12, A64_W23, (uint32_t)off_gen);
     emit_cmp_w32_w32(&e, A64_W17, A64_W12);
     fixups[nfix++] = { e.offset, 0, A64_COND_NE, A64_W0 };
     emit_b_cond(&e, A64_COND_NE, 0);
@@ -1477,9 +1481,9 @@ static void EnsureChainStub()
     static const bool jit_stats = std::getenv("VCC_JIT_STATS") != nullptr;
     if (jit_stats)
     {
-        emit_ldr_x64_imm(&e, A64_W13, A64_W10, (uint32_t)off_runs);
+        emit_ldr_x64_imm(&e, A64_W13, A64_W23, (uint32_t)off_runs);
         emit_add_x64_imm(&e, A64_W13, A64_W13, 1);
-        emit_str_x64_imm(&e, A64_W13, A64_W10, (uint32_t)off_runs);
+        emit_str_x64_imm(&e, A64_W13, A64_W23, (uint32_t)off_runs);
     }
 
     emit_br(&e, A64_W16);
@@ -1552,11 +1556,12 @@ NativeEntry EmitBlock(const CachedBlock& slot)
 
     jit_writable_begin();
 
-    // Prologue.
+    // Prologue. x23 already holds &cpu_state (runner convention), so
+    // x19 is one register move instead of an imm64 materialization.
     emit_stp_pre_sp(&e, A64_W29, A64_W30, -32);
     emit_stp_x64_off(&e, A64_W19, A64_W20, A64_SP, 16);
     emit_add_x64_imm(&e, A64_W29, A64_SP, 0);   // mov x29, sp (ORR would read XZR)
-    emit_mov_x64_imm64(&e, A64_W19, (uint64_t)(uintptr_t)g_addrs.base);
+    emit_orr_x64_lsl(&e, A64_W19, A64_XZR, A64_W23, 0);   // mov x19, x23
     emit_mov_x64_imm64(&e, A64_W20, (uint64_t)(uintptr_t)&slot.insns[0]);
 
     // PC-skipping state, same policy as the x86 backend: inlined ops
