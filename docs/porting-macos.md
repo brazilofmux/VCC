@@ -250,6 +250,23 @@ regardless of layout, so CI stays green while it lands.
    (DECB's keyboard debounce did). Cost of the hardening: ~2-5% vs
    the prior peak; benchmarks ~1985x DECB / ~4980x OS-9.
 
+   *Epoch/benchmark arc (2026-08-19):* per-page trace registration
+   replaced the claim-kill invariant (precise write invalidation for
+   overlapping traces at zero hot-path cost), and the raw pending
+   word in the chain stub / loop back-edges became ChainBreak - a
+   maintained "would the dispatcher act now" byte that masked-but-
+   asserted lines (FD502's CART FIRQ sits asserted forever under
+   DECB) no longer trip. New tooling: tests/bench/run.sh compiles a
+   C sieve with the cmoc podman container onto a DECB disk and runs
+   it headless (VCC_INI config override; the headless keyboard can
+   type shifted characters now, so LOADM"SIEVE works). FINAL verdict
+   on taken-direction traces after full correctness: interleaved A/B
+   on compiled C still measures ~19% against, so default-off stands
+   on data from its best-case workload. Next levers if wanted: guard
+   cost reduction (single flags-register condition instead of cc[]
+   byte loads), MAX_BLOCK_INSNS growth (512-byte slots), or spending
+   the effort on user-facing shell features instead.
+
 Smoke tests per AGENTS.md conventions: boot path, disk attach, cartridge
 load, keyboard input, debugger flow — plus OS-9 Level 2 boot and Basic09,
 the status-bar effective-MHz readout to compare interpreter/JIT tiers,
