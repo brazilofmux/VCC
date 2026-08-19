@@ -53,8 +53,16 @@ VCC::CPUState (*CPUGetState)() = nullptr;
 
 // Config lives at $XDG_CONFIG_HOME/vcc/vcc.ini (~/.config/vcc/vcc.ini) -
 // same file format as the Windows build, sensible host location.
+// VCC_INI overrides the whole path: benchmark and test harnesses point
+// it at purpose-built configs without touching the user's.
 void GetIniFilePath(char* path)
 {
+	if (const char* ini = std::getenv("VCC_INI"))
+	{
+		std::strncpy(path, ini, MAX_PATH - 1);
+		path[MAX_PATH - 1] = '\0';
+		return;
+	}
 	const char* xdg = std::getenv("XDG_CONFIG_HOME");
 	std::string dir = (xdg && *xdg) ? xdg
 	                                : std::string(std::getenv("HOME") ? std::getenv("HOME") : ".") + "/.config";

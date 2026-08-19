@@ -196,7 +196,13 @@ struct Hd6309State
 	VCC::DFF      ChainIntLatch;        // +1: D, +2: Q
 	unsigned char ChainSyncWaiting = 0; // +3
 	unsigned char ChainHaltedPending = 0; // +4
-	unsigned char ChainPad[3] = {0,0,0};  // +5..7: always zero
+	// Would the dispatcher act right now? Deliverable interrupt (lines
+	// vs CC masks - masked lines do NOT set this, unlike the raw OR),
+	// SYNC wait, or halted-insn. One byte the chain stub and thunk
+	// loop back-edges test with a single load. Maintained by
+	// RecomputeChainBreak at every input mutation site.
+	unsigned char ChainBreak = 0;         // +5
+	unsigned char ChainPad[2] = {0,0};    // +6..7: always zero
 };
 
 static Hd6309State cpu_state;
@@ -229,6 +235,18 @@ static short unsigned postword=0;
 static signed char *spostbyte=(signed char *)&postbyte;
 static signed short *spostword=(signed short *)&postword;
 static int& gCycleFor = cpu_state.ChainCycleFor;
+
+// See Hd6309State::ChainBreak. Call after any change to the interrupt
+// lines, the F/I condition-code masks, SyncWaiting, or HaltedInsPending.
+static inline void RecomputeChainBreak()
+{
+	const unsigned char OR = cpu_state.ChainIntOR;
+	cpu_state.ChainBreak = (unsigned char)(
+		((OR & (1u << INT_NMI)) ||
+		 ((OR & (1u << INT_FIRQ)) && !cpu_state.cc[F]) ||
+		 ((OR & (1u << INT_IRQ)) && !cpu_state.cc[I]) ||
+		 cpu_state.ChainSyncWaiting || cpu_state.ChainHaltedPending) ? 1 : 0);
+}
 
 static std::vector<unsigned short> CPUBreakpoints;
 static std::vector<unsigned short> CPUTraceTriggers;
@@ -643,6 +661,7 @@ void HD6309Reset()
 	cc[I]=1;
 	cc[F]=1;
 	SyncWaiting=0;
+	RecomputeChainBreak();
 	PC_REG=MemRead16(VRESET);	//PC gets its reset vector
 	SetMapType(0);	//shouldn't be here
 	// The live block cache is rebuilt on every CPU reset, so the JIT arena
@@ -781,7 +800,7 @@ void HD6309Init()
 		// their successors when the dispatcher would only re-derive
 		// what the stub can check itself.
 		addrs.cycle_for         = &gCycleFor;
-		addrs.pending           = &cpu_state.ChainIntOR;
+		addrs.chain_break       = &cpu_state.ChainBreak;
 		addrs.generation_mirror = &cpu_state.ChainGeneration;
 		addrs.chain_slot_base   = blockCache.SlotBase();
 		addrs.chain_slot_size   = (uint32_t)sizeof(CachedBlock);
@@ -942,6 +961,7 @@ void HD6309Init()
 	//SetNatEmuStat(1);
 	cc[I]=1;
 	cc[F]=1;
+	RecomputeChainBreak();
 	return;
 }
 
@@ -4300,6 +4320,7 @@ void Sync_I(const DecodedInst* inst)
 { //13
 	CycleCounter=gCycleFor;
 	SyncWaiting=1;
+	RecomputeChainBreak();
 }
 
 void Sexw_I(const DecodedInst* inst)
@@ -4887,6 +4908,7 @@ void Cwai_I(const DecodedInst* inst)
 	setcc(ccbits);
 	CycleCounter=gCycleFor;
 	SyncWaiting=1;
+	RecomputeChainBreak();
 }
 
 void Mul_I(const DecodedInst* inst)
@@ -4927,6 +4949,7 @@ void Swi1_I(const DecodedInst* inst)
 	CycleCounter+=19;
 	cc[I]=1;
 	cc[F]=1;
+	RecomputeChainBreak();
 }
 
 void Nega_I(const DecodedInst* inst)
@@ -6942,6 +6965,7 @@ void Halt(const DecodedInst* inst)
 
 	if (EmuState.Debugger.Halt_Enabled()) {
 		HaltedInsPending = 1;
+		RecomputeChainBreak();
 		VCC::ApplyHaltpoints(false);
 		EmuState.Debugger.Halt();
 		PC_REG -= 1;
@@ -7835,13 +7859,11 @@ static inline void ReplayBlock(const CachedBlock* block, int cycle_limit)
 			break;
 		// Loop back-edge (taken guard): bound interrupt latency to one
 		// loop iteration, like the short pre-trace blocks did - an
-		// unrolled polling loop must not run 14 instructions past a
-		// deliverable interrupt (DECB's timing code notices). Test the
-		// LINES, not the latch - the latch only clocks at dispatch top.
-		if (back_edge && InterruptLineOR != 0 &&
-		    ((InterruptLineOR & Bit(INT_NMI)) ||
-		     ((InterruptLineOR & Bit(INT_FIRQ)) && !CC(F)) ||
-		     ((InterruptLineOR & Bit(INT_IRQ)) && !CC(I))))
+		// unrolled polling loop must not run 14 instructions past
+		// something the dispatcher would act on. ChainBreak is the
+		// maintained deliverability byte: masked lines do NOT set it
+		// (a masked-but-asserted FIRQ line must not stop the loop).
+		if (back_edge && cpu_state.ChainBreak)
 			break;
 	}
 }
@@ -8108,11 +8130,13 @@ int HD6309Exec(int CycleFor)
 			// outcome diverges from its recorded direction.
 			static const bool no_trace = std::getenv("VCC_NO_TRACE") != nullptr;
 			// Taken-direction tracing (following taken branches to
-			// unroll loops) is OFF by default: it is correct, but the
-			// overlap churn between staggered trace blocks eats the
-			// unrolling win at this cache architecture (see
-			// docs/porting-macos.md). VCC_TRACE_TAKEN=1 re-enables it
-			// for future experiments.
+			// unroll loops) stays OFF by default. With per-page trace
+			// invalidation and the ChainBreak deliverability byte it is
+			// fully correct, but interleaved A/B on the compiled-C
+			// sieve benchmark still measures ~19% AGAINST it: per-
+			// iteration guard costs plus recording churn outweigh the
+			// hop savings at MAX_BLOCK_INSNS=14. VCC_TRACE_TAKEN=1
+			// enables it for experiments.
 			static const bool trace_taken = std::getenv("VCC_TRACE_TAKEN") != nullptr;
 			const bool is_guardable = !no_trace &&
 				(opcode >= (trace_taken ? 0x20 : 0x21)) && opcode <= 0x2F;
@@ -8205,6 +8229,7 @@ debugger_path:
 			StepIns(nullptr);
 			VCC::ApplyHaltpoints(true);
 			HaltedInsPending = 0;
+			RecomputeChainBreak();
 			return(CycleFor - CycleCounter);
 		}
 
@@ -8322,6 +8347,7 @@ void cpu_firq()
 			MemWrite8(getcc(), --S_REG);
 			cc[I] = 1;
 			cc[F] = 1;
+			RecomputeChainBreak();
 			PC_REG = MemRead16(VFIRQ);
 			break;
 
@@ -8346,6 +8372,7 @@ void cpu_firq()
 			MemWrite8(getcc(), --S_REG);
 			cc[I] = 1;
 			cc[F] = 1;
+			RecomputeChainBreak();
 			PC_REG = MemRead16(VFIRQ);
 			break;
 	}
@@ -8390,6 +8417,7 @@ void cpu_irq()
 	MemWrite8(getcc(), --S_REG);
 	PC_REG = MemRead16(VIRQ);
 	cc[I] = 1;
+	RecomputeChainBreak();
 
 	if (EmuState.Debugger.IsTracing())
 		EmuState.Debugger.TraceCaptureInterruptExecuting(INT_IRQ, CycleCounter, HD6309GetState());
@@ -8420,12 +8448,14 @@ void cpu_nmi()
 	MemWrite8(getcc(), --S_REG);
 	cc[I] = 1;
 	cc[F] = 1;
+	RecomputeChainBreak();
 	PC_REG = MemRead16(VNMI);
 
 	if (EmuState.Debugger.IsTracing())
 		EmuState.Debugger.TraceCaptureInterruptExecuting(INT_NMI, CycleCounter, HD6309GetState());
 
 	ClearNMI();
+	RecomputeChainBreak();
 }
 
 //--- Pre-decoded EA calculators for the block execution path ---
@@ -8865,6 +8895,7 @@ void setcc (unsigned char bincc)
 	for (bit=0;bit<=7;bit++)
 		cc[bit]=!!(bincc & (1<<bit));
 	return;
+	RecomputeChainBreak();
 }
 
 unsigned char getcc()
@@ -8905,9 +8936,11 @@ void HD6309AssertInterupt(InterruptSource src, Interrupt interrupt)
 
 	InterruptLine[src] |= Bit(interrupt);
 	InterruptLineOR |= Bit(interrupt);
+	RecomputeChainBreak();
 	if (SyncWaiting || interrupt == INT_NMI)
 		LatchInterrupts();
 	SyncWaiting = 0;
+	RecomputeChainBreak();
 
 	if (EmuState.Debugger.IsTracing())
 		EmuState.Debugger.TraceCaptureInterruptRequest(interrupt, CycleCounter, HD6309GetState());
@@ -8920,6 +8953,7 @@ void HD6309DeAssertInterupt(InterruptSource src, Interrupt interrupt)
 
 	InterruptLine[src] &= BitMask(interrupt);
 	RecomputeInterruptOR();
+	RecomputeChainBreak();
 }
 
 void InvalidInsHandler(const DecodedInst* inst)

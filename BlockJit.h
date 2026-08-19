@@ -105,10 +105,11 @@ namespace BlockJit
         // chain_slot_base disables linking entirely (x86 backend, or
         // cores that don't populate it).
         int*           cycle_for;        // &cpu_state.ChainCycleFor (budget)
-        // 8-byte packed pending block: interrupt-line OR, latch D, latch
-        // Q, SYNC wait, halted-insn, then three always-zero pad bytes.
-        // One 64-bit load answers "any reason to leave the chain".
-        unsigned char* pending;          // &cpu_state.ChainIntOR
+        // Maintained deliverability byte: nonzero when the dispatcher
+        // would act right now (deliverable interrupt per the CC masks,
+        // SYNC wait, or halted-insn). Masked-but-asserted lines do NOT
+        // set it. One byte load answers "any reason to leave the chain".
+        unsigned char* chain_break;      // &cpu_state.ChainBreak
         const uint32_t* generation_mirror; // &cpu_state.ChainGeneration
         void*          chain_slot_base;  // &blockCache.blocks_[0]
         uint32_t       chain_slot_size;  // sizeof(CachedBlock)

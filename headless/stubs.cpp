@@ -36,33 +36,50 @@ namespace
 	{
 		unsigned char col;
 		unsigned char row;
+		bool          shift;
 	};
 
 	// Standard CoCo keyboard matrix: rows PA0-PA6, columns PB0-PB7.
+	// Shifted characters (quotes especially - LOADM needs them) are
+	// synthesized by holding SHIFT (col 7, row 6) with the base key.
 	bool KeyForChar(char ch, MatrixKey& key)
 	{
 		if (ch >= 'a' && ch <= 'z')
 			ch = (char)(ch - 'a' + 'A');
-		if (ch == '\r' || ch == '\n') { key = {0, 6}; return true; }   // ENTER
-		if (ch == ' ')                { key = {7, 3}; return true; }
+		if (ch == '\r' || ch == '\n') { key = {0, 6, false}; return true; }   // ENTER
+		if (ch == ' ')                { key = {7, 3, false}; return true; }
 		if (ch >= '@' && ch <= 'Z')
 		{
 			const unsigned char i = (unsigned char)(ch - '@');
-			key = {(unsigned char)(i & 7), (unsigned char)(i >> 3)};
+			key = {(unsigned char)(i & 7), (unsigned char)(i >> 3), false};
 			return true;
 		}
-		if (ch >= '0' && ch <= '7') { key = {(unsigned char)(ch - '0'), 4}; return true; }
-		if (ch == '8' || ch == '9') { key = {(unsigned char)(ch - '8'), 5}; return true; }
+		if (ch >= '0' && ch <= '7') { key = {(unsigned char)(ch - '0'), 4, false}; return true; }
+		if (ch == '8' || ch == '9') { key = {(unsigned char)(ch - '8'), 5, false}; return true; }
 		switch (ch)
 		{
-		case ':': key = {2, 5}; return true;
-		case ';': key = {3, 5}; return true;
-		case ',': key = {4, 5}; return true;
-		case '-': key = {5, 5}; return true;
-		case '.': key = {6, 5}; return true;
-		case '/': key = {7, 5}; return true;
+		case ':': key = {2, 5, false}; return true;
+		case ';': key = {3, 5, false}; return true;
+		case ',': key = {4, 5, false}; return true;
+		case '-': key = {5, 5, false}; return true;
+		case '.': key = {6, 5, false}; return true;
+		case '/': key = {7, 5, false}; return true;
+		// Shifted number row: !"#$%&'()
+		case '!':  key = {1, 4, true}; return true;
+		case '"':  key = {2, 4, true}; return true;
+		case '#':  key = {3, 4, true}; return true;
+		case '$':  key = {4, 4, true}; return true;
+		case '%':  key = {5, 4, true}; return true;
+		case '&':  key = {6, 4, true}; return true;
+		case '\'': key = {7, 4, true}; return true;
+		case '(':  key = {0, 5, true}; return true;
+		case ')':  key = {1, 5, true}; return true;
+		case '=':  key = {5, 5, true}; return true;
+		case '+':  key = {3, 5, true}; return true;
+		case '*':  key = {2, 5, true}; return true;
+		case '?':  key = {7, 5, true}; return true;
 		}
-		return false;   // unsupported (shifted) character: skipped
+		return false;   // unsupported character: skipped
 	}
 
 	std::string   gTypeText;
@@ -104,6 +121,9 @@ extern "C" unsigned char vccKeyboardGetScan(unsigned char Col)
 			const unsigned char active = (unsigned char)~Col;
 			if (active & (unsigned char)(1u << key.col))
 				rows = (unsigned char)(1u << key.row);
+			// SHIFT is col 7, row 6; held together with the base key.
+			if (key.shift && (active & 0x80u))
+				rows |= (unsigned char)(1u << 6);
 		}
 	}
 	// Rows are active-low; bit 7 (joystick comparator) idles high.

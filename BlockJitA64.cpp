@@ -183,9 +183,9 @@ void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers)
         g_off_nat32 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_32 - base);
         g_off_nat53 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_53 - base);
         g_off_nat65 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_65 - base);
-        g_off_pending = (g_addrs.pending != nullptr)
-            ? (int64_t)((uint8_t*)g_addrs.pending - base) : -1;
-        if (g_off_pending < 0 || g_off_pending >= 4096 * 8 || (g_off_pending % 8) != 0)
+        g_off_pending = (g_addrs.chain_break != nullptr)
+            ? (int64_t)((uint8_t*)g_addrs.chain_break - base) : -1;
+        if (g_off_pending < 0 || g_off_pending >= 4096)
             g_off_pending = -1;
     }
 
@@ -1407,7 +1407,7 @@ static void EnsureChainStub()
     // stride a power of two so indexing is a shift.
     const uint8_t* cbase = (const uint8_t*)g_addrs.base;
     const int64_t off_cycle_for = (const uint8_t*)g_addrs.cycle_for         - cbase;
-    const int64_t off_pending   = (const uint8_t*)g_addrs.pending           - cbase;
+    const int64_t off_pending   = (const uint8_t*)g_addrs.chain_break       - cbase;
     const int64_t off_gen       = (const uint8_t*)g_addrs.generation_mirror - cbase;
     const int64_t off_runs      = (const uint8_t*)g_addrs.chain_runs        - cbase;
     auto in_range = [](int64_t off, int align) {
@@ -1415,7 +1415,7 @@ static void EnsureChainStub()
     };
     const uint32_t ssz = g_addrs.chain_slot_size;
     const bool size_pow2 = (ssz & (ssz - 1)) == 0;
-    if (!in_range(off_cycle_for, 4) || !in_range(off_pending, 8) ||
+    if (!in_range(off_cycle_for, 4) || !in_range(off_pending, 1) ||
         !in_range(off_gen, 4) || !in_range(off_runs, 8) || !size_pow2)
     {
         g_no_link = true;   // layout contract not met; run unlinked
@@ -1446,11 +1446,13 @@ static void EnsureChainStub()
     fixups[nfix++] = { e.offset, 0, A64_COND_GE, A64_W0 };
     emit_b_cond(&e, A64_COND_GE, 0);
 
-    // Any reason to leave the chain - interrupt lines, either latch
-    // stage, SYNC wait, halted-insn - is one packed quadword.
-    emit_ldr_x64_imm(&e, A64_W12, A64_W23, (uint32_t)off_pending);
-    fixups[nfix++] = { e.offset, 3, A64_COND_EQ, A64_W12 };
-    emit_cbnz_x64(&e, A64_W12, 0);
+    // Any reason to leave the chain - a DELIVERABLE interrupt, SYNC
+    // wait, or halted-insn - is the maintained ChainBreak byte.
+    // Masked-but-asserted lines do not set it, so chains keep flowing
+    // through code that runs with interrupts masked.
+    emit_ldrb_imm(&e, A64_W12, A64_W23, (uint32_t)off_pending);
+    fixups[nfix++] = { e.offset, 1, A64_COND_EQ, A64_W12 };
+    emit_cbnz_w32(&e, A64_W12, 0);
 
     // w15 = next PC; x14 = &slot = slot_base(x24) + (pc & MASK) << shift
     emit_ldrh_imm(&e, A64_W15, A64_W23, g_off_pc);
@@ -1672,15 +1674,16 @@ NativeEntry EmitBlock(const CachedBlock& slot)
                         emit_cbnz_w32(&e, A64_W1, 0);
                 }
                 // Loop back-edge (taken direction): bound interrupt
-                // latency to one loop iteration - if anything is
-                // pending, exit along the RECORDED path and let the
-                // dispatcher deliver. One load + one branch.
+                // latency to one loop iteration - if the dispatcher
+                // would act (ChainBreak byte: deliverable interrupt,
+                // sync, halt; NOT masked lines), exit along the
+                // RECORDED path and let it. One load + one branch.
                 if (taken_dir && g_off_pending >= 0)
                 {
-                    emit_ldr_x64_imm(&e, A64_W12, A64_W19, (uint32_t)g_off_pending);
+                    emit_ldrb_imm(&e, A64_W12, A64_W19, (uint32_t)g_off_pending);
                     guard_exits[num_guard_exits++] = {
                         e.offset, 3, cont_pc, 0u };
-                    emit_cbnz_x64(&e, A64_W12, 0);
+                    emit_cbnz_w32(&e, A64_W12, 0);
                 }
                 local_pc = cont_pc;
                 pc_dirty = true;    // recorded-path PC still deferred
@@ -1825,7 +1828,7 @@ NativeEntry EmitBlock(const CachedBlock& slot)
         case 0:  emit_cbz_w32(&p, A64_W1, delta); break;
         case 1:  emit_cbnz_w32(&p, A64_W1, delta); break;
         case 2:  emit_b_cond(&p, A64_COND_NE, delta); break;
-        default: emit_cbnz_x64(&p, A64_W12, delta); break;
+        default: emit_cbnz_w32(&p, A64_W12, delta); break;
         }
     }
 

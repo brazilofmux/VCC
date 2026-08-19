@@ -39,6 +39,8 @@ This file is part of VCC (Virtual Color Computer).
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <algorithm>
+#include <vector>
 #include "DecodedInst.h"
 #include "BlockDecoder.h"
 
@@ -120,6 +122,8 @@ public:
         memset(blocks_, 0, sizeof(blocks_));
         memset(reverseMap_, 0xFF, sizeof(reverseMap_));  // fill with NO_BLOCK
         memset(pageBitmap_, 0, sizeof(pageBitmap_));
+        for (auto& v : pageTraceBlocks_)
+            v.clear();
         generation_ = 1;  // start at 1 so 0-initialized blocks are invalid
     }
 
@@ -172,26 +176,95 @@ public:
         if (!(pageBitmap_[address >> 11] & (1 << ((address >> 8) & 7))))
             return false;
 
-        // Slow path: a block exists on this page. Use reverse map.
-        uint16_t block_pc = reverseMap_[address];
-        if (block_pc == NO_BLOCK)
-            return false;
+        bool invalidated = false;
 
-        CachedBlock& b = blocks_[block_pc & CACHE_MASK];
-        if (b.generation == generation_ && b.start_pc == block_pc)
+        // Reverse-map owner: the one block the map credits with this
+        // address. Overlapping non-trace blocks not currently mapped
+        // are the known-theoretical residue (see ClaimReverseMap).
+        uint16_t block_pc = reverseMap_[address];
+        if (block_pc != NO_BLOCK)
         {
-            ForEachBlockRange(b.start_pc, b.num_insns, b.insns, b.taken_mask,
-                              [this, &b](uint16_t s, uint16_t e) {
-                                  ReleaseReverseMap(b.start_pc, s, e);
-                              });
-            b.generation = 0;  // invalidate
-            stats_.invalidations++;
-            return true;
+            CachedBlock& b = blocks_[block_pc & CACHE_MASK];
+            if (b.generation == generation_ && b.start_pc == block_pc)
+            {
+                ForEachBlockRange(b.start_pc, b.num_insns, b.insns, b.taken_mask,
+                                  [this, &b](uint16_t s, uint16_t e) {
+                                      ReleaseReverseMap(b.start_pc, s, e);
+                                  });
+                b.generation = 0;  // invalidate
+                stats_.invalidations++;
+                invalidated = true;
+            }
+            else
+            {
+                // Stale reverse map entry — block was already evicted
+                // or generation changed.
+                reverseMap_[address] = NO_BLOCK;
+            }
         }
 
-        // Stale reverse map entry — block was already evicted or generation changed.
-        reverseMap_[address] = NO_BLOCK;
-        return false;
+        // Taken-direction trace blocks overlap freely and cannot rely
+        // on the one-owner map, so they register in per-page lists and
+        // every code write walks its page's list with a precise range
+        // check. This path costs nothing unless a write lands on a
+        // page that holds trace code. Stale entries lazy-clean here.
+        auto& tv = pageTraceBlocks_[address >> 8];
+        for (size_t i = 0; i < tv.size(); )
+        {
+            const uint16_t tpc = tv[i];
+            CachedBlock& tb = blocks_[tpc & CACHE_MASK];
+            if (tb.generation != generation_ || tb.start_pc != tpc ||
+                tb.taken_mask == 0)
+            {
+                tv[i] = tv.back();
+                tv.pop_back();
+                continue;
+            }
+            bool covers = false;
+            ForEachBlockRange(tb.start_pc, tb.num_insns, tb.insns,
+                              tb.taken_mask,
+                              [&](uint16_t s, uint16_t e) {
+                                  if ((uint16_t)(address - s) < (uint16_t)(e - s))
+                                      covers = true;
+                              });
+            if (covers)
+            {
+                tb.generation = 0;
+                stats_.invalidations++;
+                invalidated = true;
+                tv[i] = tv.back();
+                tv.pop_back();
+            }
+            else
+                ++i;
+        }
+
+        return invalidated;
+    }
+
+    // Register a taken-direction trace block in the per-page lists so
+    // InvalidateIfCached can find it regardless of reverse-map
+    // ownership. Idempotent (re-registering after incumbent survival
+    // is fine). No-op for contiguous blocks.
+    void RegisterTracePages(const CachedBlock& b)
+    {
+        if (b.taken_mask == 0)
+            return;
+        ForEachBlockRange(b.start_pc, b.num_insns, b.insns, b.taken_mask,
+                          [this, &b](uint16_t s, uint16_t e) {
+                              if (s == e)
+                                  return;
+                              const int sp = (s >> 8) & 0xFF;
+                              const int ep = ((uint16_t)(e - 1) >> 8) & 0xFF;
+                              for (int p = sp; ; p = (p + 1) & 0xFF)
+                              {
+                                  auto& v = pageTraceBlocks_[p];
+                                  if (std::find(v.begin(), v.end(), b.start_pc) == v.end())
+                                      v.push_back(b.start_pc);
+                                  if (p == ep)
+                                      break;
+                              }
+                          });
     }
 
     // Begin recording a new block at the given PC.
@@ -315,6 +388,7 @@ public:
                               ClaimReverseMap(slot.start_pc, s, e);
                               MarkPageBits(s, e);
                           });
+        RegisterTracePages(slot);
 
         stats_.blocks_recorded++;
         return &slot;
@@ -372,6 +446,10 @@ private:
     // Indexed as pageBitmap_[address >> 11] & (1 << ((address >> 8) & 7)).
     // Fits in a single L1 cache line for fast rejection of data-page writes.
     uint8_t pageBitmap_[32];
+
+    // Per 256-byte page: start PCs of taken-direction trace blocks
+    // touching the page (see RegisterTracePages / InvalidateIfCached).
+    std::vector<uint16_t> pageTraceBlocks_[256];
 
     // Generation counter for O(1) bulk invalidation.
     // Blocks are valid only if their generation matches this value.
@@ -577,6 +655,7 @@ private:
                                           ClaimReverseMap(old.start_pc, s, e);
                                           MarkPageBits(s, e);
                                       });
+                    RegisterTracePages(old);
                     return;
                 }
             }
@@ -610,6 +689,7 @@ private:
                                   ClaimReverseMap(old.start_pc, s, e);
                                   MarkPageBits(s, e);
                               });
+            RegisterTracePages(old);
             stats_.blocks_recorded++;
         }
     }
