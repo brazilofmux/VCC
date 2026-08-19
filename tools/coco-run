@@ -1,0 +1,117 @@
+#!/bin/bash
+# coco-run: one command from source file to running CoCo.
+#
+#   tools/coco-run hello.c            build only; loader on clipboard
+#   tools/coco-run --sdl hello.c      ...and launch vcc-sdl, disk in drive 1
+#   tools/coco-run --headless prog.c  batch-run in vcc-headless, print screen
+#
+# Accepts C (CMOC), assembly (.asm/.s via lwasm --decb), and BASIC
+# (.bas, written as an ASCII file to LOAD). The build runs in the local
+# cmoc podman container; the result lands on a fresh DECB disk image.
+# In --sdl mode your normal vcc.ini drives the machine and the new disk
+# mounts via the VCC_DISK1 env override, with the LOADM/LOAD command on
+# the clipboard ready for Cmd+V. In --headless mode a minimal config
+# boots plain DECB with the disk in drive 0 and the loader is typed by
+# the scripted keyboard.
+set -euo pipefail
+
+MODE=build
+FRAMES=6000
+SRC=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --sdl)      MODE=sdl ;;
+        --headless) MODE=headless ;;
+        --frames)   FRAMES="$2"; shift ;;
+        -h|--help)  sed -n '2,16p' "$0"; exit 0 ;;
+        *)          SRC="$1" ;;
+    esac
+    shift
+done
+[ -n "$SRC" ] || { echo "usage: coco-run [--sdl|--headless] file.{c,asm,s,bas}" >&2; exit 2; }
+[ -f "$SRC" ] || { echo "coco-run: $SRC not found" >&2; exit 2; }
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+SRCDIR="$(cd "$(dirname "$SRC")" && pwd)"
+BASE="$(basename "$SRC")"
+STEM="${BASE%.*}"
+EXT="${BASE##*.}"
+# DECB file names: up to 8 characters, uppercase.
+NAME="$(printf '%s' "$STEM" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9' | cut -c1-8)"
+WORK="${TMPDIR:-/tmp}/coco-run/$STEM"
+mkdir -p "$WORK"
+DSK="$WORK/$STEM.dsk"
+
+# Fresh DECB-formatted blank disk (35x18x256 of 0xFF, as DSKINI writes).
+python3 -c "open('$DSK','wb').write(b'\xff' * 161280)"
+
+case "$EXT" in
+    c)
+        cp "$SRC" "$WORK/"
+        ls "$SRCDIR"/*.h >/dev/null 2>&1 && cp "$SRCDIR"/*.h "$WORK/"
+        podman run --rm -v "$WORK":/work localhost/cmoc:freshen \
+            sh -c "cd /work && cmoc -o $NAME.BIN '$BASE' && writecocofile '$(basename "$DSK")' $NAME.BIN"
+        LOADER="LOADM\"$NAME\"
+EXEC
+"
+        TYPE=$'LOADM"'"$NAME"$'\n~~~~~~~~~~EXEC\n'
+        ;;
+    asm|s)
+        cp "$SRC" "$WORK/"
+        podman run --rm -v "$WORK":/work localhost/cmoc:freshen \
+            sh -c "cd /work && lwasm --decb -o $NAME.BIN '$BASE' && writecocofile '$(basename "$DSK")' $NAME.BIN"
+        LOADER="LOADM\"$NAME\"
+EXEC
+"
+        TYPE=$'LOADM"'"$NAME"$'\n~~~~~~~~~~EXEC\n'
+        ;;
+    bas)
+        cp "$SRC" "$WORK/$NAME.BAS"
+        podman run --rm -v "$WORK":/work localhost/cmoc:freshen \
+            sh -c "cd /work && writecocofile --newlines '$(basename "$DSK")' $NAME.BAS"
+        LOADER="LOAD\"$NAME\"
+RUN
+"
+        TYPE=$'LOAD"'"$NAME"$'\n~~~~~~~~~~RUN\n'
+        ;;
+    *)
+        echo "coco-run: don't know what to do with .$EXT" >&2; exit 2 ;;
+esac
+
+echo "coco-run: built $DSK ($NAME)"
+
+case "$MODE" in
+    build)
+        printf '%s' "$LOADER" | pbcopy 2>/dev/null || true
+        echo "loader on clipboard - launch with:"
+        echo "  VCC_DISK1=$DSK $REPO/build/vcc-sdl    (then Cmd+V)"
+        ;;
+    sdl)
+        printf '%s' "$LOADER" | pbcopy 2>/dev/null || true
+        echo "loader on clipboard - Cmd+V at the OK prompt (drive 1)"
+        LOADER1="$(printf '%s' "$LOADER" | sed "s/\"$NAME\"/\"$NAME:1\"/")"
+        printf '%s' "$LOADER1" | pbcopy 2>/dev/null || true
+        VCC_DISK1="$DSK" exec "$REPO/build/vcc-sdl"
+        ;;
+    headless)
+        cat > "$WORK/run.ini" <<EOF
+[CPU]
+CpuType=1
+[Memory]
+RamSize=2
+[Misc]
+ExternalBasicImage=$HOME/roms/coco3.rom
+CartAutoStart=0
+[Module]
+OnBoot=fd502.dll
+[FD-502]
+DiskRom=1
+Disk#0=$DSK
+EOF
+        VCC_INI="$WORK/run.ini" VCC_FRAMESKIP=100 VCC_SHOT_TEXT="$WORK/screen.txt" \
+            "$REPO/build/vcc-headless" "$HOME/roms/coco3.rom" "$FRAMES" \
+            "$TYPE" 2>/dev/null | grep -E 'realtime' || true
+        echo "--- final screen ---"
+        cat "$WORK/screen.txt"
+        ;;
+esac

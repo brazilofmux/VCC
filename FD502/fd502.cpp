@@ -761,6 +761,12 @@ void LoadConfig()  // Called on SetIniPath
 		{
 			sprintf(Temp,"Disk#%i",Index);
 			Setting().read(MS_FD502,Temp,"",DiskName,MAX_PATH);
+			// VCC_DISK0..VCC_DISK3 override the ini paths - tooling
+			// (tools/coco-run) mounts freshly built disks this way
+			// without editing the user's config.
+			sprintf(Temp,"VCC_DISK%i",Index);
+			if (const char* env = getenv(Temp))
+				snprintf(DiskName, MAX_PATH, "%s", env);
 			if (strlen(DiskName))
 			{
 				RetVal=mount_disk_image(DiskName,Index);
