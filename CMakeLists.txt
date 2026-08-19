@@ -58,10 +58,13 @@ set_target_properties(vcc-libcommon PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ---- Emulator core
 # Level-1/2 JIT backend: the arm64 emitter on Apple Silicon / arm64
-# Linux, the always-refuse null backend (interpreter + block cache)
-# everywhere else. BlockJit.cpp (x86-32) stays MSBuild-only.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+# Linux, the x86-64 emitter on Intel/AMD (Windows, Linux, macOS), the
+# always-refuse null backend (interpreter + block cache) everywhere
+# else. BlockJit.cpp (x86-32) stays MSBuild-only.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
   set(VCC_BLOCKJIT_BACKEND BlockJitA64.cpp)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  set(VCC_BLOCKJIT_BACKEND BlockJitX64.cpp)
 else()
   set(VCC_BLOCKJIT_BACKEND BlockJitNull.cpp)
 endif()
