@@ -1341,26 +1341,27 @@ static void EnsureChainStub()
     // The stub loads its operands base-relative off cpu_state - the
     // core keeps them there (Hd6309State chain-context fields). Verify
     // the layout it depends on: everything within immediate-load range
-    // of base, the OR/latch bytes packed (one 32-bit load tests OR, D,
-    // Q, and a zero pad), and the required alignments for scaled
-    // immediate offsets.
+    // of base, the five pending flags packed into one zero-padded
+    // 8-aligned quadword, the generation mirror in place, and the slot
+    // stride a power of two so indexing is a shift.
     const uint8_t* cbase = (const uint8_t*)g_addrs.base;
-    const int64_t off_cycle_for = (const uint8_t*)g_addrs.cycle_for      - cbase;
-    const int64_t off_int_or    = (const uint8_t*)g_addrs.interrupt_or   - cbase;
-    const int64_t off_latch     = (const uint8_t*)g_addrs.interrupt_latch- cbase;
-    const int64_t off_sync      = (const uint8_t*)g_addrs.sync_waiting   - cbase;
-    const int64_t off_halted    = (const uint8_t*)g_addrs.halted_pending - cbase;
-    const int64_t off_runs      = (const uint8_t*)g_addrs.chain_runs     - cbase;
+    const int64_t off_cycle_for = (const uint8_t*)g_addrs.cycle_for         - cbase;
+    const int64_t off_pending   = (const uint8_t*)g_addrs.pending           - cbase;
+    const int64_t off_gen       = (const uint8_t*)g_addrs.generation_mirror - cbase;
+    const int64_t off_runs      = (const uint8_t*)g_addrs.chain_runs        - cbase;
     auto in_range = [](int64_t off, int align) {
         return off >= 0 && off < 4096 * align && (off % align) == 0;
     };
-    if (!in_range(off_cycle_for, 4) || !in_range(off_int_or, 4) ||
-        !in_range(off_sync, 4) || !in_range(off_halted, 4) ||
-        !in_range(off_runs, 8) || off_latch != off_int_or + 1)
+    const uint32_t ssz = g_addrs.chain_slot_size;
+    const bool size_pow2 = (ssz & (ssz - 1)) == 0;
+    if (!in_range(off_cycle_for, 4) || !in_range(off_pending, 8) ||
+        !in_range(off_gen, 4) || !in_range(off_runs, 8) || !size_pow2)
     {
         g_no_link = true;   // layout contract not met; run unlinked
         return;
     }
+    uint32_t slot_shift = 0;
+    while ((1u << slot_shift) < ssz) ++slot_shift;
 
     constexpr size_t kStubBytes = 320;
     if (g_arena_used + kStubBytes > kArenaSize)
@@ -1369,8 +1370,8 @@ static void EnsureChainStub()
     uint8_t* const entry = g_arena_base + g_arena_used;
     emit_t e { entry, 0, (uint32_t)kStubBytes };
 
-    // Forward branches to the RET at the end, patched once its
-    // position is known. kind: 0 = b.cond, 1 = cbnz w, 2 = cbz x.
+    // Forward branches to the RET at the end, patched once its position
+    // is known. kind: 0 = b.cond, 1 = cbnz w, 2 = cbz x, 3 = cbnz x.
     struct Fixup { uint32_t at; int kind; a64_cond_t cond; a64_reg_t reg; };
     Fixup fixups[8];
     int nfix = 0;
@@ -1385,25 +1386,16 @@ static void EnsureChainStub()
     fixups[nfix++] = { e.offset, 0, A64_COND_GE, A64_W0 };
     emit_b_cond(&e, A64_COND_GE, 0);
 
-    // Anything pending through the interrupt latch -> bail. One 32-bit
-    // load covers InterruptLineOR, DFF.D, DFF.Q, and the zero pad.
-    emit_ldr_w32_imm(&e, A64_W12, A64_W10, (uint32_t)off_int_or);
-    fixups[nfix++] = { e.offset, 1, A64_COND_EQ, A64_W12 };
-    emit_cbnz_w32(&e, A64_W12, 0);
+    // Any reason to leave the chain - interrupt lines, either latch
+    // stage, SYNC wait, halted-insn - is one packed quadword.
+    emit_ldr_x64_imm(&e, A64_W12, A64_W10, (uint32_t)off_pending);
+    fixups[nfix++] = { e.offset, 3, A64_COND_EQ, A64_W12 };
+    emit_cbnz_x64(&e, A64_W12, 0);
 
-    // SYNC wait or halted-instruction pending -> bail
-    emit_ldr_w32_imm(&e, A64_W13, A64_W10, (uint32_t)off_sync);
-    fixups[nfix++] = { e.offset, 1, A64_COND_EQ, A64_W13 };
-    emit_cbnz_w32(&e, A64_W13, 0);
-    emit_ldr_w32_imm(&e, A64_W13, A64_W10, (uint32_t)off_halted);
-    fixups[nfix++] = { e.offset, 1, A64_COND_EQ, A64_W13 };
-    emit_cbnz_w32(&e, A64_W13, 0);
-
-    // w15 = next PC; x14 = &slot = base + (pc & MASK) * sizeof(CachedBlock)
+    // w15 = next PC; x14 = &slot = base + (pc & MASK) << slot_shift
     emit_ldrh_imm(&e, A64_W15, A64_W10, g_off_pc);
     EmitAndImm(e, A64_W16, A64_W15, (uint32_t)BlockCache::CACHE_MASK);
-    emit_movz_w32(&e, A64_W17, (uint16_t)g_addrs.chain_slot_size, 0);
-    emit_umull(&e, A64_W16, A64_W16, A64_W17);
+    emit_lsl_x64_imm(&e, A64_W16, A64_W16, slot_shift);
     emit_mov_x64_imm64(&e, A64_W14, (uint64_t)(uintptr_t)g_addrs.chain_slot_base);
     emit_add_x64(&e, A64_W14, A64_W14, A64_W16);
 
@@ -1413,8 +1405,7 @@ static void EnsureChainStub()
     fixups[nfix++] = { e.offset, 0, A64_COND_NE, A64_W0 };
     emit_b_cond(&e, A64_COND_NE, 0);
     emit_ldr_w32_imm(&e, A64_W17, A64_W14, (uint32_t)offsetof(CachedBlock, generation));
-    emit_mov_x64_imm64(&e, A64_W12, (uint64_t)(uintptr_t)g_addrs.chain_generation);
-    emit_ldr_w32_imm(&e, A64_W12, A64_W12, 0);
+    emit_ldr_w32_imm(&e, A64_W12, A64_W10, (uint32_t)off_gen);
     emit_cmp_w32_w32(&e, A64_W17, A64_W12);
     fixups[nfix++] = { e.offset, 0, A64_COND_NE, A64_W0 };
     emit_b_cond(&e, A64_COND_NE, 0);
@@ -1431,10 +1422,15 @@ static void EnsureChainStub()
     fixups[nfix++] = { e.offset, 2, A64_COND_EQ, A64_W16 };
     emit_cbz_x64(&e, A64_W16, 0);
 
-    // Count the transition (single-threaded CPU loop; plain RMW).
-    emit_ldr_x64_imm(&e, A64_W13, A64_W10, (uint32_t)off_runs);
-    emit_add_x64_imm(&e, A64_W13, A64_W13, 1);
-    emit_str_x64_imm(&e, A64_W13, A64_W10, (uint32_t)off_runs);
+    // Transition counter, only when stats were asked for (a dependent
+    // load-add-store on every chain hop is real money otherwise).
+    static const bool jit_stats = std::getenv("VCC_JIT_STATS") != nullptr;
+    if (jit_stats)
+    {
+        emit_ldr_x64_imm(&e, A64_W13, A64_W10, (uint32_t)off_runs);
+        emit_add_x64_imm(&e, A64_W13, A64_W13, 1);
+        emit_str_x64_imm(&e, A64_W13, A64_W10, (uint32_t)off_runs);
+    }
 
     emit_br(&e, A64_W16);
 
@@ -1450,7 +1446,8 @@ static void EnsureChainStub()
         {
         case 0: emit_b_cond(&p, fixups[i].cond, delta); break;
         case 1: emit_cbnz_w32(&p, fixups[i].reg, delta); break;
-        default: emit_cbz_x64(&p, fixups[i].reg, delta); break;
+        case 2: emit_cbz_x64(&p, fixups[i].reg, delta); break;
+        default: emit_cbnz_x64(&p, fixups[i].reg, delta); break;
         }
     }
 

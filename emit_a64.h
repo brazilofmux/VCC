@@ -841,6 +841,13 @@ static inline void emit_cbz_x64(emit_t *e, a64_reg_t rt, int32_t byte_offset) {
     emit_inst(e, inst);
 }
 
+static inline void emit_cbnz_x64(emit_t *e, a64_reg_t rt, int32_t byte_offset) {
+    int32_t imm19 = byte_offset >> 2;
+    assert(imm19 >= -(1 << 18) && imm19 < (1 << 18));
+    uint32_t inst = 0xB5000000u | (((uint32_t)imm19 & 0x7FFFFu) << 5) | (rt & 0x1F);
+    emit_inst(e, inst);
+}
+
 static inline void emit_br(emit_t *e, a64_reg_t rn) {
     uint32_t inst = 0xD61F0000u | ((uint32_t)(rn & 0x1F) << 5);
     emit_inst(e, inst);

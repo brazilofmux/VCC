@@ -42,7 +42,10 @@ This file is part of VCC (Virtual Color Computer).
 #include "DecodedInst.h"
 #include "BlockDecoder.h"
 
-struct CachedBlock
+// alignas(256) rounds sizeof up from 216 so the JIT chain stub can
+// index the slot array with a shift instead of a multiply (and every
+// slot starts on a cache-line boundary). The table grows to 1MB.
+struct alignas(256) CachedBlock
 {
     uint16_t start_pc;      // logical PC where this block starts
     uint16_t end_pc;        // PC after the last instruction in the block

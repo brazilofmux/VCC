@@ -184,16 +184,18 @@ struct Hd6309State
 	// Chain-stub context (block linking): interrupt lines, sync/halt
 	// flags, and the dispatch budget live INSIDE the CPU state block so
 	// the emitted stub reaches everything off one base register instead
-	// of materializing an imm64 per operand. ChainIntOR/latch/pad are
-	// four consecutive bytes starting 4-aligned, so a single 32-bit
-	// load tests "anything pending through the interrupt latch".
-	uint64_t      ChainRuns = 0;        // stub-side transition counter
+	// of materializing an imm64 per operand. The five pending flags -
+	// interrupt-line OR, both latch stages, SYNC wait, halted-insn -
+	// are packed into one 8-aligned, zero-padded quadword so a single
+	// 64-bit load answers "any reason to return to the dispatcher".
+	uint64_t      ChainRuns = 0;        // stub transitions (VCC_JIT_STATS)
 	int           ChainCycleFor = 0;    // dispatch budget (gCycleFor)
-	unsigned int  ChainSyncWaiting = 0;
-	int           ChainHaltedPending = 0;
-	unsigned char ChainIntOR = 0;       // OR of InterruptLine[]
-	VCC::DFF      ChainIntLatch;        // D at +1, Q at +2
-	unsigned char ChainPad = 0;         // packed word's 4th byte, always 0
+	uint32_t      ChainGeneration = 1;  // mirror of blockCache generation
+	unsigned char ChainIntOR = 0;       // +0: OR of InterruptLine[]
+	VCC::DFF      ChainIntLatch;        // +1: D, +2: Q
+	unsigned char ChainSyncWaiting = 0; // +3
+	unsigned char ChainHaltedPending = 0; // +4
+	unsigned char ChainPad[3] = {0,0,0};  // +5..7: always zero
 };
 
 static Hd6309State cpu_state;
@@ -210,7 +212,7 @@ static unsigned char &ccbits = cpu_state.ccbits, &mdbits = cpu_state.mdbits;
 static unsigned char InsCycles[2][25];
 static unsigned char *ureg8[8];
 static unsigned short *xfreg16[8];
-static unsigned int& SyncWaiting = cpu_state.ChainSyncWaiting;
+static unsigned char& SyncWaiting = cpu_state.ChainSyncWaiting;
 unsigned short temp16;
 static signed short stemp16;
 static signed char stemp8;
@@ -327,7 +329,7 @@ static unsigned char *NatEmuCycles[] =
 	&NatEmuCycles53
 };
 
-static int& HaltedInsPending = cpu_state.ChainHaltedPending;
+static unsigned char& HaltedInsPending = cpu_state.ChainHaltedPending;
 BOOL DoingTFM = false;
 
 //--- Block Cache ---
@@ -338,6 +340,9 @@ static void HD6309BlockInvalidate(unsigned short address) {
 }
 static void HD6309BlockInvalidateAll() {
 	blockCache.InvalidateAll();
+	// Keep the chain stub's generation mirror current: a stale mirror
+	// would let chained jumps enter blocks Lookup() already disowned.
+	cpu_state.ChainGeneration = *blockCache.GenerationAddr();
 }
 
 // Drain RomBlockStore into the live BlockCache for the currently-loaded
@@ -637,6 +642,7 @@ void HD6309Reset()
 	// freshly-cleared cache.
 	BlockJit::Reset();
 	blockCache.Clear();
+	cpu_state.ChainGeneration = *blockCache.GenerationAddr();
 	gBlockInvalidate = HD6309BlockInvalidate;
 	gBlockInvalidateAll = HD6309BlockInvalidateAll;
 	HD6309PrePopulateBlockCache();
@@ -765,15 +771,12 @@ void HD6309Init()
 		// Chain-stub context: lets emitted blocks link directly to
 		// their successors when the dispatcher would only re-derive
 		// what the stub can check itself.
-		addrs.cycle_for        = &gCycleFor;
-		addrs.interrupt_or     = &InterruptLineOR;
-		addrs.interrupt_latch  = &InterruptLatch.D;
-		addrs.sync_waiting     = &SyncWaiting;
-		addrs.halted_pending   = &HaltedInsPending;
-		addrs.chain_slot_base  = blockCache.SlotBase();
-		addrs.chain_generation = blockCache.GenerationAddr();
-		addrs.chain_slot_size  = (uint32_t)sizeof(CachedBlock);
-		addrs.chain_runs       = &gJitChainRuns;
+		addrs.cycle_for         = &gCycleFor;
+		addrs.pending           = &cpu_state.ChainIntOR;
+		addrs.generation_mirror = &cpu_state.ChainGeneration;
+		addrs.chain_slot_base   = blockCache.SlotBase();
+		addrs.chain_slot_size   = (uint32_t)sizeof(CachedBlock);
+		addrs.chain_runs        = &gJitChainRuns;
 
 		BlockJit::InlineableHandlers inlines;
 		inlines.lda_m  = &Lda_M;

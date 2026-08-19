@@ -104,15 +104,15 @@ namespace BlockJit
         // generation bump severs every link with no patching. A null
         // chain_slot_base disables linking entirely (x86 backend, or
         // cores that don't populate it).
-        int*           cycle_for;        // &gCycleFor (dispatch budget)
-        unsigned char* interrupt_or;     // &InterruptLineOR
-        unsigned char* interrupt_latch;  // &InterruptLatch (D at +0, Q at +1)
-        unsigned int*  sync_waiting;     // &SyncWaiting
-        int*           halted_pending;   // &HaltedInsPending
+        int*           cycle_for;        // &cpu_state.ChainCycleFor (budget)
+        // 8-byte packed pending block: interrupt-line OR, latch D, latch
+        // Q, SYNC wait, halted-insn, then three always-zero pad bytes.
+        // One 64-bit load answers "any reason to leave the chain".
+        unsigned char* pending;          // &cpu_state.ChainIntOR
+        const uint32_t* generation_mirror; // &cpu_state.ChainGeneration
         void*          chain_slot_base;  // &blockCache.blocks_[0]
-        const uint32_t* chain_generation; // &blockCache.generation_
         uint32_t       chain_slot_size;  // sizeof(CachedBlock)
-        uint64_t*      chain_runs;       // stub-side transition counter
+        uint64_t*      chain_runs;       // stub transitions (VCC_JIT_STATS)
     };
 
     // Handler addresses the level-2 emitter knows how to inline. The
