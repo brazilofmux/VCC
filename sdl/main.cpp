@@ -35,6 +35,7 @@ This file is part of VCC (Virtual Color Computer).
 #include <SDL.h>
 
 #include "shell/machine.h"
+#include "shell/text_codec.h"
 #include "defines.h"
 #include "coco3.h"
 #include "pakinterface.h"
@@ -74,6 +75,48 @@ struct CocoKey
 // Pressed host keys and the matrix keys they activated.
 std::unordered_map<SDL_Keycode, CocoKey> gPressed;
 int gHostShiftCount = 0;
+
+bool CocoKeyForChar(char ch, CocoKey& out);
+
+// Cmd+V paste: clipboard text (normalized by shell/text_codec) typed
+// synthetically, one character per few frames - held long enough for
+// the ROM's 60Hz keyboard scan, with a gap so repeated characters
+// register as distinct presses.
+std::string gPasteQueue;
+size_t      gPasteIndex = 0;
+int         gPastePhase = 0;
+constexpr int kPasteHold = 2;
+constexpr int kPasteGap  = 1;
+
+void PasteTick()
+{
+	if (gPasteIndex >= gPasteQueue.size())
+		return;
+	if (++gPastePhase >= kPasteHold + kPasteGap)
+	{
+		gPastePhase = 0;
+		++gPasteIndex;
+		if (gPasteIndex >= gPasteQueue.size())
+		{
+			gPasteQueue.clear();
+			gPasteIndex = 0;
+		}
+	}
+}
+
+// The paste character currently "held down", if any.
+bool PasteActiveKey(CocoKey& out)
+{
+	if (gPasteIndex >= gPasteQueue.size() || gPastePhase >= kPasteHold)
+		return false;
+	const char c = gPasteQueue[gPasteIndex];
+	if (c == '\n')
+	{
+		out = { 0, 6, ShiftMode::Suppress };   // ENTER
+		return true;
+	}
+	return CocoKeyForChar(c, out);
+}
 
 bool CocoKeyForChar(char ch, CocoKey& out)
 {
@@ -178,6 +221,15 @@ extern "C" unsigned char vccKeyboardGetScan(unsigned char Col)
 		rollover[key.col] |= (uint8_t)(1u << key.row);
 		if (key.shift == ShiftMode::Force)    force = true;
 		if (key.shift == ShiftMode::Suppress) suppress = true;
+	}
+	{
+		CocoKey pk;
+		if (PasteActiveKey(pk))
+		{
+			rollover[pk.col] |= (uint8_t)(1u << pk.row);
+			if (pk.shift == ShiftMode::Force)    force = true;
+			if (pk.shift == ShiftMode::Suppress) suppress = true;
+		}
 	}
 	const bool shift = force || (gHostShiftCount > 0 && !suppress);
 	if (shift)
@@ -342,9 +394,30 @@ int main(int argc, char** argv)
 			case SDL_KEYDOWN:
 				if (ev.key.repeat)
 					break;
-				if (ev.key.keysym.sym == SDLK_q && (ev.key.keysym.mod & KMOD_GUI))
+				if (ev.key.keysym.mod & KMOD_GUI)
 				{
-					running = false;
+					// Host shortcuts; Cmd-modified keys never reach the
+					// CoCo matrix.
+					if (ev.key.keysym.sym == SDLK_q)
+						running = false;
+					else if (ev.key.keysym.sym == SDLK_v)
+					{
+						if (char* clip = SDL_GetClipboardText())
+						{
+							std::string queue;
+							VccShell::Utf8ToCocoPaste(queue, clip);
+							SDL_free(clip);
+							gPasteQueue = std::move(queue);
+							gPasteIndex = 0;
+							gPastePhase = 0;
+						}
+					}
+					else if (ev.key.keysym.sym == SDLK_c)
+					{
+						const std::string text = VccShell::ScreenToUtf8();
+						if (!text.empty())
+							SDL_SetClipboardText(text.c_str());
+					}
 					break;
 				}
 				if (ev.key.keysym.scancode == SDL_SCANCODE_F12)
@@ -389,6 +462,7 @@ int main(int argc, char** argv)
 			}
 		}
 
+		PasteTick();
 		RenderFrame(&EmuState);
 		++frames;
 		++fps_frames;

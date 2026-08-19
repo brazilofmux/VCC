@@ -30,6 +30,7 @@ This file is part of VCC (Virtual Color Computer).
 //        VCC_NO_JIT / VCC_NO_INLINE / VCC_VERIFY_PURE / ... (see JIT)
 
 #include "shell/machine.h"
+#include "shell/text_codec.h"
 #include "defines.h"
 #include "tcc1014mmu.h"
 #include "tcc1014graphics.h"
@@ -156,6 +157,20 @@ int main(int argc, char** argv)
 	std::printf("module status: %s\n", EmuState.StatusLine);
 
 	DumpTextScreen();
+
+	// VCC_SHOT_TEXT: write the final text screen as UTF-8 (the same
+	// conversion Cmd+C uses in the SDL shell - VDG semigraphics become
+	// Unicode quadrant blocks). Exercises shell/text_codec headlessly.
+	if (const char* textfile = std::getenv("VCC_SHOT_TEXT"))
+	{
+		if (FILE* f = std::fopen(textfile, "wb"))
+		{
+			const std::string text = VccShell::ScreenToUtf8();
+			std::fwrite(text.data(), 1, text.size(), f);
+			std::fclose(f);
+			std::printf("text screen saved to %s\n", textfile);
+		}
+	}
 
 	// VCC_SHOT_FILE: save the rendered framebuffer as a BMP (32-bit
 	// BGRX, top-down) - the renderer's XRGB8888 words are already in

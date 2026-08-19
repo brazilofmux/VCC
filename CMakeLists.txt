@@ -126,8 +126,23 @@ target_include_directories(mpi PRIVATE mpi)
 add_library(vcc-shell STATIC
   shell/machine.cpp
   shell/common_stubs.cpp
+  shell/text_codec.cpp
 )
 target_link_libraries(vcc-shell PUBLIC vcc-core)
+
+# libutf (optional; https://github.com/brazilofmux/utf): perceptual
+# UTF-8 -> ASCII approximation for clipboard paste. Without it, paste
+# still works but non-ASCII clipboard text is dropped instead of
+# approximated.
+set(VCC_LIBUTF_DIR "$ENV{HOME}/utf" CACHE PATH "libutf checkout (optional)")
+if(EXISTS "${VCC_LIBUTF_DIR}/libutf.a" AND EXISTS "${VCC_LIBUTF_DIR}/include/utf/color_ops.h")
+  message(STATUS "libutf found at ${VCC_LIBUTF_DIR} - UTF-8 approximation enabled")
+  target_compile_definitions(vcc-shell PRIVATE VCC_HAVE_LIBUTF)
+  target_include_directories(vcc-shell PRIVATE "${VCC_LIBUTF_DIR}/include")
+  target_link_libraries(vcc-shell PUBLIC "${VCC_LIBUTF_DIR}/libutf.a")
+else()
+  message(STATUS "libutf not found - paste drops non-ASCII")
+endif()
 
 add_executable(vcc-headless headless/main.cpp headless/stubs.cpp)
 target_link_libraries(vcc-headless PRIVATE vcc-shell)
