@@ -110,6 +110,7 @@ vcc_cartridge_module(fd502
   FD502/fd502.cpp
   FD502/wd1793.cpp
   FD502/distortc.cpp
+  FD502/becker.cpp
 )
 target_include_directories(fd502 PRIVATE FD502)
 

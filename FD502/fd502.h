@@ -28,11 +28,9 @@ VCC::Util::settings& Setting();
 
 // DO NOT REMOVE this or references to ituntil becker.dll is retired.
 // Then FD502 becker becomes permanant.
-// DriveWire (Becker port) uses winsock; Windows-only until the socket
-// layer is ported.
-#ifdef _WIN32
+// DriveWire (Becker port): winsock on Windows, BSD sockets elsewhere
+// (becker.cpp shims the names).
 #define COMBINE_BECKER
-#endif
 
 // FIXME: These need to be turned into a scoped enum and the signature of functions
 // that use them updated.

@@ -21,12 +21,41 @@
 //
 //---------------------------------------------------------------------------------
 //#define USE_LOGGING
+#ifdef _WIN32
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 
 #include <WinSock2.h>
 #include <ws2tcpip.h>
 #include <vcc/util/host_services.h>
 #include <process.h>
+#else
+// POSIX sockets. The Windows names are shimmed so the protocol code
+// below stays a single implementation.
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <unistd.h>
+#include <cerrno>
+#include <cstring>
+#include <thread>
+#include <chrono>
+#include <vcc/util/host_services.h>
+typedef int SOCKET;
+#define INVALID_SOCKET (-1)
+#define closesocket ::close
+#define ZeroMemory(p, n) memset((p), 0, (n))
+#define WSAGetLastError() errno
+#define __stdcall
+static inline unsigned long GetTickCount()
+{
+	return (unsigned long)std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+static inline void Sleep(unsigned ms)
+{
+	std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+#endif
 #include <stdio.h>
 #include <vcc/util/logger.h>
 #include "becker.h"
@@ -109,6 +138,7 @@ void becker_enable(bool enable)
 			InWritePos = 0;
 
 			// start create thread to handle io
+#ifdef _WIN32
 			HANDLE hEvent;
                 
 			unsigned threadID;
@@ -129,7 +159,12 @@ void becker_enable(bool enable)
 				return;
 			}
 			dwEnabled = true;
-			DLOG_C("DWTCPConnection thread started with id %d\n",threadID); 
+			DLOG_C("DWTCPConnection thread started with id %d\n",threadID);
+#else
+			dwEnabled = true;
+			std::thread([] { dw_thread(nullptr); }).detach();
+			DLOG_C("DWTCPConnection thread started\n");
+#endif
 		}
 	}  else {
 		dw_close();
@@ -262,6 +297,10 @@ void dw_open( void )
 	} else if (dwSocket == SOCKET_FATAL) {
 		retry = false;
 		dwSocket = 0;
+	} else {
+		// Connected: clear the retry flag, or a failed first attempt
+		// leaves dw_status() (and the status line) wedged forever.
+		retry = false;
 	}
 }
 
@@ -300,11 +339,11 @@ SOCKET dw_open(const char * server, const char * port)
 unsigned __stdcall dw_thread(void* /*Dummy*/)
 {
 	DLOG_C("dw_thread %d\n",dwEnabled);
-	WSADATA wsaData;
-        
 	int sz;
 	int res;
 
+#ifdef _WIN32
+	WSADATA wsaData;
 	if (dwEnabled) {
 		// Request Winsock version 2.2
 		if ((WSAStartup(0x202, &wsaData)) != 0) {
@@ -313,6 +352,7 @@ unsigned __stdcall dw_thread(void* /*Dummy*/)
 			return 0;
 		}
 	}
+#endif
 	while(dwEnabled) {
 		// get connected
 		dw_open();
@@ -351,6 +391,8 @@ unsigned __stdcall dw_thread(void* /*Dummy*/)
                 
 	dwSocket = 0;
 
+#ifdef _WIN32
 	_endthreadex(0);
+#endif
 	return 0;
 }
