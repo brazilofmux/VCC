@@ -307,6 +307,43 @@ regardless of layout, so CI stays green while it lands.
    BASIC09 workflow sugar (b09 source -> pack -> run), a DriveWire
    server integration test, Cmd+C of graphics screens as PNG.
 
+## The DriveWire file-flow arc (pyDriveWire, 2026-08)
+
+Goal: reach files on the Mac from inside NitrOS-9 over the becker
+port, both directions. Server: pyDriveWire (n6il, `develop` branch is
+the Python 3 one; venv needs `pyserial` and `legacy-cgi`). It worked,
+and the road there surfaced three findings worth keeping:
+
+- **The becker ring-buffer desync (latent upstream).** A read of the
+  data port ($FF42) with nothing buffered advanced `InReadPos` past
+  `InWritePos`, making the ring look phantom-full of zeros forever
+  after. A single stray probe read during machine reset was enough:
+  every DriveWire sector transfer then failed its checksum (the
+  server logs `CRC: read 0x0` - the CoCo checksummed 256 phantom
+  zeros). Fix: an empty-ring data read returns junk but consumes
+  nothing, which is also what the real hardware does - the FIFO lives
+  server-side.
+- **Wall-clock vs instruction-counted timeouts.** At ~4800x realtime
+  the drivers' poll loops burn through their budgets thousands of
+  times faster than any real server can answer, so empty status polls
+  on a live connection now yield 50us of wall time each (capped at
+  ~1s per wait so a mute server degrades to the driver's own timeout
+  instead of stalling emulation).
+- **Runtime `load`+`iniz` of rbdw is a dead end on this system.** The
+  VHD-Emudisk NitrOS-9 keeps only ~24K of Level 2 system map free;
+  runtime-loaded driver blocks fill it and everything after fails
+  with E$MemFul. The modules have to ride in the bootfile - and on
+  these self-booting VHDs the *real* bootfile is not the floppy's
+  OS9Boot (a decoy; deleting modules from it changes nothing) but an
+  image stashed in DECB virtual drive 254 at the VHD's tail, pointed
+  to absolutely by LSN0's DD.BT/DD.BSZ. `tools/dw-bake` appends
+  rbdw + dwio_becker + x0/x1 there in place (idempotent, reversible);
+  `tools/dw-serve` starts pyDriveWire and launches vcc-sdl with
+  `VCC_DW=1`; `tests/drivewire.sh` proves the round trip on a
+  copy-on-write clone of the VHD. One sharp edge, same as real
+  hardware: touching /x0 or /x1 with no server connected freezes the
+  machine (the driver polls with interrupts masked).
+
 Smoke tests per AGENTS.md conventions: boot path, disk attach, cartridge
 load, keyboard input, debugger flow — plus OS-9 Level 2 boot and Basic09,
 the status-bar effective-MHz readout to compare interpreter/JIT tiers,

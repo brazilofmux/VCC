@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+# dw-bake: bake DriveWire (becker) support into a self-booting
+# RGBDOS-style NitrOS-9 VHD.
+#
+#   tools/dw-bake [path/to/NitrOS9.vhd]
+#
+# These VHDs (built by the VHD-Emudisk installer's RUN"LINK") keep
+# their OS9Boot image outside the RBF filesystem, in DECB virtual
+# drive 254 at the tail of the VHD; LSN0's DD.BT/DD.BSZ point at it
+# absolutely, and the floppy's boot track chain-loads it via emudsk.
+# Runtime `load`+`iniz` of the DriveWire drivers is not an option on
+# these systems - the tight Level 2 system map fills and everything
+# after errors with E$MemFul - so the modules must ride in the
+# bootfile, where they cost nothing extra.
+#
+# This tool appends rbdw.dr + dwio_becker.sb + x0.dd + x1.dd (taken
+# from the NITROS9 repository ON THE VHD ITSELF, via ToolShed in the
+# cmoc container) to the bootfile in place and patches DD.BSZ. It is
+# idempotent: a bootfile that already carries rbdw is left alone.
+# Reversible by restoring DD.BSZ to its previous value (printed).
+#
+# After baking: /x0 and /x1 exist at boot. Touching them WITHOUT a
+# DriveWire server connected freezes the machine (the driver polls
+# with interrupts masked - real hardware does the same), so use
+# tools/dw-serve, which always starts the server first.
+
+import os
+import subprocess
+import sys
+
+SECTOR = 256
+MODULES = ["rbdw.dr", "dwio_becker.sb", "x0.dd", "x1.dd"]
+REPO_RBF = "NITROS9/6309L2/MODULES/RBF"
+
+
+def scan_modules(data):
+    """Walk OS-9 module headers; return (names, clean_end)."""
+    names, off = [], 0
+    while off + 9 <= len(data) and data[off] == 0x87 and data[off + 1] == 0xCD:
+        size = (data[off + 2] << 8) | data[off + 3]
+        name_off = (data[off + 4] << 8) | data[off + 5]
+        name, i = b"", off + name_off
+        while i < len(data):
+            c = data[i]
+            name += bytes([c & 0x7F])
+            if c & 0x80:
+                break
+            i += 1
+        names.append(name.decode("ascii", "replace"))
+        off += size
+    return names, off
+
+
+def main():
+    vhd = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser(
+        "~/coco/disks/NitrOS9.vhd")
+    if not os.path.exists(vhd):
+        sys.exit(f"dw-bake: {vhd} not found")
+
+    with open(vhd, "r+b") as f:
+        lsn0 = f.read(SECTOR)
+        tot = (lsn0[0] << 16) | (lsn0[1] << 8) | lsn0[2]
+        bt = (lsn0[0x15] << 16) | (lsn0[0x16] << 8) | lsn0[0x17]
+        bsz = (lsn0[0x18] << 8) | lsn0[0x19]
+        if bt == 0 or bsz == 0:
+            sys.exit("dw-bake: no boot pointer in LSN0 - not a linked VHD")
+        if bt < tot:
+            sys.exit("dw-bake: bootfile lives inside the RBF filesystem - "
+                     "in-place extension is not safe here")
+        # The boot image sits in a DECB drive slot (630 sectors); it
+        # begins 12 sectors into the slot, leaving 618 for the file.
+        limit = 618 * SECTOR
+
+        f.seek(bt * SECTOR)
+        boot = f.read(bsz)
+        names, end = scan_modules(boot)
+        if end != len(boot):
+            sys.exit(f"dw-bake: bootfile scan stops at {end}/{len(boot)} - "
+                     "refusing to touch it")
+        if "rbdw" in names:
+            print(f"dw-bake: {vhd} already carries rbdw - nothing to do")
+            return
+
+        # Pull the DriveWire modules out of the VHD's own repository.
+        vhd_dir = os.path.dirname(os.path.abspath(vhd))
+        vhd_name = os.path.basename(vhd)
+        cmds = " && ".join(
+            f"os9 copy /vhd/{vhd_name},{REPO_RBF}/{m} /out/{m}"
+            for m in MODULES)
+        subprocess.run(
+            ["podman", "run", "--rm",
+             "-v", f"{vhd_dir}:/vhd:ro", "-v", os.getcwd() + ":/out",
+             "localhost/cmoc:freshen", "sh", "-c", cmds],
+            check=True)
+        addition = b""
+        for m in MODULES:
+            with open(m, "rb") as mf:
+                addition += mf.read()
+            os.unlink(m)
+
+        new = boot + addition
+        if len(new) > limit:
+            sys.exit(f"dw-bake: extended bootfile ({len(new)}) exceeds the "
+                     f"boot slot ({limit})")
+        add_names, add_end = scan_modules(addition)
+        if add_end != len(addition):
+            sys.exit("dw-bake: extracted modules failed the header scan")
+
+        f.seek(bt * SECTOR)
+        f.write(new)
+        f.seek(0x18)
+        f.write(bytes([(len(new) >> 8) & 0xFF, len(new) & 0xFF]))
+        print(f"dw-bake: appended {'+'.join(add_names)} "
+              f"({len(addition)} bytes) at LSN {bt}")
+        print(f"dw-bake: DD.BSZ {bsz} -> {len(new)} "
+              f"(restore to {bsz} to undo)")
+
+
+if __name__ == "__main__":
+    main()

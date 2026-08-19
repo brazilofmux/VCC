@@ -92,6 +92,11 @@ static HANDLE hDWTCPThread;
 // are we retrying tcp conn
 static bool retry = false;
 
+#ifndef _WIN32
+// consecutive empty status polls; see becker_read
+static int empty_polls = 0;
+#endif
+
 // circular buffer for socket io
 static char InBuffer[BUFFER_SIZE];
 static int InReadPos = 0;
@@ -191,10 +196,27 @@ unsigned char becker_read(unsigned short port)
 	switch (port) {
 		// read status
 		case 0x41:
-			if (dw_status() != 0)
+			if (dw_status() != 0) {
+#ifndef _WIN32
+				empty_polls = 0;
+#endif
 				return 2;
-			else
-				return 0;
+			}
+#ifndef _WIN32
+			// The emulated CPU can run thousands of times faster than
+			// real time, which shrinks the DriveWire driver's
+			// instruction-counted reply timeouts below the wire's
+			// wall-clock latency. When the CoCo is actively polling an
+			// empty status port on a live connection, yield a little
+			// wall time per poll so the server's reply lands inside
+			// the driver's poll budget. Costs nothing when idle or
+			// when data is flowing, and the yield is capped (~1s of
+			// wall time per wait) so a mute server degrades to the
+			// driver's own fast timeout instead of stalling emulation.
+			if (dwSocket != 0 && !retry && ++empty_polls > 16 && empty_polls < 20016)
+				std::this_thread::sleep_for(std::chrono::microseconds(50));
+#endif
+			return 0;
 		// read data 
 		case 0x42:
 			return(dw_read());
@@ -247,6 +269,19 @@ unsigned char dw_status( void )
 // coco reads a byte
 unsigned char dw_read( void )
 {
+	// A data-port read with nothing buffered must not consume a slot:
+	// the read pointer would slide past the write pointer and the ring
+	// would look phantom-full of zeros, desyncing every transfer that
+	// follows. Real hardware has no byte to consume either - the FIFO
+	// lives on the server side. (A stray probe read of $FF42 during
+	// machine reset triggers exactly this.)
+	if (InReadPos == InWritePos) {
+#ifndef _WIN32
+		if (getenv("VCC_DW_TRACE"))
+			fprintf(stderr, "becker: data read on EMPTY ring ignored\n");
+#endif
+		return 0;
+	}
 	// increment buffer read pos, return next byte
 	unsigned char dwdata = InBuffer[InReadPos];
 	InReadPos++;

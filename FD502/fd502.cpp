@@ -734,8 +734,18 @@ void LoadConfig()  // Called on SetIniPath
 
 #ifdef COMBINE_BECKER
 	BeckerEnabled=Setting().read(MS_BECKER,"DWEnable", 0);
+	// VCC_DW=1/0 overrides the ini, like VCC_DISK0-3 below: tooling
+	// (tools/dw-serve, tests/drivewire.sh) flips the becker port on
+	// without editing the user's config.
+	if (const char* dw = getenv("VCC_DW"))
+		BeckerEnabled = (*dw == '1');
 	Setting().read(MS_BECKER,"DWServerAddr","127.0.0.1",BeckerAddr,MAX_PATH);
 	Setting().read(MS_BECKER,"DWServerPort","65504",BeckerPort,32);
+	if (const char* p = getenv("VCC_DW_PORT"))
+	{
+		strncpy(BeckerPort, p, 31);
+		BeckerPort[31] = '\0';
+	}
 	if(*BeckerAddr == '\0') strcpy(BeckerAddr,"127.0.0.1");
 	if(*BeckerPort == '\0') strcpy(BeckerPort,"65504");
 	becker_sethost(BeckerAddr,BeckerPort);

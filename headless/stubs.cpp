@@ -37,6 +37,7 @@ namespace
 		unsigned char col;
 		unsigned char row;
 		bool          shift;
+		bool          ctrl;
 	};
 
 	// Standard CoCo keyboard matrix: rows PA0-PA6, columns PB0-PB7.
@@ -78,6 +79,11 @@ namespace
 		case '+':  key = {3, 5, true}; return true;
 		case '*':  key = {2, 5, true}; return true;
 		case '?':  key = {7, 5, true}; return true;
+		case '<':  key = {4, 5, true}; return true;
+		case '>':  key = {6, 5, true}; return true;
+		// NitrOS-9's CoCo 3 keydrv reaches the missing ASCII through
+		// CTRL combos; underscore (OS-9 filenames use it) is CTRL+'-'.
+		case '_':  key = {5, 5, false, true}; return true;
 		}
 		return false;   // unsupported character: skipped
 	}
@@ -121,8 +127,11 @@ extern "C" unsigned char vccKeyboardGetScan(unsigned char Col)
 			const unsigned char active = (unsigned char)~Col;
 			if (active & (unsigned char)(1u << key.col))
 				rows = (unsigned char)(1u << key.row);
-			// SHIFT is col 7, row 6; held together with the base key.
+			// SHIFT (col 7) and CTRL (col 4) live on row 6; either is
+			// held together with the base key when synthesized.
 			if (key.shift && (active & 0x80u))
+				rows |= (unsigned char)(1u << 6);
+			if (key.ctrl && (active & 0x10u))
 				rows |= (unsigned char)(1u << 6);
 		}
 	}

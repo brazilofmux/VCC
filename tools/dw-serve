@@ -1,0 +1,48 @@
+#!/bin/bash
+# dw-serve: DriveWire session in one command - start pyDriveWire
+# serving disk images, then launch VCC with the becker port on.
+#
+#   tools/dw-serve                  serve ~/coco/dw/drive{0,1}.dsk, run vcc-sdl
+#   tools/dw-serve a.dsk b.dsk      serve these images as DW drives 0,1,...
+#
+# Needs ~/g/pyDriveWire with its .venv (python3 -m venv .venv;
+# .venv/bin/pip install pyserial legacy-cgi), and a VHD baked with
+# tools/dw-bake so /x0 and /x1 exist at boot. The server is killed
+# when VCC exits. Inside OS-9, DW drive 0 is /x0 and drive 1 is /x1;
+# on the Mac the same images are readable with ToolShed ("os9 dir
+# ~/coco/dw/drive1.dsk"). Never touch /x0//x1 without the server -
+# the driver polls with interrupts masked and the machine freezes.
+set -euo pipefail
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+PYDW="$HOME/g/pyDriveWire"
+[ -x "$PYDW/.venv/bin/python" ] || {
+    echo "dw-serve: $PYDW/.venv missing - clone n6il/pyDriveWire (develop" >&2
+    echo "branch) and: python3 -m venv .venv; .venv/bin/pip install pyserial legacy-cgi" >&2
+    exit 2
+}
+
+if [ $# -gt 0 ]; then
+    DISKS=("$@")
+else
+    mkdir -p "$HOME/coco/dw"
+    DISKS=("$HOME/coco/dw/drive0.dsk" "$HOME/coco/dw/drive1.dsk")
+    for d in "${DISKS[@]}"; do
+        if [ ! -f "$d" ]; then
+            echo "dw-serve: creating $d (OS-9 formatted)"
+            dir="$(dirname "$d")"
+            podman run --rm -v "$dir":/work localhost/cmoc:freshen \
+                sh -c "cd /work && os9 format -e -t35 -ss -dd -q '$(basename "$d")'"
+        fi
+    done
+fi
+
+LOG="${TMPDIR:-/tmp}/pydrivewire.log"
+( tail -f /dev/null | "$PYDW/.venv/bin/python" -u "$PYDW/pyDriveWire.py" \
+      -a -p 65504 "${DISKS[@]}" >"$LOG" 2>&1 ) &
+SERVER=$!
+trap 'kill $SERVER 2>/dev/null || true' EXIT
+sleep 1
+kill -0 $SERVER 2>/dev/null || { echo "dw-serve: server died - see $LOG" >&2; exit 1; }
+echo "dw-serve: pyDriveWire up on 65504 (${DISKS[*]}), log: $LOG"
+
+VCC_DW=1 "$REPO/build/vcc-sdl"
