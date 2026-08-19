@@ -180,6 +180,20 @@ struct Hd6309State
 	unsigned char NatEmuCycles3130 = 31;
 	unsigned char NatEmuCycles42 = 4;
 	unsigned char NatEmuCycles53 = 5;
+
+	// Chain-stub context (block linking): interrupt lines, sync/halt
+	// flags, and the dispatch budget live INSIDE the CPU state block so
+	// the emitted stub reaches everything off one base register instead
+	// of materializing an imm64 per operand. ChainIntOR/latch/pad are
+	// four consecutive bytes starting 4-aligned, so a single 32-bit
+	// load tests "anything pending through the interrupt latch".
+	uint64_t      ChainRuns = 0;        // stub-side transition counter
+	int           ChainCycleFor = 0;    // dispatch budget (gCycleFor)
+	unsigned int  ChainSyncWaiting = 0;
+	int           ChainHaltedPending = 0;
+	unsigned char ChainIntOR = 0;       // OR of InterruptLine[]
+	VCC::DFF      ChainIntLatch;        // D at +1, Q at +2
+	unsigned char ChainPad = 0;         // packed word's 4th byte, always 0
 };
 
 static Hd6309State cpu_state;
@@ -196,7 +210,7 @@ static unsigned char &ccbits = cpu_state.ccbits, &mdbits = cpu_state.mdbits;
 static unsigned char InsCycles[2][25];
 static unsigned char *ureg8[8];
 static unsigned short *xfreg16[8];
-static unsigned int SyncWaiting=0;
+static unsigned int& SyncWaiting = cpu_state.ChainSyncWaiting;
 unsigned short temp16;
 static signed short stemp16;
 static signed char stemp8;
@@ -204,14 +218,14 @@ static unsigned int  temp32;
 static int stemp32;
 static unsigned char temp8; 
 static unsigned char InterruptLine[IS_MAX] = { 0 };
-static unsigned char InterruptLineOR = 0;
-static VCC::DFF InterruptLatch;
+static unsigned char& InterruptLineOR = cpu_state.ChainIntOR;
+static VCC::DFF& InterruptLatch = cpu_state.ChainIntLatch;
 static unsigned char Source=0,Dest=0;
 static unsigned char postbyte=0;
 static short unsigned postword=0;
 static signed char *spostbyte=(signed char *)&postbyte;
 static signed short *spostword=(signed short *)&postword;
-static int gCycleFor;
+static int& gCycleFor = cpu_state.ChainCycleFor;
 
 static std::vector<unsigned short> CPUBreakpoints;
 static std::vector<unsigned short> CPUTraceTriggers;
@@ -225,7 +239,8 @@ static uint32_t gJitArenaFlushes = 0;
 // Chain-stub transitions: block->block jumps that never returned to
 // the dispatcher. Incremented by emitted code (single-threaded CPU
 // loop, no atomicity needed). Interval-reset with the other stats.
-static uint64_t gJitChainRuns = 0;
+// Lives in cpu_state so the stub updates it base-relative.
+static uint64_t& gJitChainRuns = cpu_state.ChainRuns;
 
 // VCC_COUNT_HANDLERS measurement support: per-handler execution counts
 // on the interpreter block path, dumped (with addresses for symbol
@@ -312,7 +327,7 @@ static unsigned char *NatEmuCycles[] =
 	&NatEmuCycles53
 };
 
-int HaltedInsPending = 0;
+static int& HaltedInsPending = cpu_state.ChainHaltedPending;
 BOOL DoingTFM = false;
 
 //--- Block Cache ---

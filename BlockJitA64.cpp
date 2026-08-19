@@ -1300,6 +1300,30 @@ static void EnsureChainStub()
         return;
     }
 
+    // The stub loads its operands base-relative off cpu_state - the
+    // core keeps them there (Hd6309State chain-context fields). Verify
+    // the layout it depends on: everything within immediate-load range
+    // of base, the OR/latch bytes packed (one 32-bit load tests OR, D,
+    // Q, and a zero pad), and the required alignments for scaled
+    // immediate offsets.
+    const uint8_t* cbase = (const uint8_t*)g_addrs.base;
+    const int64_t off_cycle_for = (const uint8_t*)g_addrs.cycle_for      - cbase;
+    const int64_t off_int_or    = (const uint8_t*)g_addrs.interrupt_or   - cbase;
+    const int64_t off_latch     = (const uint8_t*)g_addrs.interrupt_latch- cbase;
+    const int64_t off_sync      = (const uint8_t*)g_addrs.sync_waiting   - cbase;
+    const int64_t off_halted    = (const uint8_t*)g_addrs.halted_pending - cbase;
+    const int64_t off_runs      = (const uint8_t*)g_addrs.chain_runs     - cbase;
+    auto in_range = [](int64_t off, int align) {
+        return off >= 0 && off < 4096 * align && (off % align) == 0;
+    };
+    if (!in_range(off_cycle_for, 4) || !in_range(off_int_or, 4) ||
+        !in_range(off_sync, 4) || !in_range(off_halted, 4) ||
+        !in_range(off_runs, 8) || off_latch != off_int_or + 1)
+    {
+        g_no_link = true;   // layout contract not met; run unlinked
+        return;
+    }
+
     constexpr size_t kStubBytes = 320;
     if (g_arena_used + kStubBytes > kArenaSize)
         return;             // retried after the next arena flush
@@ -1318,30 +1342,22 @@ static void EnsureChainStub()
     // w9 = CycleCounter, w11 = CycleFor; budget exhausted -> bail
     emit_mov_x64_imm64(&e, A64_W10, (uint64_t)(uintptr_t)g_addrs.base);
     emit_ldr_w32_imm(&e, A64_W9, A64_W10, g_off_cyc);
-    emit_mov_x64_imm64(&e, A64_W11, (uint64_t)(uintptr_t)g_addrs.cycle_for);
-    emit_ldr_w32_imm(&e, A64_W11, A64_W11, 0);
+    emit_ldr_w32_imm(&e, A64_W11, A64_W10, (uint32_t)off_cycle_for);
     emit_cmp_w32_w32(&e, A64_W9, A64_W11);
     fixups[nfix++] = { e.offset, 0, A64_COND_GE, A64_W0 };
     emit_b_cond(&e, A64_COND_GE, 0);
 
-    // Pending interrupt lines or latch contents -> bail
-    emit_mov_x64_imm64(&e, A64_W12, (uint64_t)(uintptr_t)g_addrs.interrupt_or);
-    emit_ldrb_imm(&e, A64_W12, A64_W12, 0);
-    emit_mov_x64_imm64(&e, A64_W13, (uint64_t)(uintptr_t)g_addrs.interrupt_latch);
-    emit_ldrb_imm(&e, A64_W14, A64_W13, 0);    // DFF.D
-    emit_ldrb_imm(&e, A64_W13, A64_W13, 1);    // DFF.Q
-    emit_orr_w32(&e, A64_W12, A64_W12, A64_W14);
-    emit_orr_w32(&e, A64_W12, A64_W12, A64_W13);
+    // Anything pending through the interrupt latch -> bail. One 32-bit
+    // load covers InterruptLineOR, DFF.D, DFF.Q, and the zero pad.
+    emit_ldr_w32_imm(&e, A64_W12, A64_W10, (uint32_t)off_int_or);
     fixups[nfix++] = { e.offset, 1, A64_COND_EQ, A64_W12 };
     emit_cbnz_w32(&e, A64_W12, 0);
 
     // SYNC wait or halted-instruction pending -> bail
-    emit_mov_x64_imm64(&e, A64_W13, (uint64_t)(uintptr_t)g_addrs.sync_waiting);
-    emit_ldr_w32_imm(&e, A64_W13, A64_W13, 0);
+    emit_ldr_w32_imm(&e, A64_W13, A64_W10, (uint32_t)off_sync);
     fixups[nfix++] = { e.offset, 1, A64_COND_EQ, A64_W13 };
     emit_cbnz_w32(&e, A64_W13, 0);
-    emit_mov_x64_imm64(&e, A64_W13, (uint64_t)(uintptr_t)g_addrs.halted_pending);
-    emit_ldr_w32_imm(&e, A64_W13, A64_W13, 0);
+    emit_ldr_w32_imm(&e, A64_W13, A64_W10, (uint32_t)off_halted);
     fixups[nfix++] = { e.offset, 1, A64_COND_EQ, A64_W13 };
     emit_cbnz_w32(&e, A64_W13, 0);
 
@@ -1378,10 +1394,9 @@ static void EnsureChainStub()
     emit_cbz_x64(&e, A64_W16, 0);
 
     // Count the transition (single-threaded CPU loop; plain RMW).
-    emit_mov_x64_imm64(&e, A64_W12, (uint64_t)(uintptr_t)g_addrs.chain_runs);
-    emit_ldr_x64_imm(&e, A64_W13, A64_W12, 0);
+    emit_ldr_x64_imm(&e, A64_W13, A64_W10, (uint32_t)off_runs);
     emit_add_x64_imm(&e, A64_W13, A64_W13, 1);
-    emit_str_x64_imm(&e, A64_W13, A64_W12, 0);
+    emit_str_x64_imm(&e, A64_W13, A64_W10, (uint32_t)off_runs);
 
     emit_br(&e, A64_W16);
 
