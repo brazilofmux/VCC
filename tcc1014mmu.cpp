@@ -269,7 +269,11 @@ void LoadRom()
 	if (*RomPath == '\0') {
 		GetModuleFileName(nullptr, RomPath, MAX_PATH);
 		PathRemoveFileSpec(RomPath);
+#ifdef _WIN32
 		strncat(RomPath, "\\coco3.rom", MAX_PATH - strlen(RomPath) - 1);
+#else
+		strncat(RomPath, "/coco3.rom", MAX_PATH - strlen(RomPath) - 1);
+#endif
 	}
 
 	if ((hFile = fopen(RomPath,"rb")) != nullptr) {

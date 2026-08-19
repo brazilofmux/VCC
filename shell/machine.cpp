@@ -75,8 +75,16 @@ VCC::Util::settings& Setting()
 
 void GetExtRomPath(char* path)
 {
-	std::strncpy(path, VccShell::RomPathOverride, MAX_PATH - 1);
-	path[MAX_PATH - 1] = '\0';
+	// Command line first; otherwise the same vcc.ini key the Windows
+	// config dialog writes, so a bare launch finds the ROM regardless
+	// of the working directory.
+	if (VccShell::RomPathOverride[0] != '\0')
+	{
+		std::strncpy(path, VccShell::RomPathOverride, MAX_PATH - 1);
+		path[MAX_PATH - 1] = '\0';
+		return;
+	}
+	Setting().read("Misc", "ExternalBasicImage", "", path, MAX_PATH);
 }
 
 int GetPaletteType()

@@ -93,8 +93,11 @@ static void DumpTextScreen()
 
 int main(int argc, char** argv)
 {
-	std::snprintf(VccShell::RomPathOverride, sizeof(VccShell::RomPathOverride),
-	              "%s", (argc > 1) ? argv[1] : "coco3.rom");
+	// No ROM argument: leave the override empty so the shell falls back
+	// to the ExternalBasicImage path in vcc.ini, same as vcc-sdl.
+	if (argc > 1)
+		std::snprintf(VccShell::RomPathOverride,
+		              sizeof(VccShell::RomPathOverride), "%s", argv[1]);
 	const int frames = (argc > 2) ? std::atoi(argv[2]) : 600;
 	const char* type_text = (argc > 3) ? argv[3] : nullptr;
 
@@ -115,7 +118,9 @@ int main(int argc, char** argv)
 	}
 
 	std::printf("vcc-headless: rom=%s frames=%d cpu=%s ram=%s\n",
-	            VccShell::RomPathOverride, frames,
+	            VccShell::RomPathOverride[0] ? VccShell::RomPathOverride
+	                                         : "(vcc.ini ExternalBasicImage)",
+	            frames,
 	            EmuState.CpuType == 1 ? "HD6309" : "MC6809",
 	            EmuState.RamSize == 0 ? "128K" : EmuState.RamSize == 1 ? "512K"
 	          : EmuState.RamSize == 2 ? "2M" : "8M");
