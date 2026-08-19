@@ -5,6 +5,7 @@
 #   tools/coco-run --sdl hello.c      ...and launch vcc-sdl, disk in drive 1
 #   tools/coco-run --headless prog.c  batch-run in vcc-headless, print screen
 #   tools/coco-run --os9 prog.c       OS-9 module on an OS-9 floppy instead
+#   tools/coco-run --os9 prog.b09     BASIC09 source: basic09 loads AND runs it
 #
 # Accepts C (CMOC), assembly (.asm/.s via lwasm --decb), and BASIC
 # (.bas, written as an ASCII file to LOAD). The build runs in the local
@@ -62,14 +63,27 @@ if [ "$TARGET" = os9 ]; then
                 os9 makdir '$(basename "$DSK")',CMDS &&
                 os9 copy $MOD '$(basename "$DSK")',CMDS/$MOD &&
                 os9 attr -q -e -pe -r -pr '$(basename "$DSK")',CMDS/$MOD"
-            ;;
-        *)
-            echo "coco-run --os9: only .c is wired so far" >&2; exit 2 ;;
-    esac
-    LOADER="chx /d1/cmds
+            LOADER="chx /d1/cmds
 $MOD
 "
-    TYPE=$'DOS\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~chx /d1/cmds\n~~'"$MOD"$'\n~~~~~'
+            TYPE=$'DOS\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~chx /d1/cmds\n~~'"$MOD"$'\n~~~~~'
+            ;;
+        b09)
+            # BASIC09 source: copied with linefeed translation; the
+            # basic09 pathlist invocation loads AND runs it.
+            cp "$SRC" "$WORK/$MOD.b09"
+            rm -f "$DSK"
+            podman run --rm -v "$WORK":/work localhost/cmoc:freshen sh -c "
+                cd /work &&
+                os9 format -e -t35 -ss -dd -q '$(basename "$DSK")' &&
+                os9 copy -l $MOD.b09 '$(basename "$DSK")',$MOD.b09"
+            LOADER="basic09 /d1/$MOD.b09
+"
+            TYPE=$'DOS\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~basic09 /d1/'"$MOD"$'.b09\n~~~~BYE\n~~'
+            ;;
+        *)
+            echo "coco-run --os9: .c and .b09 are wired" >&2; exit 2 ;;
+    esac
     echo "coco-run: built $DSK (CMDS/$MOD)"
     case "$MODE" in
         build)

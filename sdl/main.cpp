@@ -42,6 +42,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "joystickinput.h"
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 #include <unordered_map>
@@ -102,6 +103,68 @@ void PasteTick()
 			gPasteQueue.clear();
 			gPasteIndex = 0;
 		}
+	}
+}
+
+// Game controller: when one is connected it drives the same stick the
+// mouse does (both call joystick()/SetButtonStatus(), last writer
+// wins), so the default UseMouse=1 config covers it and hot-plug just
+// works. Left stick or d-pad steers; A/B are the fire buttons.
+SDL_GameController* gController = nullptr;
+
+void ControllerOpenFirst()
+{
+	if (gController != nullptr)
+		return;
+	for (int i = 0; i < SDL_NumJoysticks(); ++i)
+	{
+		if (SDL_IsGameController(i))
+		{
+			gController = SDL_GameControllerOpen(i);
+			if (gController != nullptr)
+				break;
+		}
+	}
+}
+
+void ControllerAxis(const SDL_ControllerAxisEvent& ax)
+{
+	if (gController == nullptr)
+		return;
+	// Map both analog axes each time either moves: SDL range -32768..
+	// 32767 onto the CoCo's 0..16383.
+	const int lx = SDL_GameControllerGetAxis(gController, SDL_CONTROLLER_AXIS_LEFTX);
+	const int ly = SDL_GameControllerGetAxis(gController, SDL_CONTROLLER_AXIS_LEFTY);
+	(void)ax;
+	joystick((unsigned int)((lx + 32768) >> 2),
+	         (unsigned int)((ly + 32768) >> 2));
+}
+
+void ControllerButton(const SDL_ControllerButtonEvent& bt, bool down)
+{
+	switch (bt.button)
+	{
+	case SDL_CONTROLLER_BUTTON_A: SetButtonStatus(0, down ? 1 : 0); break;
+	case SDL_CONTROLLER_BUTTON_B: SetButtonStatus(1, down ? 1 : 0); break;
+	// D-pad as a digital stick: full deflection while held.
+	case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+	case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+	case SDL_CONTROLLER_BUTTON_DPAD_UP:
+	case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+	{
+		unsigned int x = 8191, y = 8191;
+		if (gController != nullptr)
+		{
+			if (SDL_GameControllerGetButton(gController, SDL_CONTROLLER_BUTTON_DPAD_LEFT))  x = 0;
+			if (SDL_GameControllerGetButton(gController, SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) x = 16383;
+			if (SDL_GameControllerGetButton(gController, SDL_CONTROLLER_BUTTON_DPAD_UP))    y = 0;
+			if (SDL_GameControllerGetButton(gController, SDL_CONTROLLER_BUTTON_DPAD_DOWN))  y = 16383;
+		}
+		joystick(x, y);
+		break;
+	}
+	default:
+		break;
 	}
 }
 
@@ -308,7 +371,7 @@ int main(int argc, char** argv)
 		std::snprintf(VccShell::RomPathOverride,
 		              sizeof(VccShell::RomPathOverride), "%s", argv[1]);
 
-	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0)
+	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0)
 	{
 		std::fprintf(stderr, "vcc-sdl: SDL_Init failed: %s\n", SDL_GetError());
 		return 1;
@@ -415,6 +478,24 @@ int main(int argc, char** argv)
 							gPastePhase = 0;
 						}
 					}
+					else if (ev.key.keysym.sym == SDLK_c &&
+					         (ev.key.keysym.mod & KMOD_SHIFT))
+					{
+						// Cmd+Shift+C: the rendered screen as a PNG on
+						// the clipboard (graphics modes included).
+						// macOS-only plumbing: BMP -> sips -> PNG ->
+						// osascript pastes it onto the pasteboard.
+						char bmp[512], png[512], cmd[2048];
+						const char* tmp = getenv("TMPDIR");
+						std::snprintf(bmp, sizeof(bmp), "%s/vcc-clip.bmp", tmp ? tmp : "/tmp");
+						std::snprintf(png, sizeof(png), "%s/vcc-clip.png", tmp ? tmp : "/tmp");
+						save_shot(bmp);
+						std::snprintf(cmd, sizeof(cmd),
+							"sips -s format png '%s' --out '%s' >/dev/null 2>&1 && "
+							"osascript -e 'set the clipboard to (read (POSIX file \"%s\") as \u00abclass PNGf\u00bb)' >/dev/null 2>&1 &",
+							bmp, png, png);
+						system(cmd);
+					}
 					else if (ev.key.keysym.sym == SDLK_c)
 					{
 						const std::string text = VccShell::ScreenToUtf8();
@@ -447,6 +528,33 @@ int main(int argc, char** argv)
 					if (CocoKeyForEvent(ev.key.keysym, key))
 						gPressed[ev.key.keysym.sym] = key;
 				}
+				break;
+
+			case SDL_CONTROLLERDEVICEADDED:
+				ControllerOpenFirst();
+				break;
+
+			case SDL_CONTROLLERDEVICEREMOVED:
+				if (gController != nullptr &&
+				    ev.cdevice.which == SDL_JoystickInstanceID(
+				        SDL_GameControllerGetJoystick(gController)))
+				{
+					SDL_GameControllerClose(gController);
+					gController = nullptr;
+					ControllerOpenFirst();
+				}
+				break;
+
+			case SDL_CONTROLLERAXISMOTION:
+				ControllerAxis(ev.caxis);
+				break;
+
+			case SDL_CONTROLLERBUTTONDOWN:
+				ControllerButton(ev.cbutton, true);
+				break;
+
+			case SDL_CONTROLLERBUTTONUP:
+				ControllerButton(ev.cbutton, false);
 				break;
 
 			case SDL_MOUSEMOTION:
