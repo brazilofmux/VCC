@@ -47,8 +47,12 @@ namespace VCC::Core
 		// The pak bus calls process_horizontal_sync every emulated
 		// scanline; carts that do nothing there return false so the
 		// bus can skip the dispatch entirely (the per-scanline fan-out
-		// to no-ops was ~14% of CPU-bound wall time). Conservative
-		// default: true.
+		// to no-ops was ~14% of CPU-bound wall time). Two questions:
+		// has_ is the static capability (does the cart implement the
+		// heartbeat at all - safe to cache), wants_ is the current
+		// demand (may change with device state, e.g. an FDC only needs
+		// ticks while its motor spins). Conservative defaults: true.
+		virtual bool has_horizontal_sync() const { return true; }
 		virtual bool wants_horizontal_sync() const { return true; }
 		virtual void write_port(unsigned char port_id, unsigned char value) = 0;
 		virtual unsigned char read_port(unsigned char port_id) = 0;

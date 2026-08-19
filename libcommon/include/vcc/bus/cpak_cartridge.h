@@ -49,7 +49,15 @@ namespace VCC::Core
 
 		void reset() override;
 		void process_horizontal_sync() override;
-		bool wants_horizontal_sync() const override { return wants_hsync_; }
+		// Capability: does the module export a heartbeat at all.
+		bool has_horizontal_sync() const override { return wants_hsync_; }
+		// Demand: dynamic when the module exports PakHsyncDemand (e.g.
+		// the FDC only needs ticks while its motor spins); otherwise
+		// the same as the capability.
+		bool wants_horizontal_sync() const override
+		{
+			return hsync_demand_ ? hsync_demand_() != 0 : wants_hsync_;
+		}
 		void status(char* text_buffer, size_t buffer_size) override;
 		void write_port(unsigned char port_id, unsigned char value) override;
 		unsigned char read_port(unsigned char port_id) override;
@@ -76,6 +84,7 @@ namespace VCC::Core
 		const PakGetDescriptionModuleFunction get_description_;
 		const PakResetModuleFunction reset_;
 		const PakHeartBeatModuleFunction heartbeat_;
+		const PakHsyncDemandModuleFunction hsync_demand_;   // nullable
 		const PakGetStatusModuleFunction status_;
 		const PakWritePortModuleFunction  write_port_;
 		const PakReadPortModuleFunction read_port_;

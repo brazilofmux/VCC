@@ -36,6 +36,7 @@
 #include <vcc/util/FileOps.h>
 #include <vcc/util/DialogOps.h>
 #include <vcc/util/RomBlockStore.h>
+#include <atomic>
 #include <fstream>
 #include <vcc/util/host_services.h>
 #ifdef _WIN32
@@ -130,11 +131,47 @@ static void PakRegisterRomBlocks(slot_id_type /*SlotId*/,
 	VCC::GetRomBlockStore().AddRomBlocks(fingerprint, rom_base, std::move(copy));
 }
 
+// Cached "does the cartridge tree need per-scanline ticks right now".
+// PakTimer runs at 15.7kHz emulated - the lock+virtual fan-out just to
+// reach an idle FDC's early-return was ~22% of CPU-bound wall time.
+// Demand only turns ON through paths that hold gPakMutex and refresh
+// this flag afterwards (port writes, reset, cartridge load, menu), so
+// the unlocked fast-path load can never miss a wake-up; OFF
+// transitions are picked up by the refresh after each real tick.
+static std::atomic<bool> gPakTickDemand{true};
+
+static void RefreshPakTickDemand()   // call with gPakMutex held
+{
+	gPakTickDemand.store(gActiveCartrige->wants_horizontal_sync(),
+	                     std::memory_order_relaxed);
+}
+
 void PakTimer()
 {
+	// Temporary probe (VCC_PAK_STATS): tick/skip ratio at exit.
+	static std::atomic<uint64_t> ticks{0}, skips{0};
+	static const bool pak_stats = [] {
+		const bool on = getenv("VCC_PAK_STATS") != nullptr;
+		if (on)
+			atexit([] {
+				fprintf(stderr, "[PAK] ticks=%llu skips=%llu\n",
+				        (unsigned long long)ticks.load(),
+				        (unsigned long long)skips.load());
+			});
+		return on;
+	}();
+
+	if (!gPakTickDemand.load(std::memory_order_relaxed))
+	{
+		if (pak_stats) ++skips;
+		return;
+	}
+	if (pak_stats) ++ticks;
+
 	VCC::Util::section_locker lock(gPakMutex);
 
 	gActiveCartrige->process_horizontal_sync();
+	RefreshPakTickDemand();
 }
 
 void ResetBus()
@@ -142,6 +179,7 @@ void ResetBus()
 	VCC::Util::section_locker lock(gPakMutex);
 
 	gActiveCartrige->reset();
+	RefreshPakTickDemand();
 }
 
 void GetModuleStatus(SystemState *SMState)
@@ -163,6 +201,7 @@ void PakWritePort(unsigned char Port,unsigned char Data)
 	VCC::Util::section_locker lock(gPakMutex);
 
 	gActiveCartrige->write_port(Port,Data);
+	RefreshPakTickDemand();
 }
 
 unsigned char PackMem8Read (unsigned short Address)
@@ -332,6 +371,7 @@ static cartridge_loader_status load_any_cartridge(const char *filename, const ch
 
 	// initialize the cartridge and reset the CPU *now*
 	gActiveCartrige->start();
+	RefreshPakTickDemand();
 	EmuState.ResetPending = 2;
 
 	return loadedCartridge.load_result;
@@ -350,6 +390,7 @@ void UnloadDll()
 
 	SendMessage(EmuState.WindowHandle,WM_VCC_UPD_MENU,(WPARAM) 0,(LPARAM) 0);
 	gActiveCartrige->start();
+	RefreshPakTickDemand();
 }
 
 void GetCurrentModule(char *DefaultModule)
@@ -422,4 +463,5 @@ void CartMenuActivated(unsigned int MenuID)
 
 	unsigned char menu_item = MenuID & 0xFF;
 	gActiveCartrige->menu_item_clicked(menu_item);
+	RefreshPakTickDemand();
 }

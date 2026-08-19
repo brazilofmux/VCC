@@ -91,6 +91,10 @@ extern "C"
 	using PakGetDescriptionModuleFunction  = const char* (*)();
 	using PakResetModuleFunction           = void (*)();
 	using PakHeartBeatModuleFunction       = void (*)();
+	// Optional export ("PakHsyncDemand"): returns nonzero while the module
+	// currently needs its heartbeat called every scanline. Modules without
+	// it are ticked whenever they export PakProcessHorizontalSync at all.
+	using PakHsyncDemandModuleFunction     = unsigned char (*)();
 	using PakGetStatusModuleFunction       = void (*)(char* text_buffer, size_t buffer_size);
 	using PakWritePortModuleFunction       = void (*)(unsigned char port, unsigned char value);
 	using PakReadMemoryByteModuleFunction  = unsigned char (*)(unsigned short address);

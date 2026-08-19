@@ -137,6 +137,14 @@ extern "C"
 		gMultiPakInterface.process_horizontal_sync();
 	}
 
+	// Current tick demand: any capable slot that wants ticks right now
+	// (fd502's demand drops when its motor stops, so an idle system can
+	// skip the whole per-scanline fan-out).
+	__declspec(dllexport)  unsigned char PakHsyncDemand()
+	{
+		return gMultiPakInterface.wants_horizontal_sync() ? 1 : 0;
+	}
+
 	__declspec(dllexport)  unsigned char PakReadMemoryByte(unsigned short memory_address)
 	{
 		return gMultiPakInterface.read_memory_byte(memory_address);

@@ -110,6 +110,8 @@ namespace VCC::Core
 					module_handle, "PakReset", default_reset)),
 		heartbeat_(GetImportedProcAddress(
 					module_handle, "PakProcessHorizontalSync", default_heartbeat)),
+		hsync_demand_(GetImportedProcAddress<PakHsyncDemandModuleFunction>(
+					module_handle, "PakHsyncDemand", nullptr)),
 		status_(GetImportedProcAddress(
 					module_handle, "PakGetStatus", default_status)),
 		write_port_(GetImportedProcAddress(

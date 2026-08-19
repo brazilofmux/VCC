@@ -689,6 +689,14 @@ long ReadTrack (	unsigned char Side,		//0 or 1
 }
 
 //This gets called at the end of every scan line so the controller has acurate timing.
+// Does the FDC currently need its per-scanline PingFdc tick? Motor
+// state only changes in DecodeControlReg (a port write), so the host
+// can cache this and re-query after port writes and ticks.
+unsigned char FdcTickDemand()
+{
+	return (MotorOn != 0) || (CurrentCommand != IDLE);
+}
+
 void PingFdc()
 {
 	static char wobble=0;

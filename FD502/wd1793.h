@@ -24,6 +24,7 @@ int mount_disk_image(const char *,unsigned char );
 void unmount_disk_image(unsigned char drive);
 void DiskStatus(char* text_buffer, size_t buffer_size);
 void PingFdc();
+unsigned char FdcTickDemand();
 unsigned char SetTurboDisk( unsigned char);
 //unsigned char UseKeyboardLeds(unsigned char);
 DWORD GetDriverVersion ();

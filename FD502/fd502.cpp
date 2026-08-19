@@ -276,6 +276,14 @@ extern "C"
 		return;
 	}
 
+	// Optional demand query: the heartbeat above is a no-op unless the
+	// FDC motor is spinning (or a command is mid-flight), so tell the
+	// host when the per-scanline tick can be skipped entirely.
+	__declspec(dllexport) unsigned char PakHsyncDemand()
+	{
+		return FdcTickDemand();
+	}
+
 	__declspec(dllexport) unsigned char PakReadMemoryByte(unsigned short Address)
 	{
 		return(RomPointer[SelectRom][Address & (EXTROMSIZE-1)]);

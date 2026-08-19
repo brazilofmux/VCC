@@ -94,6 +94,11 @@ namespace VCC::Core
 			cartridge_->process_horizontal_sync();
 		}
 
+		bool has_horizontal_sync() const
+		{
+			return cartridge_->has_horizontal_sync();
+		}
+
 		bool wants_horizontal_sync() const
 		{
 			return cartridge_->wants_horizontal_sync();

@@ -153,12 +153,26 @@ void multipak_cartridge::process_horizontal_sync()
 	}
 }
 
+bool multipak_cartridge::wants_horizontal_sync() const
+{
+	// Current demand: any capable slot that wants ticks right now.
+	// (hsync_mask_ is the static capability set; the per-slot query is
+	// dynamic for modules that export PakHsyncDemand.)
+	for (auto mpi_slot(0u); mpi_slot < slots_.size(); mpi_slot++)
+	{
+		if ((hsync_mask_ & (1u << mpi_slot)) &&
+		    slots_[mpi_slot].wants_horizontal_sync())
+			return true;
+	}
+	return false;
+}
+
 void multipak_cartridge::refresh_hsync_mask()
 {
 	unsigned int mask = 0;
 	for (auto mpi_slot(0u); mpi_slot < slots_.size(); mpi_slot++)
 	{
-		if (slots_[mpi_slot].wants_horizontal_sync())
+		if (slots_[mpi_slot].has_horizontal_sync())
 			mask |= 1u << mpi_slot;
 	}
 	hsync_mask_ = mask;
