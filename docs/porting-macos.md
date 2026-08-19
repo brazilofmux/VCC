@@ -203,6 +203,24 @@ regardless of layout, so CI stays green while it lands.
    is superblock traces (record through predictable branches with
    guard exits), then the dispatcher-entry and metronome floors.
 
+   *Superblock arc (same day):* DECB ~2105x, OS-9 ~5165x (+8%).
+   Conditional short branches observed not-taken become mid-block
+   guards; blocks stay contiguous; the arm64 emitter inlines guards
+   with exit snippets that leave through the chain stub; the x86
+   backend refuses guarded blocks (replay covers them); RomAnalyzer
+   extends prebuilt blocks the same way; MAX_BLOCK_INSNS 14. Two
+   fixes the benchmarks demanded: superblock subsumption in
+   FinishRecord (a taken-guard re-record is a prefix of the cached
+   superblock - keep the longer form and its thunk, else MMU-driven
+   re-records flush thunks on every bias flip) and partial replay on
+   budget misses (identical instruction stream and timing as the old
+   single-step fallback, minus the recording machinery - without it
+   longer blocks made slice tails MORE expensive and superblocks were
+   a wash). Honest residue: loop-bottom branches are TAKEN, so hot
+   loops still hop once per iteration - absorbing them needs
+   taken-direction traces (non-contiguous blocks, multi-range
+   invalidation), a full arc of its own.
+
 Smoke tests per AGENTS.md conventions: boot path, disk attach, cartridge
 load, keyboard input, debugger flow — plus OS-9 Level 2 boot and Basic09,
 the status-bar effective-MHz readout to compare interpreter/JIT tiers,
