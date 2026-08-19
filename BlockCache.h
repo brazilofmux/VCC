@@ -42,9 +42,10 @@ This file is part of VCC (Virtual Color Computer).
 #include "DecodedInst.h"
 #include "BlockDecoder.h"
 
-// alignas(256) rounds sizeof up from 216 so the JIT chain stub can
-// index the slot array with a shift instead of a multiply (and every
-// slot starts on a cache-line boundary). The table grows to 1MB.
+// alignas(256) rounds sizeof up so the JIT chain stub can index the
+// slot array with a shift instead of a multiply (and every slot starts
+// on a cache-line boundary). The table is 1MB; 14 instructions is the
+// most that still fits the 256-byte stride (14*16 + 24 = 248).
 struct alignas(256) CachedBlock
 {
     uint16_t start_pc;      // logical PC where this block starts
@@ -74,8 +75,12 @@ struct alignas(256) CachedBlock
     // when the block is first cached. Handlers are called with a pointer
     // to the corresponding DecodedInst, allowing incremental conversion
     // from memory-reading to pre-decoded operand access.
-    DecodedInst insns[12];  // MAX_BLOCK_INSNS — can't forward-ref constexpr
+    DecodedInst insns[14];  // MAX_BLOCK_INSNS — can't forward-ref constexpr
 };
+
+// The chain stub bakes the 256-byte stride as a shift; a growing
+// DecodedInst or insns[] must fail the build, not corrupt slot math.
+static_assert(sizeof(CachedBlock) == 256, "CachedBlock must stay 256 bytes");
 
 struct BlockCacheStats
 {
@@ -98,7 +103,7 @@ public:
 
     // Maximum instructions per block. Keeps interrupt latency bounded.
     // At ~5 cycles/instruction average, 12 instructions = ~60 cycles = ~33us.
-    static constexpr int MAX_BLOCK_INSNS = 12;
+    static constexpr int MAX_BLOCK_INSNS = 14;
 
     // Sentinel value meaning "no block covers this address".
     static constexpr uint16_t NO_BLOCK = 0xFFFF;
@@ -437,6 +442,33 @@ private:
                 old.num_insns == (uint8_t)rec_insn_count_ &&
                 memcmp(old.insns, decoded,
                        (size_t)rec_insn_count_ * sizeof(DecodedInst)) == 0;
+
+            // Superblock subsumption: a re-record that observed a guard
+            // going its TAKEN way produces a shorter block that is a
+            // strict prefix of the cached superblock. The superblock's
+            // guard handles both outcomes, so as long as the FULL old
+            // block still matches memory, the longer form (and its
+            // thunk and hotness) is the one to keep - otherwise every
+            // flip of a guard's bias would flush the thunk.
+            if (!identical &&
+                old.native_entry != nullptr &&
+                old.start_pc == rec_start_pc_ &&
+                old.num_insns > rec_insn_count_ &&
+                memcmp(old.insns, decoded,
+                       (size_t)rec_insn_count_ * sizeof(DecodedInst)) == 0)
+            {
+                DecodedInst full[MAX_BLOCK_INSNS];
+                const uint16_t full_end =
+                    DecodeBlock(rec_start_pc_, old.num_insns, full);
+                if (full_end == old.end_pc &&
+                    memcmp(old.insns, full,
+                           (size_t)old.num_insns * sizeof(DecodedInst)) == 0)
+                {
+                    old.generation = generation_;
+                    SetReverseMap(old.start_pc, old.end_pc);
+                    return;
+                }
+            }
 
             old.start_pc = rec_start_pc_;
             old.end_pc = decode_end_pc;

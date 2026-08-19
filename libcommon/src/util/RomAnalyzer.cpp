@@ -331,7 +331,7 @@ RomAnalysisResult AnalyzeRom(
 // Cap on instructions per pre-built block. Must match BlockCache's
 // MAX_BLOCK_INSNS. Hardcoded here to avoid pulling BlockCache.h into
 // the analyzer (which would drag in the runtime memory subsystem).
-static constexpr int kPrebuiltMaxInsns = 12;
+static constexpr int kPrebuiltMaxInsns = 14;   // BlockCache::MAX_BLOCK_INSNS
 
 // Walk forward from `start_off` to produce a single PrebuiltBlock. The
 // block ends at the same kinds of terminators the runtime recorder
@@ -359,6 +359,7 @@ static PrebuiltBlock BuildOneBlock(const uint8_t* rom, size_t rom_size,
         // Use ClassifyFlow to detect terminators - same logic the
         // analyzer uses for tracing.
         FlowInfo flow = ClassifyFlow(rom, rom_size, off, rom_base, len);
+        const uint8_t op = rom[off];
 
         ++insn_count;
         total_bytes += len;
@@ -366,10 +367,13 @@ static PrebuiltBlock BuildOneBlock(const uint8_t* rom, size_t rom_size,
 
         // Stop after the terminator instruction so it's part of the block.
         // Branches and subroutine calls also terminate, matching the runtime
-        // recorder's behavior. (The runtime ends a block when it sees an
-        // instruction that's known to be a terminator; we replicate that.)
+        // recorder's behavior - EXCEPT conditional short branches (0x21 BRN
+        // through 0x2F BLE), which the recorder now records through as
+        // superblock guards along the fall-through path. Long conditional
+        // branches (page 2) still end the block, same as at runtime.
+        const bool guardable = (op >= 0x21 && op <= 0x2F);
         if (flow.kind == FlowKind::BranchTaken
-            || flow.kind == FlowKind::BranchConditional
+            || (flow.kind == FlowKind::BranchConditional && !guardable)
             || flow.kind == FlowKind::SubroutineCall
             || flow.kind == FlowKind::Terminator)
             break;

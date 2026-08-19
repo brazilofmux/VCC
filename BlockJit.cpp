@@ -996,6 +996,26 @@ NativeEntry EmitBlock(const CachedBlock& slot)
     if (g_arena_base == nullptr || g_addrs.pc == nullptr)
         return nullptr;
 
+    // Superblocks: the recorder may place conditional branches
+    // MID-block (guards along the observed fall-through path). This
+    // backend has no guard support - a called branch handler that
+    // takes its branch would leave the thunk running instructions the
+    // guest never reached. Refuse such blocks; the interpreter replay
+    // loop handles them correctly (it stops when PC diverges).
+    for (int gi = 0; gi + 1 < (int)slot.num_insns; ++gi)
+    {
+        const InstHandler h = slot.insns[gi].handler;
+        if (h == g_inlines.brn_r || h == g_inlines.bhi_r ||
+            h == g_inlines.bls_r || h == g_inlines.bhs_r ||
+            h == g_inlines.blo_r || h == g_inlines.bne_r ||
+            h == g_inlines.beq_r || h == g_inlines.bvc_r ||
+            h == g_inlines.bvs_r || h == g_inlines.bpl_r ||
+            h == g_inlines.bmi_r || h == g_inlines.bge_r ||
+            h == g_inlines.blt_r || h == g_inlines.bgt_r ||
+            h == g_inlines.ble_r)
+            return nullptr;
+    }
+
     const size_t needed = (size_t)slot.num_insns * kMaxBytesPerInsn + kEpilogueBytes;
     if (g_arena_used + needed > kArenaSize)
     {

@@ -7869,6 +7869,11 @@ int HD6309Exec(int CycleFor)
 								lpc += ip->length;
 								PC_REG = lpc;
 								ip->handler(ip);
+								// Superblock guard: a mid-block branch
+								// that went its taken way leaves the
+								// recorded path - stop replaying.
+								if (PC_REG != lpc)
+									break;
 								ip++;
 							}
 						}
@@ -7970,6 +7975,10 @@ int HD6309Exec(int CycleFor)
 						local_pc += ip->length;
 						PC_REG = local_pc;
 						ip->handler(ip);
+						// Superblock guard: taken mid-block branch
+						// leaves the recorded path - stop replaying.
+						if (PC_REG != local_pc)
+							break;
 						ip++;
 					}
 				}
@@ -7983,8 +7992,42 @@ int HD6309Exec(int CycleFor)
 				continue;
 			}
 
-			// No cached block, or not enough budget.
-			if (!block && !blockCache.IsRecording())
+			// Known block, insufficient budget: replay its decoded
+			// instructions until the budget runs out. This is exactly
+			// what the single-step path below would execute, minus the
+			// recording machinery - important for superblocks, whose
+			// larger total_cycles fail the budget check more often near
+			// slice boundaries. The stop PC lands on an instruction
+			// boundary; if that address is hot, a suffix block records
+			// there through the normal path on a later visit.
+			if (block)
+			{
+				if (blockCache.IsRecording())
+					blockCache.EndRecord(PC_REG, CycleCounter);
+
+				const DecodedInst* ip = block->insns;
+				const DecodedInst* end = ip + block->num_insns;
+				unsigned short lpc = PC_REG;
+				while (ip < end && CycleCounter < CycleFor)
+				{
+					lpc += ip->length;
+					PC_REG = lpc;
+					ip->handler(ip);
+					if (PC_REG != lpc)
+						break;   // superblock guard went its taken way
+					ip++;
+				}
+
+				if (JS_Ramp_Clock < 0xFFFF)
+					JS_Ramp_Clock += CycleCounter - PrevCycleCount;
+				PrevCycleCount = CycleCounter;
+				if (HaltedInsPending)
+					goto debugger_path;
+				continue;
+			}
+
+			// No cached block: single-step and record.
+			if (!blockCache.IsRecording())
 			{
 				blockCache.BeginRecord(PC_REG);
 				blockCache.SetCycleStart(CycleCounter);
@@ -7993,7 +8036,15 @@ int HD6309Exec(int CycleFor)
 			blockCache.RecordSingleStep();
 			uint16_t insn_pc = PC_REG;
 			unsigned char opcode = MemFetch8(insn_pc); // peek, don't consume
-			bool is_terminator = IsBlockTerminator(insn_pc, opcode);
+			// Superblocks: a conditional short branch (0x21 BRN through
+			// 0x2F BGE-family; BRA 0x20 stays a hard terminator) is
+			// "guardable" - observed NOT-taken it becomes a mid-block
+			// guard and the recording continues along the fall-through
+			// path; observed TAKEN it ends the block exactly like a
+			// terminator. Replay (interpreter and thunk alike) exits a
+			// block early whenever a guard's outcome diverges.
+			const bool is_guardable = (opcode >= 0x21 && opcode <= 0x2F);
+			bool is_terminator = IsBlockTerminator(insn_pc, opcode) && !is_guardable;
 			uint16_t expected_next_pc = (uint16_t)(insn_pc + GetInstructionLengthAt(insn_pc));
 			PC_REG = insn_pc + 1;
 			JmpVec1[opcode](nullptr);
@@ -8004,10 +8055,17 @@ int HD6309Exec(int CycleFor)
 				// to its statically decoded next PC. If it does not, some hidden
 				// control flow or decode-table mismatch exists; drop the recording
 				// rather than caching a block that cannot be replayed safely.
+				// Exception: a guardable branch that went its taken way simply
+				// closes the block with itself as the final instruction.
 				if (!is_terminator && PC_REG != expected_next_pc)
 				{
-					blockCache.CancelRecord();
-					continue;
+					if (is_guardable)
+						is_terminator = true;
+					else
+					{
+						blockCache.CancelRecord();
+						continue;
+					}
 				}
 
 				if (!blockCache.RecordInstruction(PC_REG, CycleCounter))

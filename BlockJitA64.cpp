@@ -1570,6 +1570,21 @@ NativeEntry EmitBlock(const CachedBlock& slot)
     uint16_t local_pc = slot.start_pc;
     bool     pc_dirty = false;
 
+    // Superblock guard exits: each mid-block branch that goes its
+    // taken way must store its taken PC and leave through the block
+    // tail. The conditional jumps are emitted with placeholder offsets
+    // and patched once the exit snippets exist after the main tail.
+    struct GuardExit
+    {
+        uint32_t branch_at;   // offset of the cbz/cbnz to patch
+        bool     use_cbz;     // cbz (taken_when_zero) vs cbnz
+        uint16_t taken_pc;    // PC to store on exit
+        uint32_t extra_cycles;// taken-minus-fall cycle delta (long branches)
+        bool     bare;        // called-guard: PC/cycles already correct, b.ne patch
+    };
+    GuardExit guard_exits[BlockCache::MAX_BLOCK_INSNS];
+    int num_guard_exits = 0;
+
     for (int i = 0; i < (int)slot.num_insns; ++i)
     {
         const DecodedInst& insn = slot.insns[i];
@@ -1585,6 +1600,68 @@ NativeEntry EmitBlock(const CachedBlock& slot)
             pc_dirty = false;   // the branch stored PC itself
             ++g_insns_inlined;
             ++g_pc_writes_skipped;
+            continue;
+        }
+
+        // Mid-block branch = superblock guard. The recorded path is
+        // fall-through; emit the predicate and exit the block when the
+        // branch goes its taken way instead.
+        if (i < (int)slot.num_insns - 1 && LookupBranch(insn.handler, bdesc))
+        {
+            const uint16_t taken_pc = bdesc.is_long
+                ? (uint16_t)(local_pc + (int16_t)insn.operand)
+                : (uint16_t)(local_pc + (int8_t)(insn.operand & 0xFF));
+
+            if (!g_no_inline && bdesc.pred != BranchPred::Always)
+            {
+                if (bdesc.pred == BranchPred::Never)
+                {
+                    // BRN/LBRN: a costed no-op, no exit possible.
+                    if (bdesc.is_long)
+                        EmitCyclesRuntime(e, g_off_nat54);
+                    else
+                        EmitCyclesConst(e, 3);
+                }
+                else
+                {
+                    EmitBranchPredicate(e, bdesc.pred);
+                    // Fall-path cycles now; the exit snippet adds the
+                    // taken-fall delta (long branches cost one more).
+                    EmitCyclesConst(e, bdesc.is_long ? 5u : 3u);
+                    guard_exits[num_guard_exits++] = {
+                        e.offset, bdesc.taken_when_zero, taken_pc,
+                        bdesc.is_long ? 1u : 0u, false };
+                    if (bdesc.taken_when_zero)
+                        emit_cbz_w32(&e, A64_W1, 0);
+                    else
+                        emit_cbnz_w32(&e, A64_W1, 0);
+                }
+                pc_dirty = true;    // fall PC still deferred
+                ++g_insns_inlined;
+                ++g_pc_writes_skipped;
+                continue;
+            }
+
+            // Inlining off (or an Always branch, which the recorder
+            // never produces mid-block): call the handler, then check
+            // whether it left the recorded path. PC and cycles are
+            // already correct either way.
+            g_emit_had_side_effects = true;
+            emit_movz_w32(&e, A64_W1, local_pc, 0);
+            emit_strh_imm(&e, A64_W1, A64_W19, g_off_pc);
+            ++g_pc_writes_emitted;
+            emit_str_w32_imm(&e, A64_W21, A64_W19, g_off_cyc);
+            emit_add_x64_imm(&e, A64_W0, A64_W20, (uint32_t)(i * sizeof(DecodedInst)));
+            emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)insn.handler);
+            emit_blr(&e, A64_W16);
+            emit_ldr_w32_imm(&e, A64_W21, A64_W19, g_off_cyc);
+            emit_ldrh_imm(&e, A64_W2, A64_W19, g_off_pc);
+            emit_movz_w32(&e, A64_W3, local_pc, 0);
+            emit_cmp_w32_w32(&e, A64_W2, A64_W3);
+            guard_exits[num_guard_exits++] = { e.offset, false, 0, 0, true };
+            emit_b_cond(&e, A64_COND_NE, 0);
+            pc_dirty = false;
+            ++g_insns_called;
             continue;
         }
 
@@ -1646,6 +1723,55 @@ NativeEntry EmitBlock(const CachedBlock& slot)
         emit_b(&e, (int32_t)(g_chain_stub - (entry + e.offset)));
     else
         emit_ret(&e);
+
+    // Guard exit snippets: store the taken PC (bare exits already have
+    // PC and cycles right), pop the frame, and leave through the same
+    // door as the main tail. Then patch each guard's conditional jump.
+    uint32_t bare_exit_at = 0;
+    bool bare_exit_emitted = false;
+    for (int gi = 0; gi < num_guard_exits; ++gi)
+    {
+        GuardExit& ge = guard_exits[gi];
+        uint32_t target;
+        if (ge.bare)
+        {
+            if (!bare_exit_emitted)
+            {
+                bare_exit_at = e.offset;
+                bare_exit_emitted = true;
+                emit_ldp_x64_off(&e, A64_W19, A64_W20, A64_SP, 16);
+                emit_ldp_x64_post(&e, A64_W29, A64_W30, A64_SP, 32);
+                if (g_chain_stub != nullptr)
+                    emit_b(&e, (int32_t)(g_chain_stub - (entry + e.offset)));
+                else
+                    emit_ret(&e);
+            }
+            target = bare_exit_at;
+        }
+        else
+        {
+            target = e.offset;
+            emit_movz_w32(&e, A64_W2, ge.taken_pc, 0);
+            emit_strh_imm(&e, A64_W2, A64_W19, g_off_pc);
+            if (ge.extra_cycles != 0)
+                emit_add_w32_imm(&e, A64_W21, A64_W21, ge.extra_cycles);
+            emit_ldp_x64_off(&e, A64_W19, A64_W20, A64_SP, 16);
+            emit_ldp_x64_post(&e, A64_W29, A64_W30, A64_SP, 32);
+            if (g_chain_stub != nullptr)
+                emit_b(&e, (int32_t)(g_chain_stub - (entry + e.offset)));
+            else
+                emit_ret(&e);
+        }
+
+        emit_t p { entry + ge.branch_at, 0, 4 };
+        const int32_t delta = (int32_t)(target - ge.branch_at);
+        if (ge.bare)
+            emit_b_cond(&p, A64_COND_NE, delta);
+        else if (ge.use_cbz)
+            emit_cbz_w32(&p, A64_W1, delta);
+        else
+            emit_cbnz_w32(&p, A64_W1, delta);
+    }
 
     jit_writable_end();
 
