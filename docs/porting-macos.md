@@ -287,6 +287,26 @@ regardless of layout, so CI stays green while it lands.
    redesigning the feature - both taxes were dispatch-policy bugs
    visible in one sample profile, not properties of the feature.
 
+   *Platform arc (2026-08-19):* the decoration sprint. Cmd+V/Cmd+C
+   through shell/text_codec (libutf tr_ascii approximation in, VDG
+   semigraphics -> Unicode quadrant blocks out; VCC_SHOT_TEXT tests it
+   headlessly). tools/coco-run: one command from .c/.asm/.bas to a
+   running CoCo - DECB via cmoc/lwasm/writecocofile, and --os9 builds
+   a NitrOS-9 module onto a ToolShed-formatted floppy riding /d1
+   (VCC_DISK0-3 env overrides; the cmoc container at ~/g/cmoc now
+   carries os9/decb with musl build fixes). VCC.app: double-clickable
+   bundle, modules+ROMs inside, DECB boot screen as the icon.
+   Joystick: joystickinput.cpp joined the portable core (_WIN32
+   guards around DirectInput), shells merge vccJoystickGetScan like
+   Windows keyboard.cpp, vcc-sdl maps the mouse to the stick -
+   JOYSTK reads 31s at center through the real DAC comparator.
+   Becker: BSD-socket half added behind the winsock names,
+   COMBINE_BECKER everywhere, plus an upstream retry-flag fix (a
+   failed first connect wedged dw_status forever). Loopback-verified
+   DW OK. Remaining decoration ideas: SDL game-controller mapping,
+   BASIC09 workflow sugar (b09 source -> pack -> run), a DriveWire
+   server integration test, Cmd+C of graphics screens as PNG.
+
 Smoke tests per AGENTS.md conventions: boot path, disk attach, cartridge
 load, keyboard input, debugger flow — plus OS-9 Level 2 boot and Basic09,
 the status-bar effective-MHz readout to compare interpreter/JIT tiers,
