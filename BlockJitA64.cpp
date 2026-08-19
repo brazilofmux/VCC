@@ -834,6 +834,7 @@ static void EmitInlineLea(emit_t& e, const DecodedInst& insn,
 static void EmitInlineLd8Idx(emit_t& e, const DecodedInst& insn,
                              uint32_t reg_off, uint8_t mask)
 {
+    g_emit_had_side_effects = true;   // touches guest memory
     EmitEA(e, insn.ea_info, insn.operand, A64_W0);
     emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read8);
     emit_blr(&e, A64_W16);
@@ -847,7 +848,12 @@ static void EmitInlineLd8Idx(emit_t& e, const DecodedInst& insn,
 static void EmitInlineSt8Idx(emit_t& e, const DecodedInst& insn,
                              uint32_t reg_off, uint8_t mask)
 {
-    EmitEA(e, insn.ea_info, insn.operand, A64_W1);
+    g_emit_had_side_effects = true;   // touches guest memory
+    // EA must be computed into W0 and moved: EmitEA's cycle-add uses
+    // W1 as scratch for the runtime-cost modes, so asking for the EA
+    // directly in W1 hands mem_write8 a garbage address.
+    EmitEA(e, insn.ea_info, insn.operand, A64_W0);
+    emit_orr_w32(&e, A64_W1, A64_WZR, A64_W0);   // mov w1, w0 (address)
     emit_ldrb_imm(&e, A64_W0, A64_W19, reg_off);
     EmitFlagsZNVFromReg(e, A64_W0, mask);
     emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_write8);
@@ -858,6 +864,7 @@ static void EmitInlineSt8Idx(emit_t& e, const DecodedInst& insn,
 // TST indexed: flags from MemRead8(EA), no writeback, +NatEmuCycles65.
 static void EmitInlineTstIdx(emit_t& e, const DecodedInst& insn, uint8_t mask)
 {
+    g_emit_had_side_effects = true;   // touches guest memory
     EmitEA(e, insn.ea_info, insn.operand, A64_W0);
     emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read8);
     emit_blr(&e, A64_W16);
@@ -870,6 +877,7 @@ static void EmitInlineTstIdx(emit_t& e, const DecodedInst& insn, uint8_t mask)
 static void EmitInlineLd16Idx(emit_t& e, const DecodedInst& insn,
                               uint32_t reg_off, uint8_t mask)
 {
+    g_emit_had_side_effects = true;   // touches guest memory
     EmitEA(e, insn.ea_info, insn.operand, A64_W0);
     emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read16);
     emit_blr(&e, A64_W16);
@@ -895,7 +903,10 @@ static void EmitInlineLd16Idx(emit_t& e, const DecodedInst& insn,
 static void EmitInlineSt16Idx(emit_t& e, const DecodedInst& insn,
                               uint32_t reg_off, uint8_t mask)
 {
-    EmitEA(e, insn.ea_info, insn.operand, A64_W1);
+    g_emit_had_side_effects = true;   // touches guest memory
+    // Same W1-scratch hazard as EmitInlineSt8Idx: EA via W0, then move.
+    EmitEA(e, insn.ea_info, insn.operand, A64_W0);
+    emit_orr_w32(&e, A64_W1, A64_WZR, A64_W0);   // mov w1, w0 (address)
     emit_ldrh_imm(&e, A64_W0, A64_W19, reg_off);
     if (mask & CC_BIT_Z)
     {
@@ -1119,6 +1130,33 @@ static uint8_t InlinedHandlerWritesMask(InstHandler h)
     if (h == g_inlines.abx_i)
     {
         return 0;
+    }
+
+    // Indexed family (EA side effects touch registers, never CC).
+    // LEAX/LEAY set Z from the result; LEAU/LEAS set nothing; the
+    // indexed loads/stores/TST set Z/N and clear V like their
+    // direct-page cousins. These were missing from this table, which
+    // meant the CC_UNKNOWN structural guard silently blocked the whole
+    // family from inlining - exactly what the guard is for, but the
+    // masks belong here.
+    if (h == g_inlines.leax_x || h == g_inlines.leay_x)
+    {
+        return CC_BIT_Z;
+    }
+
+    if (h == g_inlines.leau_x || h == g_inlines.leas_x)
+    {
+        return 0;
+    }
+
+    if (h == g_inlines.lda_x || h == g_inlines.ldb_x ||
+        h == g_inlines.sta_x || h == g_inlines.stb_x ||
+        h == g_inlines.tst_x ||
+        h == g_inlines.ldx_x || h == g_inlines.ldu_x ||
+        h == g_inlines.ldd_x || h == g_inlines.std_x ||
+        h == g_inlines.stx_x)
+    {
+        return CC_BIT_Z | CC_BIT_N | CC_BIT_V;
     }
 
     return CC_UNKNOWN;

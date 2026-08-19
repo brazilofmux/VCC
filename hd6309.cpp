@@ -7875,6 +7875,12 @@ int HD6309Exec(int CycleFor)
 									cpu_state.q.Byte.lswmsb, cpu_state.q.Byte.lswlsb,
 									cpu_state.cc[0], cpu_state.cc[1], cpu_state.cc[2], cpu_state.cc[3],
 									cpu_state.pc.Reg, cpu_state.CycleCounter);
+								for (int di = 0; di < (int)block->num_insns; ++di)
+									fprintf(stderr, "  insn[%d]: handler=%p len=%d ea=%02X op=%04X\n",
+										di, (void*)block->insns[di].handler,
+										block->insns[di].length,
+										block->insns[di].ea_info,
+										block->insns[di].operand);
 							}
 						}
 						goto jit_block_done;
