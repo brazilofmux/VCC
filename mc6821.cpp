@@ -322,6 +322,15 @@ unsigned char VDG_Mode()
 }
 
 
+// Is the PIA0 horizontal-sync interrupt armed (CA1 IRQ enable)? While
+// it is not, no software-visible event depends on WHEN within the
+// scanline the HS flag flips, so the scanline loop may run the whole
+// line in one CPU burst and fire both HSYNC edges afterwards.
+unsigned char PiaHsyncIrqArmed()
+{
+	return rega[1] & 1;
+}
+
 void irq_hs(int phase)	//63.5 uS
 {
 

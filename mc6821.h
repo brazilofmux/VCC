@@ -30,6 +30,7 @@ void SetSerialParams(unsigned char);
 void SetMonState(BOOL);
 unsigned char VDG_Mode();
 void irq_hs(int);
+unsigned char PiaHsyncIrqArmed();
 void irq_fs(int);
 void AssertCart();
 void SetCart(bool lineState);

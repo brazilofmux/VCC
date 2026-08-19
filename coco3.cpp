@@ -439,6 +439,21 @@ _inline void HLINE()
 {
 	UpdateAudio();
 
+	// When neither hsync interrupt source is armed, nothing software-
+	// visible depends on where within the line the HSYNC edges land,
+	// so run the whole line as ONE CPU burst and fire the edges after.
+	// This halves the CPUExec entry/exit cost, which dominates at 57
+	// emulated cycles per call. The PIA HS status flag still flips and
+	// PakTimer still ticks, in the same order as the split path.
+	if (!HorzInteruptEnabled && !PiaHsyncIrqArmed())
+	{
+		CPUCycle(NanosPerLine);
+		HSYNC(0);
+		PakTimer();
+		HSYNC(1);
+		return;
+	}
+
 	// First part of the line
 	CPUCycle(NanosPerLine - HSYNCWidthInNanos);
 
@@ -465,8 +480,25 @@ _inline void CPUCycle(double NanosToRun)
 	NanosThisLine += NanosToRun;
 	double emulationCycles = 0, emulationDrift = 0;
 
+	// Temporary probe (VCC_CYCLE_STATS): slice/exec counts at exit.
+	static std::atomic<uint64_t> stat_calls{0}, stat_slices{0}, stat_execs{0}, stat_cycles{0};
+	static const bool cycle_stats = [] {
+		const bool on = getenv("VCC_CYCLE_STATS") != nullptr;
+		if (on)
+			atexit([] {
+				fprintf(stderr, "[CYC] calls=%llu slices=%llu execs=%llu cycles=%llu (%.2f sl/call, %.1f cyc/exec)\n",
+				        (unsigned long long)stat_calls.load(), (unsigned long long)stat_slices.load(),
+				        (unsigned long long)stat_execs.load(), (unsigned long long)stat_cycles.load(),
+				        (double)stat_slices.load() / (double)(stat_calls.load() ? stat_calls.load() : 1),
+				        (double)stat_cycles.load() / (double)(stat_execs.load() ? stat_execs.load() : 1));
+			});
+		return on;
+	}();
+	if (cycle_stats) ++stat_calls;
+
 	while (NanosThisLine >= 1)
 	{
+		if (cycle_stats) ++stat_slices;
 		// One deadline query per slice. In the common case (no event
 		// due this line) the slice covers the whole remaining line and
 		// no fire/rescan happens at all.
@@ -486,6 +518,7 @@ _inline void CPUCycle(double NanosToRun)
 		if (CyclesThisLine >= 1)
 		{
 			const double whole = floor(CyclesThisLine);
+			if (cycle_stats) { ++stat_execs; stat_cycles += (uint64_t)whole; }
 			CycleDrift = CPUExec((int)whole) + (CyclesThisLine - whole);
 		}
 		else
