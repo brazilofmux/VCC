@@ -19,6 +19,14 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Cross-TU inlining for the per-scanline hot path (HLINE -> CPUCycle ->
+# irq_hs/PakTimer live in different files). Skipped for Debug builds.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT VCC_IPO_OK OUTPUT VCC_IPO_MSG)
+if(VCC_IPO_OK AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+endif()
+
 # ---- libcommon (portable subset; DialogOps/winapi are Win32-bound,
 # filesystem.cpp is deprecated). Shared by the host and, exactly like
 # the Windows DLL build, statically duplicated into each cartridge

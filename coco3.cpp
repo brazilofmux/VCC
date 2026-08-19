@@ -67,6 +67,11 @@ constexpr auto RENDERS_PER_BLINK_TOGGLE = 16u;
 	static double NanosPerLine = NANOSECOND / LinesPerSecond;
 	static double HSYNCWidthInNanos = 5000;
 	static double CyclesPerLine = CyclesPerSecord / LinesPerSecond;
+	// Nanos->cycles conversion factor for the CPUCycle slice loop. Only
+	// SetClockSpeed changes any input, so it refreshes this cache; the
+	// slice loop then pays one multiply instead of two multiplies and a
+	// divide per slice.
+	static double CyclesPerNano = CyclesPerLine / NanosPerLine;
 	static double CycleDrift=0;
 	static double CyclesThisLine=0;
 	static unsigned int StateSwitch=0;
@@ -368,6 +373,7 @@ void HSYNC(unsigned char level)
 void SetClockSpeed(unsigned int Cycles)
 {
 	OverClock=Cycles;
+	CyclesPerNano = CyclesPerLine * OverClock / NanosPerLine;
 	return;
 }
 
@@ -461,27 +467,27 @@ _inline void CPUCycle(double NanosToRun)
 
 	while (NanosThisLine >= 1)
 	{
-		// Fire any already-overdue events before running CPU
-		if (eventHeap.NextDeadline() <= 0)
+		// One deadline query per slice. In the common case (no event
+		// due this line) the slice covers the whole remaining line and
+		// no fire/rescan happens at all.
+		const double nextDeadline = eventHeap.NextDeadline();
+		if (nextDeadline <= 0)
 		{
+			// Already-overdue event: fire before running the CPU.
 			eventHeap.FireExpired(0);
 			continue;
 		}
 
-		// Determine how many nanos to run: either until the next event
-		// or the remaining time, whichever comes first.
-		double nextDeadline = eventHeap.NextDeadline();
-		double nanosToConsume;
-
-		if (nextDeadline <= NanosThisLine)
-			nanosToConsume = nextDeadline;
-		else
-			nanosToConsume = NanosThisLine;
+		const bool hitsDeadline = (nextDeadline <= NanosThisLine);
+		const double nanosToConsume = hitsDeadline ? nextDeadline : NanosThisLine;
 
 		// Convert nanos to CPU cycles and execute
-		CyclesThisLine = CycleDrift + (nanosToConsume * CyclesPerLine * OverClock / NanosPerLine);
+		CyclesThisLine = CycleDrift + nanosToConsume * CyclesPerNano;
 		if (CyclesThisLine >= 1)
-			CycleDrift = CPUExec((int)floor(CyclesThisLine)) + (CyclesThisLine - floor(CyclesThisLine));
+		{
+			const double whole = floor(CyclesThisLine);
+			CycleDrift = CPUExec((int)whole) + (CyclesThisLine - whole);
+		}
 		else
 			CycleDrift = CyclesThisLine;
 
@@ -490,10 +496,12 @@ _inline void CPUCycle(double NanosToRun)
 		emulationCycles += CyclesThisLine;
 		emulationDrift += CycleDrift;
 
-		// Advance time and fire any events that have reached their deadline
+		// Advance time; only scan for expired events when this slice
+		// actually reached the nearest deadline.
 		NanosThisLine -= nanosToConsume;
 		eventHeap.AdvanceTime(nanosToConsume);
-		eventHeap.FireExpired(0);
+		if (hitsDeadline)
+			eventHeap.FireExpired(0);
 	}
 
 	EmuState.Debugger.TraceEmulatorCycle(VCC::TraceEvent::EmulatorCycle, 20, 0, 0, 0, emulationCycles, emulationDrift);
