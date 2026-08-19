@@ -64,6 +64,7 @@ static unsigned int temp32;
 static unsigned short temp16;
 static unsigned char temp8;
 static unsigned char InterruptLine[IS_MAX] = { 0 };
+static unsigned char InterruptLineOR = 0;
 static VCC::DFF InterruptLatch;
 static unsigned char Source=0,Dest=0;
 static unsigned char postbyte=0;
@@ -3590,6 +3591,7 @@ void MC6809AssertInterupt(InterruptSource src, Interrupt interrupt)
 	assert(interrupt >= INT_IRQ && interrupt <= INT_NMI);
 
 	InterruptLine[src] |= Bit(interrupt);
+	InterruptLineOR |= Bit(interrupt);
 	if (SyncWaiting || interrupt == INT_NMI)
 		LatchInterrupts();
 	SyncWaiting = 0;
@@ -3604,6 +3606,7 @@ void MC6809DeAssertInterupt(InterruptSource src, Interrupt interrupt)
 	assert(interrupt >= INT_IRQ && interrupt <= INT_NMI);
 
 	InterruptLine[src] &= BitMask(interrupt);
+	RecomputeInterruptOR();
 }
 
 void MC6809ForcePC(unsigned short NewPC)

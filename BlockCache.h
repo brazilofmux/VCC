@@ -195,13 +195,24 @@ public:
     void SetCycleStart(int cycles) { rec_cycle_start_ = cycles; }
 
     // Stats: call from the execution loop
-    void RecordBlockHit(int num_insns) { stats_.block_hits++; stats_.block_insns += num_insns; }
+    // One read-modify-write instead of two: hits in the high word,
+    // instruction count in the low word of a single accumulator. This
+    // runs once per block dispatch (hundreds of millions per second on
+    // hot workloads). Unpacked in GetAndResetStats; insns per interval
+    // stay far below 2^32.
+    void RecordBlockHit(int num_insns)
+    {
+        hit_accum_ += (1ull << 32) | (unsigned)num_insns;
+    }
     void RecordSingleStep() { stats_.single_steps++; }
 
     // Return accumulated stats and reset counters.
     BlockCacheStats GetAndResetStats()
     {
         BlockCacheStats s = stats_;
+        s.block_hits += hit_accum_ >> 32;
+        s.block_insns += hit_accum_ & 0xFFFFFFFFull;
+        hit_accum_ = 0;
         memset(&stats_, 0, sizeof(stats_));
         return s;
     }
@@ -320,6 +331,7 @@ private:
 
     // Performance counters (reset by GetAndResetStats)
     BlockCacheStats stats_ = {};
+    uint64_t hit_accum_ = 0;    // (hits << 32) | insns, see RecordBlockHit
 
     // Set a bit in the page bitmap for the given address.
     void SetPageBit(uint16_t address)

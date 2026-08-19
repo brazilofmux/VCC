@@ -204,6 +204,7 @@ static unsigned int  temp32;
 static int stemp32;
 static unsigned char temp8; 
 static unsigned char InterruptLine[IS_MAX] = { 0 };
+static unsigned char InterruptLineOR = 0;
 static VCC::DFF InterruptLatch;
 static unsigned char Source=0,Dest=0;
 static unsigned char postbyte=0;
@@ -7716,30 +7717,36 @@ int HD6309Exec(int CycleFor)
 	// Fast path: no debugger overhead, with block execution
 	while (CycleCounter < CycleFor) {
 
-		bool interrupted = false;
-
-		LatchInterrupts();
-
-		if (NMI())
+		// One-compare gate: no line asserted, nothing in flight through
+		// the latch. Clock(0) with D=Q=0 is a no-op and every check
+		// below would be false, so skip the lot.
+		if (!InterruptsQuiet())
 		{
-			cpu_nmi();
-			interrupted = true;
-		}
-		else if (FIRQ() && !CC(F))
-		{
-			cpu_firq();
-			interrupted = true;
-		}
-		else if (IRQ() && !CC(I))
-		{
-			cpu_irq();
-			interrupted = true;
-		}
+			bool interrupted = false;
 
-		// An interrupt breaks straight-line execution, so abandon any
-		// in-progress block recording before executing the ISR stream.
-		if (interrupted && blockCache.IsRecording())
-			blockCache.CancelRecord();
+			LatchInterrupts();
+
+			if (NMI())
+			{
+				cpu_nmi();
+				interrupted = true;
+			}
+			else if (FIRQ() && !CC(F))
+			{
+				cpu_firq();
+				interrupted = true;
+			}
+			else if (IRQ() && !CC(I))
+			{
+				cpu_irq();
+				interrupted = true;
+			}
+
+			// An interrupt breaks straight-line execution, so abandon any
+			// in-progress block recording before executing the ISR stream.
+			if (interrupted && blockCache.IsRecording())
+				blockCache.CancelRecord();
+		}
 
 		if (SyncWaiting == 1)
 		{
@@ -7781,16 +7788,20 @@ int HD6309Exec(int CycleFor)
 					// Temporary in-vivo differential (VCC_VERIFY_PC):
 					// for one designated PURE block, run thunk and
 					// interpreter from the same snapshot and compare.
-					static long verify_pc = -2;
+					// verify_any is the single fast-path gate; the
+					// per-block compares only run when verification
+					// was requested at all.
+					static long verify_pc = -1;
 					static bool verify_pure = false;
-					if (verify_pc == -2)
-					{
+					static const bool verify_any = [] {
 						const char* vp = std::getenv("VCC_VERIFY_PC");
 						verify_pc = vp ? std::strtol(vp, nullptr, 16) : -1;
 						verify_pure = std::getenv("VCC_VERIFY_PURE") != nullptr;
-					}
-					if ((long)block->start_pc == verify_pc ||
-					    (verify_pure && block->pure_thunk))
+						return vp != nullptr || verify_pure;
+					}();
+					if (verify_any &&
+					    ((long)block->start_pc == verify_pc ||
+					     (verify_pure && block->pure_thunk)))
 					{
 						Hd6309State snap = cpu_state;
 						block->native_entry();
@@ -8676,6 +8687,7 @@ void HD6309AssertInterupt(InterruptSource src, Interrupt interrupt)
 	assert(interrupt >= INT_IRQ && interrupt <= INT_NMI);
 
 	InterruptLine[src] |= Bit(interrupt);
+	InterruptLineOR |= Bit(interrupt);
 	if (SyncWaiting || interrupt == INT_NMI)
 		LatchInterrupts();
 	SyncWaiting = 0;
@@ -8690,6 +8702,7 @@ void HD6309DeAssertInterupt(InterruptSource src, Interrupt interrupt)
 	assert(interrupt >= INT_IRQ && interrupt <= INT_NMI);
 
 	InterruptLine[src] &= BitMask(interrupt);
+	RecomputeInterruptOR();
 }
 
 void InvalidInsHandler(const DecodedInst* inst)
