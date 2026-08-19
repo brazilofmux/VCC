@@ -39,6 +39,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "defines.h"
 #include "coco3.h"
 #include "pakinterface.h"
+#include "joystickinput.h"
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -242,8 +243,10 @@ extern "C" unsigned char vccKeyboardGetScan(unsigned char Col)
 		if (active & (1u << col))
 			rows |= rollover[col];
 	}
-	// Rows are active-low; bit 7 (joystick comparator) idles high.
-	return (uint8_t)((~rows & 0x7F) | 0x80);
+	// Rows are active-low. The joystick layer adds the comparator
+	// (bit 7) and clears button bits, exactly like the Windows
+	// keyboard.cpp merge.
+	return vccJoystickGetScan((uint8_t)(~rows & 0x7F));
 }
 
 // ---------------------------------------------------------------------
@@ -445,6 +448,31 @@ int main(int argc, char** argv)
 						gPressed[ev.key.keysym.sym] = key;
 				}
 				break;
+
+			case SDL_MOUSEMOTION:
+			{
+				int w = 0, h = 0;
+				SDL_GetWindowSize(window, &w, &h);
+				if (w > 1 && h > 1)
+				{
+					unsigned int jx = (unsigned int)((ev.motion.x * 16383) / (w - 1));
+					unsigned int jy = (unsigned int)((ev.motion.y * 16383) / (h - 1));
+					joystick(jx, jy);
+				}
+				break;
+			}
+
+			case SDL_MOUSEBUTTONDOWN:
+			case SDL_MOUSEBUTTONUP:
+			{
+				const unsigned char state =
+					(ev.type == SDL_MOUSEBUTTONDOWN) ? 1 : 0;
+				if (ev.button.button == SDL_BUTTON_LEFT)
+					SetButtonStatus(0, state);
+				else if (ev.button.button == SDL_BUTTON_RIGHT)
+					SetButtonStatus(1, state);
+				break;
+			}
 
 			case SDL_KEYUP:
 				if (ev.key.keysym.scancode == SDL_SCANCODE_LSHIFT ||

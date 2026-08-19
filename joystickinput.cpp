@@ -17,7 +17,9 @@ This file is part of VCC (Virtual Color Computer).
 */
 
 #include "BuildConfig.h"
+#ifdef _WIN32
 #include <Windows.h>
+#endif
 #include "defines.h"
 #include "joystickinput.h"
 #include <vcc/util/logger.h>
@@ -55,7 +57,7 @@ JoyStick RightJS;
 extern SystemState EmuState;
 
 // Clock cycles since Joystick ramp started
-extern int JS_Ramp_Clock=0;
+int JS_Ramp_Clock=0;
 
 // Software high resolution disabled
 // DAC change is used for software high resolution joystick.
@@ -105,6 +107,7 @@ static unsigned char RightButton1Status = 0;
 static unsigned char LeftButton2Status = 0;
 static unsigned char RightButton2Status = 0;
 
+#ifdef _WIN32
 static LPDIRECTINPUTDEVICE8 Joysticks[MAXSTICKS];
 
 char StickName[MAXSTICKS][STRLEN];
@@ -115,10 +118,12 @@ BOOL CALLBACK enumCallback(const DIDEVICEINSTANCE* , VOID* );
 BOOL CALLBACK enumAxesCallback(const DIDEVICEOBJECTINSTANCE* , VOID* );
 
 static unsigned char CurrentStick;
+#endif
 
 unsigned int get_pot_value(unsigned char);
 inline int vccJoystickType();
 
+#ifdef _WIN32
 /*****************************************************************************/
 // Locate connected joysticks.  Called by config.c
 int EnumerateJoysticks()
@@ -207,6 +212,7 @@ JoyStickPoll(DIJOYSTATE2 *js,unsigned char StickNumber)
         return hr;
     return(S_OK);
 }
+#endif // _WIN32
 
 /*****************************************************************************/
 // inline function returns joystick emulation type
@@ -343,6 +349,7 @@ SetStickNumbers(unsigned char Temp1,unsigned char Temp2)
 unsigned int
 get_pot_value(unsigned char pot)
 {
+#ifdef _WIN32
 	DIJOYSTATE2 Stick1 = { 0 };
 
     // Poll left joystick if attached
@@ -362,6 +369,7 @@ get_pot_value(unsigned char pot)
         RightButton1Status= Stick1.rgbButtons[0]>>7;
         RightButton2Status= Stick1.rgbButtons[1]>>7;
     }
+#endif // _WIN32 (non-Windows shells feed LeftStickX/Y via joystick())
 
     switch (pot) {
     case 0:

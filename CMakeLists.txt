@@ -83,6 +83,7 @@ add_library(vcc-core STATIC
   tcc1014graphics.cpp
   tcc1014registers.cpp
   mc6821.cpp
+  joystickinput.cpp
   iobus.cpp
   pakinterface.cpp
 )

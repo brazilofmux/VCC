@@ -30,6 +30,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "hd6309.h"
 #include "mc6809.h"
 #include "pakinterface.h"
+#include "joystickinput.h"
 #include "Vcc.h"
 #include <vcc/util/settings.h>
 #include <cstdio>
@@ -184,6 +185,14 @@ bool BootMachine()
 	// border region (e.g. slivers of the NitrOS-9 boot screen after its
 	// 199-line mode gives way to the 192-line term window).
 	EmuState.WindowSize = { 640, 480 };
+
+	// Joystick configuration, same keys the Windows config dialog
+	// writes. UseMouse: 0=keyboard 1=mouse 2=audio 3=hardware stick;
+	// HiResDevice: 0=lowres 1=software 2=tandy 3=ccmax.
+	LeftJS.UseMouse  = (unsigned char)Setting().read("LeftJoyStick",  "UseMouse", 1);
+	LeftJS.HiRes     = (unsigned char)Setting().read("LeftJoyStick",  "HiResDevice", 0);
+	RightJS.UseMouse = (unsigned char)Setting().read("RightJoyStick", "UseMouse", 1);
+	RightJS.HiRes    = (unsigned char)Setting().read("RightJoyStick", "HiResDevice", 0);
 
 	HardResetMachine();
 	if (EmuState.RamBuffer == nullptr)

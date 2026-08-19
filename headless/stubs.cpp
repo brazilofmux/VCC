@@ -126,8 +126,10 @@ extern "C" unsigned char vccKeyboardGetScan(unsigned char Col)
 				rows |= (unsigned char)(1u << 6);
 		}
 	}
-	// Rows are active-low; bit 7 (joystick comparator) idles high.
-	return (unsigned char)((~rows & 0x7F) | 0x80);
+	// Rows are active-low; the joystick layer supplies the comparator
+	// bit (sticks idle mid-range) and button bits.
+	extern unsigned char vccJoystickGetScan(unsigned char);
+	return vccJoystickGetScan((unsigned char)(~rows & 0x7F));
 }
 
 // ---- audio: discard ----

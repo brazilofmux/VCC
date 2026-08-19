@@ -32,18 +32,6 @@ void PasteIntoQueue(const std::string&)
 {
 }
 
-// ---- joystickinput.cpp ----
-
-int JS_Ramp_Clock = 0;
-
-extern "C" void vccJoystickStartTandy(unsigned char)
-{
-}
-
-extern "C" void vccJoystickStartCCMax()
-{
-}
-
 // ---- Cassette.cpp ----
 
 unsigned char TapeFastLoad = 0;
