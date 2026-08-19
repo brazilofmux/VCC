@@ -111,6 +111,12 @@ public:
     }
 
     // Look up a block by its starting PC. Returns nullptr if not cached.
+    // Raw slot storage and generation counter, exposed so the JIT can
+    // emit a chain stub that revalidates a slot exactly the way
+    // Lookup() does (tag + generation) before jumping into its thunk.
+    CachedBlock* SlotBase() { return blocks_; }
+    const uint32_t* GenerationAddr() const { return &generation_; }
+
     const CachedBlock* Lookup(uint16_t pc) const
     {
         const CachedBlock& b = blocks_[pc & CACHE_MASK];

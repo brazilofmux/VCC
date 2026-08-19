@@ -80,6 +80,12 @@ static uint32_t           g_cc_writes_requested = 0;
 static uint32_t           g_cc_writes_elided    = 0;
 static bool               g_emit_had_side_effects = false;   // diag: see EmitBlockWasPure
 
+// Block linking: one shared chain stub per arena epoch (see
+// EnsureChainStub below). Null means "not emitted yet"; g_no_link
+// disables linking entirely (env kill switch or a verify mode).
+static uint8_t*           g_chain_stub = nullptr;
+static bool               g_no_link    = false;
+
 // Field offsets from CpuAddrs.base, computed once at Init. Every one
 // fits the unsigned-immediate load/store forms with room to spare.
 static uint32_t g_off_pc  = 0;
@@ -134,6 +140,12 @@ void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers)
     g_disabled = std::getenv("VCC_NO_JIT") != nullptr;
     g_no_inline = std::getenv("VCC_NO_INLINE") != nullptr;
     if (const char* im = std::getenv("VCC_INLINE_MAX")) g_inline_max = std::atoi(im);
+    // Linking must be off under the differential verifiers: they run
+    // ONE block from a snapshot and compare, and a chained thunk would
+    // run its successors too before returning.
+    g_no_link = std::getenv("VCC_NO_LINK") != nullptr ||
+                std::getenv("VCC_VERIFY_PC") != nullptr ||
+                std::getenv("VCC_VERIFY_PURE") != nullptr;
 
     if (g_arena_base == nullptr && !g_disabled)
     {
@@ -178,6 +190,7 @@ void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers)
     g_pc_writes_skipped = 0;
     g_cc_writes_requested = 0;
     g_cc_writes_elided    = 0;
+    g_chain_stub = nullptr;
 }
 
 void Reset()
@@ -191,6 +204,7 @@ void Reset()
     g_pc_writes_skipped = 0;
     g_cc_writes_requested = 0;
     g_cc_writes_elided    = 0;
+    g_chain_stub = nullptr;
 }
 
 // ---------- size budget (bytes of arm64 code) ----------
@@ -1259,11 +1273,156 @@ static bool TryEmitInline(emit_t& e, const DecodedInst& insn, uint8_t mask)
 
 // ---------- block emitter ----------
 
+// ---------- chain stub (block linking) ----------
+//
+// One shared stub per arena epoch. Every thunk's tail branches here
+// instead of returning. The stub revalidates exactly what the
+// dispatcher fast path would - cycle budget, pending interrupt/sync/
+// halt work, and the cache slot for the new PC (tag + generation +
+// native_entry) - then tail-jumps into the next thunk. Any failed
+// check falls through to RET, which lands back in the dispatcher:
+// every thunk's epilogue has already restored the frame (including
+// the dispatcher's x30) before branching here, so stack depth stays
+// constant across a chain of any length.
+//
+// Linking is indirect through the live cache slot, never a patched
+// address: HD6309BlockInvalidate clearing a slot, or a generation
+// bump, severs every link to it with no unlink bookkeeping.
+
+static void EnsureChainStub()
+{
+    if (g_chain_stub != nullptr || g_no_link)
+        return;
+    if (g_addrs.chain_slot_base == nullptr || g_addrs.cycle_for == nullptr ||
+        g_addrs.chain_slot_size == 0 || g_addrs.chain_slot_size > 0xFFFF)
+    {
+        g_no_link = true;   // core didn't provide the context
+        return;
+    }
+
+    constexpr size_t kStubBytes = 320;
+    if (g_arena_used + kStubBytes > kArenaSize)
+        return;             // retried after the next arena flush
+
+    uint8_t* const entry = g_arena_base + g_arena_used;
+    emit_t e { entry, 0, (uint32_t)kStubBytes };
+
+    // Forward branches to the RET at the end, patched once its
+    // position is known. kind: 0 = b.cond, 1 = cbnz w, 2 = cbz x.
+    struct Fixup { uint32_t at; int kind; a64_cond_t cond; a64_reg_t reg; };
+    Fixup fixups[8];
+    int nfix = 0;
+
+    jit_writable_begin();
+
+    // w9 = CycleCounter, w11 = CycleFor; budget exhausted -> bail
+    emit_mov_x64_imm64(&e, A64_W10, (uint64_t)(uintptr_t)g_addrs.base);
+    emit_ldr_w32_imm(&e, A64_W9, A64_W10, g_off_cyc);
+    emit_mov_x64_imm64(&e, A64_W11, (uint64_t)(uintptr_t)g_addrs.cycle_for);
+    emit_ldr_w32_imm(&e, A64_W11, A64_W11, 0);
+    emit_cmp_w32_w32(&e, A64_W9, A64_W11);
+    fixups[nfix++] = { e.offset, 0, A64_COND_GE, A64_W0 };
+    emit_b_cond(&e, A64_COND_GE, 0);
+
+    // Pending interrupt lines or latch contents -> bail
+    emit_mov_x64_imm64(&e, A64_W12, (uint64_t)(uintptr_t)g_addrs.interrupt_or);
+    emit_ldrb_imm(&e, A64_W12, A64_W12, 0);
+    emit_mov_x64_imm64(&e, A64_W13, (uint64_t)(uintptr_t)g_addrs.interrupt_latch);
+    emit_ldrb_imm(&e, A64_W14, A64_W13, 0);    // DFF.D
+    emit_ldrb_imm(&e, A64_W13, A64_W13, 1);    // DFF.Q
+    emit_orr_w32(&e, A64_W12, A64_W12, A64_W14);
+    emit_orr_w32(&e, A64_W12, A64_W12, A64_W13);
+    fixups[nfix++] = { e.offset, 1, A64_COND_EQ, A64_W12 };
+    emit_cbnz_w32(&e, A64_W12, 0);
+
+    // SYNC wait or halted-instruction pending -> bail
+    emit_mov_x64_imm64(&e, A64_W13, (uint64_t)(uintptr_t)g_addrs.sync_waiting);
+    emit_ldr_w32_imm(&e, A64_W13, A64_W13, 0);
+    fixups[nfix++] = { e.offset, 1, A64_COND_EQ, A64_W13 };
+    emit_cbnz_w32(&e, A64_W13, 0);
+    emit_mov_x64_imm64(&e, A64_W13, (uint64_t)(uintptr_t)g_addrs.halted_pending);
+    emit_ldr_w32_imm(&e, A64_W13, A64_W13, 0);
+    fixups[nfix++] = { e.offset, 1, A64_COND_EQ, A64_W13 };
+    emit_cbnz_w32(&e, A64_W13, 0);
+
+    // w15 = next PC; x14 = &slot = base + (pc & MASK) * sizeof(CachedBlock)
+    emit_ldrh_imm(&e, A64_W15, A64_W10, g_off_pc);
+    EmitAndImm(e, A64_W16, A64_W15, (uint32_t)BlockCache::CACHE_MASK);
+    emit_movz_w32(&e, A64_W17, (uint16_t)g_addrs.chain_slot_size, 0);
+    emit_umull(&e, A64_W16, A64_W16, A64_W17);
+    emit_mov_x64_imm64(&e, A64_W14, (uint64_t)(uintptr_t)g_addrs.chain_slot_base);
+    emit_add_x64(&e, A64_W14, A64_W14, A64_W16);
+
+    // Slot must hold this PC in the current generation, with a thunk.
+    emit_ldrh_imm(&e, A64_W17, A64_W14, (uint32_t)offsetof(CachedBlock, start_pc));
+    emit_cmp_w32_w32(&e, A64_W17, A64_W15);
+    fixups[nfix++] = { e.offset, 0, A64_COND_NE, A64_W0 };
+    emit_b_cond(&e, A64_COND_NE, 0);
+    emit_ldr_w32_imm(&e, A64_W17, A64_W14, (uint32_t)offsetof(CachedBlock, generation));
+    emit_mov_x64_imm64(&e, A64_W12, (uint64_t)(uintptr_t)g_addrs.chain_generation);
+    emit_ldr_w32_imm(&e, A64_W12, A64_W12, 0);
+    emit_cmp_w32_w32(&e, A64_W17, A64_W12);
+    fixups[nfix++] = { e.offset, 0, A64_COND_NE, A64_W0 };
+    emit_b_cond(&e, A64_COND_NE, 0);
+
+    // Whole next block must fit the budget: cycles + total <= CycleFor
+    // (same test as the dispatcher's total_cycles <= remaining).
+    emit_ldrb_imm(&e, A64_W17, A64_W14, (uint32_t)offsetof(CachedBlock, total_cycles));
+    emit_add_w32(&e, A64_W17, A64_W17, A64_W9);
+    emit_cmp_w32_w32(&e, A64_W17, A64_W11);
+    fixups[nfix++] = { e.offset, 0, A64_COND_GT, A64_W0 };
+    emit_b_cond(&e, A64_COND_GT, 0);
+
+    emit_ldr_x64_imm(&e, A64_W16, A64_W14, (uint32_t)offsetof(CachedBlock, native_entry));
+    fixups[nfix++] = { e.offset, 2, A64_COND_EQ, A64_W16 };
+    emit_cbz_x64(&e, A64_W16, 0);
+
+    // Count the transition (single-threaded CPU loop; plain RMW).
+    emit_mov_x64_imm64(&e, A64_W12, (uint64_t)(uintptr_t)g_addrs.chain_runs);
+    emit_ldr_x64_imm(&e, A64_W13, A64_W12, 0);
+    emit_add_x64_imm(&e, A64_W13, A64_W13, 1);
+    emit_str_x64_imm(&e, A64_W13, A64_W12, 0);
+
+    emit_br(&e, A64_W16);
+
+    // bail: back to the dispatcher.
+    const uint32_t bail_at = e.offset;
+    emit_ret(&e);
+
+    for (int i = 0; i < nfix; ++i)
+    {
+        emit_t p { entry + fixups[i].at, 0, 4 };
+        const int32_t delta = (int32_t)(bail_at - fixups[i].at);
+        switch (fixups[i].kind)
+        {
+        case 0: emit_b_cond(&p, fixups[i].cond, delta); break;
+        case 1: emit_cbnz_w32(&p, fixups[i].reg, delta); break;
+        default: emit_cbz_x64(&p, fixups[i].reg, delta); break;
+        }
+    }
+
+    jit_writable_end();
+
+    if (e.offset > e.capacity)
+    {
+        // Should be impossible with the 320-byte budget; refuse to link
+        // rather than run truncated code.
+        g_no_link = true;
+        return;
+    }
+
+    __builtin___clear_cache((char*)entry, (char*)entry + e.offset);
+    g_arena_used += e.offset;
+    g_chain_stub = entry;
+}
+
 NativeEntry EmitBlock(const CachedBlock& slot)
 {
     if (g_disabled || g_arena_base == nullptr ||
         g_addrs.base == nullptr || g_addrs.pc == nullptr)
         return nullptr;
+
+    EnsureChainStub();
 
     const size_t needed =
         kPrologueBytes + (size_t)slot.num_insns * kMaxBytesPerInsn + kEpilogueBytes;
@@ -1365,10 +1524,15 @@ NativeEntry EmitBlock(const CachedBlock& slot)
         ++g_pc_writes_emitted;
     }
 
-    // Epilogue.
+    // Epilogue, then chain: with the frame restored (dispatcher's x30
+    // back in place), branch to the shared stub, which either tail-
+    // jumps into the next block's thunk or RETs to the dispatcher.
     emit_ldp_x64_off(&e, A64_W19, A64_W20, A64_SP, 16);
     emit_ldp_x64_post(&e, A64_W29, A64_W30, A64_SP, 32);
-    emit_ret(&e);
+    if (g_chain_stub != nullptr)
+        emit_b(&e, (int32_t)(g_chain_stub - (entry + e.offset)));
+    else
+        emit_ret(&e);
 
     jit_writable_end();
 

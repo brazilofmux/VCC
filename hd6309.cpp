@@ -222,6 +222,10 @@ static std::vector<unsigned short> CPUTraceTriggers;
 // cumulative.
 static uint64_t gJitBlockRuns = 0;
 static uint32_t gJitArenaFlushes = 0;
+// Chain-stub transitions: block->block jumps that never returned to
+// the dispatcher. Incremented by emitted code (single-threaded CPU
+// loop, no atomicity needed). Interval-reset with the other stats.
+static uint64_t gJitChainRuns = 0;
 
 // VCC_COUNT_HANDLERS measurement support: per-handler execution counts
 // on the interpreter block path, dumped (with addresses for symbol
@@ -743,6 +747,19 @@ void HD6309Init()
 		addrs.mem_read16     = &MemRead16;
 		addrs.mem_write16    = &MemWrite16;
 
+		// Chain-stub context: lets emitted blocks link directly to
+		// their successors when the dispatcher would only re-derive
+		// what the stub can check itself.
+		addrs.cycle_for        = &gCycleFor;
+		addrs.interrupt_or     = &InterruptLineOR;
+		addrs.interrupt_latch  = &InterruptLatch.D;
+		addrs.sync_waiting     = &SyncWaiting;
+		addrs.halted_pending   = &HaltedInsPending;
+		addrs.chain_slot_base  = blockCache.SlotBase();
+		addrs.chain_generation = blockCache.GenerationAddr();
+		addrs.chain_slot_size  = (uint32_t)sizeof(CachedBlock);
+		addrs.chain_runs       = &gJitChainRuns;
+
 		BlockJit::InlineableHandlers inlines;
 		inlines.lda_m  = &Lda_M;
 		inlines.ldb_m  = &Ldb_M;
@@ -953,14 +970,19 @@ void HD6309GetBlockStatsText(char* buf, int bufsize)
 		? 100.0 * (double)js.insns_inlined / (double)total_emitted_insns
 		: 0.0;
 	// Share of block dispatches served by a native thunk this interval.
+	// Chain transitions never re-enter the dispatcher, so they are
+	// counted separately by the stub (and excluded from block_hits -
+	// Blk%/i-per-b describe dispatcher entries only).
 	uint64_t jit_runs = gJitBlockRuns;
 	gJitBlockRuns = 0;
+	uint64_t chain_runs = gJitChainRuns;
+	gJitChainRuns = 0;
 	double jit_run_pct = (s.block_hits > 0)
 		? 100.0 * (double)jit_runs / (double)s.block_hits
 		: 0.0;
 	snprintf(buf, bufsize,
 		"Blk:%.0f%% %.1fi/b %llurec %llurej %llucan %lluinv  "
-		"JIT:%u/%.0f%% run:%.0f%% inl:%.0f%% fl:%u",
+		"JIT:%u/%.0f%% run:%.0f%% inl:%.0f%% chain:%llu fl:%u",
 		hit_pct, avg_block,
 		(unsigned long long)s.blocks_recorded,
 		(unsigned long long)s.rejected_blocks,
@@ -970,6 +992,7 @@ void HD6309GetBlockStatsText(char* buf, int bufsize)
 		jit_arena_pct,
 		jit_run_pct,
 		inline_pct,
+		(unsigned long long)chain_runs,
 		(unsigned)gJitArenaFlushes);
 }
 

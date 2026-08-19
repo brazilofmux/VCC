@@ -94,6 +94,25 @@ namespace BlockJit
         uint8_t*  nat_cycles_65;  // TST indexed
         unsigned short (*mem_read16)(unsigned short);
         void (*mem_write16)(unsigned short, unsigned short);
+
+        // Block-linking (chain stub) context. The arm64 backend emits
+        // one shared stub that lets a thunk tail-jump straight into the
+        // next block's thunk when the dispatcher would have done nothing
+        // but ceremony: it rechecks the cycle budget, pending interrupt/
+        // sync/halt state, and the cache slot (tag + generation +
+        // native_entry) before jumping - so a cleared native_entry or a
+        // generation bump severs every link with no patching. A null
+        // chain_slot_base disables linking entirely (x86 backend, or
+        // cores that don't populate it).
+        int*           cycle_for;        // &gCycleFor (dispatch budget)
+        unsigned char* interrupt_or;     // &InterruptLineOR
+        unsigned char* interrupt_latch;  // &InterruptLatch (D at +0, Q at +1)
+        unsigned int*  sync_waiting;     // &SyncWaiting
+        int*           halted_pending;   // &HaltedInsPending
+        void*          chain_slot_base;  // &blockCache.blocks_[0]
+        const uint32_t* chain_generation; // &blockCache.generation_
+        uint32_t       chain_slot_size;  // sizeof(CachedBlock)
+        uint64_t*      chain_runs;       // stub-side transition counter
     };
 
     // Handler addresses the level-2 emitter knows how to inline. The
