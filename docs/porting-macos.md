@@ -185,6 +185,24 @@ regardless of layout, so CI stays green while it lands.
    stub is now the hottest single PC cluster), trace formation /
    superblocks, and the CPUCycle metronome floor.
 
+   *Registerized-state arc (same day):* DECB 1540x -> ~1950x (+27%),
+   OS-9 ~5150x. (1) Stub diet: the five bail flags packed into one
+   zero-padded quadword in Hd6309State (one 64-bit load), generation
+   mirrored into cpu_state, CachedBlock alignas(256) so slot indexing
+   is a shift, chain counter behind VCC_JIT_STATS. (2) The chain
+   register convention, established by an emitted runner the
+   dispatcher enters thunks through (BlockJit::GetThunkRunner; x86 and
+   null backends return null): w21 = CycleCounter (every cycle-add is
+   now one instruction; handler call sites spill/reload around the
+   BLR), w22 = CycleFor, x23 = &cpu_state, x24 = slot base - the stub
+   runs with zero materializations and register-compare budget checks,
+   and thunk prologues load x19 from x23. Negative result, reverted:
+   passing the exit PC in w15 to skip the stub's PC load measured as
+   noise - the load hides behind branch resolution. Thunk bodies are
+   now ~5% of wall; hop FREQUENCY is the cost, so the next real lever
+   is superblock traces (record through predictable branches with
+   guard exits), then the dispatcher-entry and metronome floors.
+
 Smoke tests per AGENTS.md conventions: boot path, disk attach, cartridge
 load, keyboard input, debugger flow — plus OS-9 Level 2 boot and Basic09,
 the status-bar effective-MHz readout to compare interpreter/JIT tiers,
