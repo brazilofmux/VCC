@@ -156,9 +156,14 @@ regardless of layout, so CI stays green while it lands.
    Remaining modules (sdc, becker, GMC, orch90, acia, Ramdisk,
    SuperIDE) follow the same pattern; becker needs its winsock code
    ported to BSD sockets.
-3. **SDL shell:** SDL window hosting the OpenGL renderer, SDL audio,
-   `std::chrono` throttle, SDL input. The stubs in `headless/stubs.cpp`
-   are the exact list of functions it must provide.
+3. **SDL shell** *(done)*: `vcc-sdl` - an SDL2 window streaming the
+   GIME renderer's 640x480 XRGB8888 surface, a character-level
+   host-keyboard-to-CoCo-matrix mapping (shift synthesized or
+   suppressed per the CoCo layout), SDL audio fed from the core's
+   per-frame sample buffer, a 60 fps pacer with F8 turbo, and a
+   self-screenshot hook (F12 / VCC_SHOT_FILE) that doubles as the
+   automated visual test. Machine bootstrap is shared with
+   vcc-headless in shell/machine.cpp; the same vcc.ini drives both.
 4. **arm64 JIT backend:** drop in `emit_a64.h`, split the backend seam in
    `BlockJit.cpp`, emit level-1 trampolines, then port the level-2
    inline emitters; bring up shadow-verify before trusting either.

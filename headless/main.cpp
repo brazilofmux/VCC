@@ -17,60 +17,33 @@ This file is part of VCC (Virtual Color Computer).
     <http://www.gnu.org/licenses/>.
 */
 
-// Headless driver (docs/porting-macos.md stage 1): boot the CoCo 3 core
-// with no shell - no window, no audio, no throttle - run it flat out,
-// then print the effective speed and an ASCII dump of the text screen.
+// Headless driver (docs/porting-macos.md): boot the CoCo 3 core with no
+// shell - no window, no audio, no throttle - run it flat out, then
+// print the effective speed and an ASCII dump of the text screen.
+// Machine bootstrap is shared with the SDL shell (shell/machine.cpp);
+// the same vcc.ini drives both.
 //
-// Reads the same vcc.ini as the full emulator (~/.config/vcc/vcc.ini):
-// RAM size, CPU type, and the [Module] OnBoot cartridge - so an MPI
-// with FD502 + hard disk configuration boots here exactly as it would
-// on Windows, including NitrOS-9 from the configured boot floppy/VHD.
-// Cartridge modules load from <exedir>/<name>.so via the dlopen shim;
-// FD502 finds disk11.rom/rgbdos.rom in <exedir> too.
-//
-// The boot sequence mirrors DoHardReset() in Vcc.cpp minus the UI.
 // Usage: vcc-headless [rom-path] [frames] [text-to-type]
-//        (text is typed starting at frame 150; "\n" means ENTER)
+//        (text is typed starting at frame 150; "\n" means ENTER and
+//        "~" pauses one second)
+// Env:   VCC_FRAMESKIP=N   render every Nth frame (CPU-bound benches)
+//        VCC_NO_JIT / VCC_NO_INLINE / VCC_VERIFY_PURE / ... (see JIT)
 
+#include "shell/machine.h"
 #include "defines.h"
-#include "MachineDefs.h"
 #include "tcc1014mmu.h"
-#include "tcc1014registers.h"
 #include "tcc1014graphics.h"
-#include "mc6821.h"
 #include "coco3.h"
 #include "hd6309.h"
-#include "mc6809.h"
 #include "pakinterface.h"
-#include "Vcc.h"
-#include <vcc/util/settings.h>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
-// Globals normally owned by Vcc.cpp (the Win32 shell).
-SystemState EmuState;
-void (*CPUInit)() = nullptr;
-int  (*CPUExec)(int) = nullptr;
-void (*CPUReset)() = nullptr;
-void (*CPUAssertInterupt)(InterruptSource, Interrupt) = nullptr;
-void (*CPUDeAssertInterupt)(InterruptSource, Interrupt) = nullptr;
-void (*CPUForcePC)(unsigned short) = nullptr;
-void (*CPUSetBreakpoints)(const std::vector<unsigned short>&) = nullptr;
-void (*CPUSetTraceTriggers)(const std::vector<unsigned short>&) = nullptr;
-VCC::CPUState (*CPUGetState)() = nullptr;
-
-// ROM path handed to the GetExtRomPath stub in stubs.cpp.
-char gHeadlessRomPath[512] = "coco3.rom";
-
 // Provided by headless/stubs.cpp.
-VCC::Util::settings& Setting();
 void HeadlessTypeText(const char* text);
 void HeadlessKeyboardTick();
-
-// 32-bit render target; the GIME renderer needs somewhere to draw even
-// though nobody looks at it here.
-static unsigned int Framebuffer[640 * 480];
 
 // CoCo VDG screen code -> printable ASCII (both the inverse 0x00-0x3F
 // and normal 0x40-0x7F ranges fold to the same glyphs).
@@ -117,97 +90,31 @@ static void DumpTextScreen()
 	std::printf("+--------------------------------+\n");
 }
 
-static void HardResetMachine()
-{
-	EmuState.RamBuffer = MmuInit(EmuState.RamSize);
-	EmuState.WRamBuffer = (unsigned short*)EmuState.RamBuffer;
-	if (EmuState.RamBuffer == nullptr)
-	{
-		std::fprintf(stderr, "vcc-headless: MmuInit failed\n");
-		std::exit(1);
-	}
-
-	if (EmuState.CpuType == 1)
-	{
-		CPUInit             = HD6309Init;
-		CPUExec             = HD6309Exec;
-		CPUReset            = HD6309Reset;
-		CPUAssertInterupt   = HD6309AssertInterupt;
-		CPUDeAssertInterupt = HD6309DeAssertInterupt;
-		CPUForcePC          = HD6309ForcePC;
-		CPUSetBreakpoints   = HD6309SetBreakpoints;
-		CPUGetState         = HD6309GetState;
-		CPUSetTraceTriggers = HD6309SetTraceTriggers;
-	}
-	else
-	{
-		CPUInit             = MC6809Init;
-		CPUExec             = MC6809Exec;
-		CPUReset            = MC6809Reset;
-		CPUAssertInterupt   = MC6809AssertInterupt;
-		CPUDeAssertInterupt = MC6809DeAssertInterupt;
-		CPUForcePC          = MC6809ForcePC;
-		CPUSetBreakpoints   = MC6809SetBreakpoints;
-		CPUGetState         = MC6809GetState;
-		CPUSetTraceTriggers = MC6809SetTraceTriggers;
-	}
-
-	PiaReset();
-	mc6883_reset();
-	CPUInit();
-	CPUReset();
-	GimeReset();
-	UpdateBusPointer();
-	EmuState.TurboSpeedFlag = 1;
-	ResetBus();
-	SetCPUMultiplyerFlag(0);
-	SetClockSpeed(1);
-}
-
 int main(int argc, char** argv)
 {
-	if (argc > 1)
-		std::snprintf(gHeadlessRomPath, sizeof(gHeadlessRomPath), "%s", argv[1]);
+	std::snprintf(VccShell::RomPathOverride, sizeof(VccShell::RomPathOverride),
+	              "%s", (argc > 1) ? argv[1] : "coco3.rom");
 	const int frames = (argc > 2) ? std::atoi(argv[2]) : 600;
 	const char* type_text = (argc > 3) ? argv[3] : nullptr;
 
-	EmuState.RamSize = (unsigned char)Setting().read("Memory", "RamSize", 1);
-	EmuState.CpuType = (unsigned char)Setting().read("CPU", "CpuType", 1);
-	// The GIME renderer dominates headless wall time (~85% in
-	// UpdateScreen32 at FrameSkip=1). VCC_FRAMESKIP=N renders only
-	// every Nth frame - emulation is unaffected (HLINE still runs per
-	// line) - so CPU-tier benchmarks measure the CPU, not the painter.
-	EmuState.FrameSkip = 1;
+	if (!VccShell::BootMachine())
+	{
+		std::fprintf(stderr, "vcc-headless: machine boot failed\n");
+		return 1;
+	}
+
+	// The GIME renderer dominates headless wall time at FrameSkip=1;
+	// VCC_FRAMESKIP=N renders only every Nth frame (emulation is
+	// unaffected) so CPU-tier benchmarks measure the CPU.
 	if (const char* fs = std::getenv("VCC_FRAMESKIP"))
 	{
 		const int n = std::atoi(fs);
 		if (n >= 1 && n <= 255)
 			EmuState.FrameSkip = (unsigned char)n;
 	}
-	EmuState.EmulationRunning = 1;
-	EmuState.BitDepth = 3;          // 32-bit surface
-	EmuState.PTRsurface32 = Framebuffer;
-	EmuState.SurfacePitch = 640;
-
-	HardResetMachine();
-
-	// Load the boot cartridge the same way Vcc.cpp does at startup.
-	char onboot[MAX_PATH] = "";
-	Setting().read("Module", "OnBoot", "", onboot, MAX_PATH);
-	if (onboot[0] != '\0')
-	{
-		const auto status = PakLoadCartridge(onboot);
-		std::printf("vcc-headless: OnBoot module %s -> %s\n", onboot,
-		            status == VCC::Core::cartridge_loader_status::success ? "loaded" : "FAILED");
-		if (EmuState.ResetPending == 2)
-		{
-			HardResetMachine();
-			EmuState.ResetPending = 0;
-		}
-	}
 
 	std::printf("vcc-headless: rom=%s frames=%d cpu=%s ram=%s\n",
-	            gHeadlessRomPath, frames,
+	            VccShell::RomPathOverride, frames,
 	            EmuState.CpuType == 1 ? "HD6309" : "MC6809",
 	            EmuState.RamSize == 0 ? "128K" : EmuState.RamSize == 1 ? "512K"
 	          : EmuState.RamSize == 2 ? "2M" : "8M");
@@ -243,5 +150,18 @@ int main(int argc, char** argv)
 	std::printf("module status: %s\n", EmuState.StatusLine);
 
 	DumpTextScreen();
+
+	// VCC_DUMP_PIXELS: print a strip of framebuffer words so a shell
+	// author can learn the renderer's channel order empirically.
+	if (std::getenv("VCC_DUMP_PIXELS"))
+	{
+		std::printf("framebuffer row 100, cols 0-15:\n");
+		for (int i = 0; i < 16; ++i)
+			std::printf(" %08X", VccShell::Framebuffer[100 * 640 + i]);
+		std::printf("\nframebuffer row 120, cols 300-315:\n");
+		for (int i = 0; i < 16; ++i)
+			std::printf(" %08X", VccShell::Framebuffer[120 * 640 + 300 + i]);
+		std::printf("\n");
+	}
 	return 0;
 }

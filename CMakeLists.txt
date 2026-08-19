@@ -112,7 +112,25 @@ vcc_cartridge_module(mpi
 )
 target_include_directories(mpi PRIVATE mpi)
 
-# ---- Headless driver
+# ---- Shells. shell/ holds the machine bootstrap and device-absent
+# stubs shared by every non-Windows front end; each shell adds its own
+# keyboard and audio.
+add_library(vcc-shell STATIC
+  shell/machine.cpp
+  shell/common_stubs.cpp
+)
+target_link_libraries(vcc-shell PUBLIC vcc-core)
+
 add_executable(vcc-headless headless/main.cpp headless/stubs.cpp)
-target_link_libraries(vcc-headless PRIVATE vcc-core)
+target_link_libraries(vcc-headless PRIVATE vcc-shell)
 add_dependencies(vcc-headless harddisk fd502 mpi)
+
+# SDL shell: built when SDL2 is available (brew install sdl2).
+find_package(SDL2 QUIET)
+if(SDL2_FOUND)
+  add_executable(vcc-sdl sdl/main.cpp)
+  target_link_libraries(vcc-sdl PRIVATE vcc-shell SDL2::SDL2)
+  add_dependencies(vcc-sdl harddisk fd502 mpi)
+else()
+  message(STATUS "SDL2 not found - skipping vcc-sdl")
+endif()

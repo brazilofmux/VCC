@@ -17,83 +17,18 @@ This file is part of VCC (Virtual Color Computer).
     <http://www.gnu.org/licenses/>.
 */
 
-// Shell stubs for the headless driver: everything the portable core
-// links against that lives in the Win32 shell (Vcc.cpp, config.cpp,
-// keyboard, joystick, cassette, audio, pakinterface, DirectDraw,
-// throttle) or the debugger UI. Each stub is the "device absent"
-// behavior: no keys down, no cassette, no cartridge, screen lock always
-// succeeds. The SDL shell replaces this file function by function.
+// Headless-specific shell pieces: a scripted CoCo keyboard (the smoke
+// tests type through it) and an audio sink that discards samples. The
+// shared machine bootstrap and device-absent stubs live in shell/.
 
-#include "defines.h"
-#include "MachineDefs.h"
-#include "coco3.h"
-#include <vcc/util/settings.h>
-#include <cstdlib>
-#include <cstring>
+#include <cstddef>
 #include <string>
 
-extern char gHeadlessRomPath[512];   // headless/main.cpp
-
-// ---- config.cpp ----
-
-void GetExtRomPath(char* path)
-{
-	std::strncpy(path, gHeadlessRomPath, MAX_PATH - 1);
-	path[MAX_PATH - 1] = '\0';
-}
-
-int GetPaletteType()
-{
-	return 1;   // RGB
-}
-
-// Config lives at $XDG_CONFIG_HOME/vcc/vcc.ini (~/.config/vcc/vcc.ini) -
-// same file format as the Windows build, sensible host location.
-void GetIniFilePath(char* path)
-{
-	const char* xdg = std::getenv("XDG_CONFIG_HOME");
-	std::string dir = (xdg && *xdg) ? xdg
-	                                : std::string(std::getenv("HOME") ? std::getenv("HOME") : ".") + "/.config";
-	dir += "/vcc/vcc.ini";
-	std::strncpy(path, dir.c_str(), MAX_PATH - 1);
-	path[MAX_PATH - 1] = '\0';
-}
-
-VCC::Util::settings& Setting()
-{
-	static VCC::Util::settings* instance = [] {
-		char path[MAX_PATH];
-		GetIniFilePath(path);
-		return new VCC::Util::settings(path);
-	}();
-	return *instance;
-}
-
-// ---- Vcc.cpp shell ----
-
-void SetCPUMultiplyerFlag(unsigned char double_speed)
-{
-	// Functional: the GIME's $FF91 speed poke must still work headless.
-	EmuState.DoubleSpeedFlag = double_speed;
-	const int mult = (EmuState.OverclockFlag) ? EmuState.DoubleSpeedMultiplyer : 2;
-	SetClockSpeed(1);
-	if (EmuState.DoubleSpeedFlag)
-		SetClockSpeed((unsigned short)(mult * EmuState.TurboSpeedFlag));
-}
-
-void SetTurboMode(unsigned char data)
-{
-	EmuState.TurboSpeedFlag = data + 1;
-	if (EmuState.DoubleSpeedFlag)
-		SetCPUMultiplyerFlag(EmuState.DoubleSpeedFlag);
-}
-
-// ---- keyboard.cpp / keyboardEdit.cpp ----
+// ---- keyboard: scripted matrix ----
 //
-// Scripted CoCo keyboard matrix in place of the Win32 scan-code
-// translator: the driver queues text with HeadlessTypeText and ticks
-// once per frame; the PIA scan sees each key held for a few frames
-// with a gap before the next, which is plenty for the ROM's debounce.
+// The driver queues text with HeadlessTypeText and ticks once per
+// frame; the PIA scan sees each key held for a few frames with a gap
+// before the next, which is plenty for the ROM's debounce.
 
 namespace
 {
@@ -175,50 +110,7 @@ extern "C" unsigned char vccKeyboardGetScan(unsigned char Col)
 	return (unsigned char)((~rows & 0x7F) | 0x80);
 }
 
-void PasteIntoQueue(const std::string&)
-{
-}
-
-// ---- joystickinput.cpp ----
-
-int JS_Ramp_Clock = 0;
-
-extern "C" void vccJoystickStartTandy(unsigned char)
-{
-}
-
-extern "C" void vccJoystickStartCCMax()
-{
-}
-
-// ---- Cassette.cpp ----
-
-unsigned char TapeFastLoad = 0;
-
-void Motor(unsigned char)
-{
-}
-
-unsigned char GetMotorState()
-{
-	return 0;
-}
-
-unsigned int GetTapeRate()
-{
-	return 0;
-}
-
-void LoadCassetteBuffer(unsigned char*, unsigned int* size)
-{
-	if (size) *size = 0;
-}
-
-void FlushCassetteBuffer(const unsigned char*, unsigned int*)
-{
-}
-
-// ---- Audio.cpp ----
+// ---- audio: discard ----
 
 void FlushAudioBuffer(unsigned int*, unsigned int)
 {
@@ -237,44 +129,3 @@ unsigned char PauseAudio(unsigned char)
 {
 	return 0;
 }
-
-// ---- DirectDrawInterface.cpp ----
-
-unsigned char LockScreen()
-{
-	return 0;   // success; the driver's static framebuffer is the surface
-}
-
-void UnlockScreen(SystemState*)
-{
-}
-
-void Cls(unsigned int, SystemState*)
-{
-}
-
-POINT GetForcedAspectBorderPadding()
-{
-	return POINT{};
-}
-
-// ---- throttle.cpp ----
-
-float CalculateFPS()
-{
-	return 0.0f;
-}
-
-// ---- Disassembler.cpp (debugger UI) ----
-
-namespace VCC
-{
-	void ApplyHaltpoints(bool)
-	{
-	}
-
-	void KillHaltpoints()
-	{
-	}
-}
-
