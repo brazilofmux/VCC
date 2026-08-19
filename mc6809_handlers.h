@@ -476,7 +476,11 @@ static void op_JMP_X() {
     CycleCounter += 3;
 }
 static void op_JMP_E() {
-    pc.Reg = EA_EXTENDED();
+    // NOT EA_EXTENDED(): that macro is two statements, and its trailing
+    // "pc.Reg += 2" would run AFTER the assignment - landing every
+    // extended JMP two bytes past its target. (Found on the first 6809
+    // boot attempt: the ROM's first JMP > derailed into zeroed RAM.)
+    pc.Reg = MemRead16(pc.Reg);
     CycleCounter += 4;
 }
 

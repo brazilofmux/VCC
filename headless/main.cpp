@@ -32,6 +32,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "shell/machine.h"
 #include "shell/text_codec.h"
 #include "defines.h"
+#include "MachineDefs.h"
 #include "tcc1014mmu.h"
 #include "tcc1014graphics.h"
 #include "coco3.h"
@@ -128,6 +129,10 @@ int main(int argc, char** argv)
 	if (type_text)
 		std::printf("vcc-headless: will type %s at frame 150\n", type_text);
 
+	// VCC_LOG_PC: print the CPU registers once a second (of emulated
+	// time). Cheap wedge/divergence diagnostic for either core.
+	const bool log_pc = std::getenv("VCC_LOG_PC") != nullptr;
+
 	const auto start = std::chrono::steady_clock::now();
 	for (int i = 0; i < frames; ++i)
 	{
@@ -135,6 +140,15 @@ int main(int argc, char** argv)
 			HeadlessTypeText(type_text);
 		HeadlessKeyboardTick();
 		RenderFrame(&EmuState);
+		if (log_pc && (i % 60) == 0 && CPUGetState)
+		{
+			const auto st = CPUGetState();
+			std::printf("frame %5d: PC=%04X S=%04X DP=%02X CC=%02X A=%02X B=%02X X=%04X Y=%04X  [PC]:",
+			            i, st.PC, st.S, st.DP, st.CC, st.A, st.B, st.X, st.Y);
+			for (int b = 0; b < 8; ++b)
+				std::printf(" %02X", SafeMemRead8((unsigned short)(st.PC + b)));
+			std::printf("\n");
+		}
 	}
 	const auto end = std::chrono::steady_clock::now();
 

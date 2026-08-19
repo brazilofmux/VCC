@@ -498,8 +498,20 @@ int MC6809Exec(int CycleFor)
 	if (DebuggerActive())
 		goto debugger_path;
 
+	// VCC_LOG_PC: dump the first fetches after startup - wedge diagnostic.
+	static int log_fetches = -1;
+	if (log_fetches < 0)
+		log_fetches = std::getenv("VCC_LOG_PC") ? 24 : 0;
+
 	// Fast path: no debugger overhead, with block execution
 	while (CycleCounter<CycleFor) {
+
+		if (log_fetches > 0)
+		{
+			--log_fetches;
+			fprintf(stderr, "[6809] PC=%04X op=%02X A=%02X B=%02X X=%04X S=%04X CC=%02X\n",
+			        pc.Reg, SafeMemRead8(pc.Reg), A_REG, B_REG, X_REG, S_REG, get_cc_flags());
+		}
 
 		LatchInterrupts();
 

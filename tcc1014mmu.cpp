@@ -156,8 +156,15 @@ void MmuReset()
 		MemPages[Index1]=memory+( (Index1 & RamMask[CurrentRamConfig]) *0x2000);
 		MemPageOffsets[Index1]=1;
 	}
-	SetRomMap(0);
-	SetMapType(0);
+	// NOT SetRomMap(0)/SetMapType(0): those early-return on "no change",
+	// and RomMap/MapType were just zeroed above - so the calls would skip
+	// UpdateMmuArray and leave the ROM pages unmapped after reset. The
+	// 6309 masked this for a long time because its prepopulated block
+	// cache executes the boot ROM from decoded blocks (no fetches) until
+	// the GIME writes rebuild the map; the 6809 fetches honestly and
+	// derailed on instruction one.
+	UpdateMmuArray();
+	InvalidateFetchCache();
 	return;
 }
 
