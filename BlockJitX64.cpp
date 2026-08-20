@@ -149,6 +149,10 @@ static int32_t g_off_nat54 = 0;
 static int32_t g_off_nat32 = 0;
 static int32_t g_off_nat53 = 0;
 static int32_t g_off_nat65 = 0;
+static int32_t g_off_nat51 = 0;
+static int32_t g_off_nat64 = 0;
+static int32_t g_off_nat76 = 0;
+static int32_t g_off_nat87 = 0;
 static int64_t g_off_pending = -1;   // ChainBreak byte in cpu_state
 
 // ---------- cc[] bit ordering (matches BlockJit.cpp / hd6309.cpp) ----------
@@ -218,6 +222,10 @@ void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers)
         g_off_nat32 = (int32_t)((uint8_t*)g_addrs.nat_cycles_32 - base);
         g_off_nat53 = (int32_t)((uint8_t*)g_addrs.nat_cycles_53 - base);
         g_off_nat65 = (int32_t)((uint8_t*)g_addrs.nat_cycles_65 - base);
+        g_off_nat51 = (int32_t)((uint8_t*)g_addrs.nat_cycles_51 - base);
+        g_off_nat64 = (int32_t)((uint8_t*)g_addrs.nat_cycles_64 - base);
+        g_off_nat76 = (int32_t)((uint8_t*)g_addrs.nat_cycles_76 - base);
+        g_off_nat87 = (int32_t)((uint8_t*)g_addrs.nat_cycles_87 - base);
         g_off_pending = (g_addrs.chain_break != nullptr)
             ? (int64_t)((uint8_t*)g_addrs.chain_break - base) : -1;
         if (g_off_pending < 0 || g_off_pending > INT32_MAX)
@@ -256,12 +264,12 @@ void Reset()
 
 // Prologue: sub rsp (4) + movabs r14 (10).
 static constexpr size_t kPrologueBytes = 16;
-// Per instruction, worst case: an indexed 16-bit store with every flag
-// live and the inline RAM fast path for the write (EA + flags + the
-// ~120-byte EmitMemWrite16 body) — comfortably under 224 bytes. This
-// is only the arena RESERVATION per instruction; actual consumption is
-// the emitted size.
-static constexpr size_t kMaxBytesPerInsn = 224;
+// Per instruction, worst case: an indexed memory-RMW with every flag
+// live — EA, the read fast path, the modify+setcc body, the EA
+// spill/reload, and the write fast path with its bitmap check — lands
+// around 220 bytes. This is only the arena RESERVATION per
+// instruction; actual consumption is the emitted size.
+static constexpr size_t kMaxBytesPerInsn = 288;
 // Epilogue: final PC flush (11) + add rsp (4) + jmp rel32 (5).
 static constexpr size_t kEpilogueBytes = 24;
 
@@ -968,6 +976,320 @@ static void EmitInlineSt16Idx(emit_t& e, const DecodedInst& insn,
     EmitCyclesConst(e, 5);
 }
 
+// ---------- memory-operand ALU / RMW / 16-bit / call-return families ----------
+
+// EA into R9 for the three memory modes. MM_IDX callers must have
+// verified EAModeSupported first.
+static void EmitEAToR9(emit_t& e, int mode, const DecodedInst& insn)
+{
+    if (mode == MM_DP)
+    {
+        emit_load16u(&e, X64_R9, R_STATE, g_off_dp);
+        const uint8_t off = (uint8_t)(insn.operand & 0xFF);
+        if (off != 0)
+            emit_or_r_imm(&e, X64_R9, off);
+    }
+    else if (mode == MM_EXT)
+    {
+        emit_mov_r32_imm32(&e, X64_R9, insn.operand);
+    }
+    else
+    {
+        EmitEA(e, insn.ea_info, insn.operand, X64_R9);
+    }
+}
+
+// Cycle charge for a family/mode pair, mirroring the handlers exactly.
+static void EmitCyclesForMode(emit_t& e, int mode,
+                              int32_t dp_nat, uint32_t idx_const, int32_t ext_nat)
+{
+    if (mode == MM_DP)       EmitCyclesRuntime(e, dp_nat);
+    else if (mode == MM_IDX) EmitCyclesConst(e, idx_const);
+    else                     EmitCyclesRuntime(e, ext_nat);
+}
+
+// SUBA/CMPA/ADDA/ANDA/ORA/EORA/BITA (and B forms) with a memory
+// operand: read8(EA) then the same 8-bit host-flag capture as the
+// immediate forms. ADD also writes the untracked half-carry cc[H].
+// Cycles: dp NatEmuCycles43, indexed +4, ext NatEmuCycles54.
+static void EmitInlineAlu8Mem(emit_t& e, const DecodedInst& insn,
+                              int op, int32_t reg_off, int mode, uint8_t mask)
+{
+    g_emit_had_side_effects = true;
+    EmitEAToR9(e, mode, insn);
+    EmitMemRead8(e);                                  // eax = operand byte
+    emit_load8u(&e, X64_RDX, R_STATE, reg_off);       // edx = old acc
+    switch (op)
+    {
+    case ALU8_SUB:
+    case ALU8_CMP:
+        emit_alu_r8_r8(&e, (op == ALU8_SUB) ? X64_ALU_SUB : X64_ALU_CMP,
+                       X64_RDX, X64_RAX);
+        if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
+        if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
+        if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
+        if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
+        if (op == ALU8_SUB)
+            emit_store8(&e, X64_RDX, R_STATE, reg_off);
+        break;
+    case ALU8_ADD:
+        emit_mov_rr(&e, X64_RCX, X64_RDX);            // save old for H
+        emit_alu_r8_r8(&e, X64_ALU_ADD, X64_RDX, X64_RAX);
+        if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
+        if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
+        if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
+        if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
+        emit_store8(&e, X64_RDX, R_STATE, reg_off);
+        // H = bit 4 of (old ^ operand ^ result), unconditional.
+        emit_xor_rr(&e, X64_RCX, X64_RAX);
+        emit_xor_rr(&e, X64_RCX, X64_RDX);
+        emit_shr_r_imm(&e, X64_RCX, 4);
+        emit_and_r_imm(&e, X64_RCX, 1);
+        emit_store8(&e, X64_RCX, R_STATE, g_off_cc + 5);
+        break;
+    case ALU8_AND:
+    case ALU8_OR:
+    case ALU8_EOR:
+        emit_alu_r8_r8(&e, (op == ALU8_AND) ? X64_ALU_AND
+                         : (op == ALU8_OR)  ? X64_ALU_OR : X64_ALU_XOR,
+                       X64_RDX, X64_RAX);
+        if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
+        if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
+        if (mask & CC_BIT_V) EmitCcConst(e, 1, 0);
+        emit_store8(&e, X64_RDX, R_STATE, reg_off);
+        break;
+    default:   // ALU8_BIT: AND flags, no writeback
+        emit_test_r8_r8(&e, X64_RDX, X64_RAX);
+        if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
+        if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
+        if (mask & CC_BIT_V) EmitCcConst(e, 1, 0);
+        break;
+    }
+    EmitCyclesForMode(e, mode, g_off_nat43, 4, g_off_nat54);
+}
+
+// Memory RMW: NEG/COM/LSR/ROR/ASR/ASL/ROL/DEC/INC/CLR on dp/idx/ext.
+// The EA survives the read in the thunk's own stack slot ([rsp+32] -
+// above the Win64 shadow the helpers' slow-path calls hand to their
+// callees). CLR mirrors its handler: write 0, no read. ROR/ROL consume
+// the OLD cc[C] byte (captured before the setcc overwrites it) - which
+// is why they carry a reads-mask in the liveness analysis below.
+// Cycles: dp NatEmuCycles65, indexed +6, ext NatEmuCycles76.
+static void EmitInlineRmw8(emit_t& e, const DecodedInst& insn,
+                           int op, int mode, uint8_t mask)
+{
+    g_emit_had_side_effects = true;
+    EmitEAToR9(e, mode, insn);
+
+    if (op == RMW8_CLR)
+    {
+        emit_mov_r32_imm32(&e, X64_R8, 0);
+        EmitMemWrite8(e);
+        if (mask & CC_BIT_C) EmitCcConst(e, 0, 0);
+        if (mask & CC_BIT_N) EmitCcConst(e, 3, 0);
+        if (mask & CC_BIT_V) EmitCcConst(e, 1, 0);
+        if (mask & CC_BIT_Z) EmitCcConst(e, 2, 1);
+        EmitCyclesForMode(e, mode, g_off_nat65, 6, g_off_nat76);
+        return;
+    }
+
+    emit_store32(&e, X64_R9, X64_RSP, 32);   // save EA across the read
+    EmitMemRead8(e);                         // eax = original byte
+    emit_mov_rr(&e, X64_RDX, X64_RAX);
+    switch (op)
+    {
+    case RMW8_NEG:
+        emit_neg_r8(&e, X64_RDX);
+        if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
+        if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
+        if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
+        if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
+        break;
+    case RMW8_COM:
+        emit_alu_r8_imm8(&e, X64_ALU_XOR, X64_RDX, 0xFF);
+        if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
+        if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
+        if (mask & CC_BIT_V) EmitCcConst(e, 1, 0);
+        if (mask & CC_BIT_C) EmitCcConst(e, 0, 1);
+        break;
+    case RMW8_LSR:
+        emit_shift_r8_1(&e, X64_SHIFT_SHR, X64_RDX);
+        if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
+        if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
+        if (mask & CC_BIT_N) EmitCcConst(e, 3, 0);
+        break;
+    case RMW8_ROR:
+        emit_load8u(&e, X64_RCX, R_STATE, g_off_cc + 0);   // OLD carry
+        emit_shl_r_imm(&e, X64_RCX, 7);
+        emit_shift_r8_1(&e, X64_SHIFT_SHR, X64_RDX);
+        if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
+        emit_alu_r8_r8(&e, X64_ALU_OR, X64_RDX, X64_RCX);
+        emit_test_r8_r8(&e, X64_RDX, X64_RDX);
+        if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
+        if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
+        break;
+    case RMW8_ASR:
+        emit_shift_r8_1(&e, X64_SHIFT_SAR, X64_RDX);
+        if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
+        if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
+        if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
+        break;
+    case RMW8_ASL:
+        emit_shift_r8_1(&e, X64_SHIFT_SHL, X64_RDX);
+        if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
+        if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
+        if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
+        if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
+        break;
+    case RMW8_ROL:
+        emit_load8u(&e, X64_RCX, R_STATE, g_off_cc + 0);   // OLD carry (0/1)
+        emit_shift_r8_1(&e, X64_SHIFT_SHL, X64_RDX);
+        if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
+        if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
+        emit_alu_r8_r8(&e, X64_ALU_OR, X64_RDX, X64_RCX);
+        emit_test_r8_r8(&e, X64_RDX, X64_RDX);
+        if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
+        if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
+        break;
+    case RMW8_DEC:
+        emit_alu_r8_imm8(&e, X64_ALU_SUB, X64_RDX, 1);
+        if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
+        if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
+        if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
+        break;
+    default:   // RMW8_INC
+        emit_alu_r8_imm8(&e, X64_ALU_ADD, X64_RDX, 1);
+        if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
+        if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
+        if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
+        break;
+    }
+    emit_mov_rr(&e, X64_R8, X64_RDX);
+    emit_load32(&e, X64_R9, X64_RSP, 32);    // restore EA
+    EmitMemWrite8(e);
+    EmitCyclesForMode(e, mode, g_off_nat65, 6, g_off_nat76);
+}
+
+// LDD/LDX/LDU and STD/STX/STU with dp/ext operands (the indexed forms
+// already inline above). Cycles: dp NatEmuCycles54, ext NatEmuCycles65.
+static void EmitInlineLd16Mem(emit_t& e, const DecodedInst& insn,
+                              int32_t reg_off, int mode, uint8_t mask)
+{
+    g_emit_had_side_effects = true;
+    EmitEAToR9(e, mode, insn);
+    EmitMemRead16(e);
+    emit_store16(&e, X64_RAX, R_STATE, reg_off);
+    EmitFlagsZNVFromReg16(e, X64_RAX, mask);
+    EmitCyclesRuntime(e, mode == MM_DP ? g_off_nat54 : g_off_nat65);
+}
+
+static void EmitInlineSt16Mem(emit_t& e, const DecodedInst& insn,
+                              int32_t reg_off, int mode, uint8_t mask)
+{
+    g_emit_had_side_effects = true;
+    emit_load16u(&e, X64_R8, R_STATE, reg_off);
+    EmitFlagsZNVFromReg16(e, X64_R8, mask);
+    EmitEAToR9(e, mode, insn);
+    EmitMemWrite16(e);
+    EmitCyclesRuntime(e, mode == MM_DP ? g_off_nat54 : g_off_nat65);
+}
+
+// ADDD/SUBD/CMPD/CMPX/CMPY/CMPU: 16-bit host add/sub/cmp gives the
+// 6309's C (bit 16), V (16-bit signed overflow), Z, N directly.
+// source_mode -1 = immediate (operand baked); else MM_*. The cycle
+// charge is passed in because it varies per (op, mode).
+static void EmitInlineArith16(emit_t& e, const DecodedInst& insn,
+                              int32_t dst_off, int alu, int source_mode,
+                              int const_cycles, int32_t nat_offset,
+                              uint8_t mask)
+{
+    if (source_mode < 0)
+    {
+        emit_mov_r32_imm32(&e, X64_RAX, insn.operand);
+    }
+    else
+    {
+        g_emit_had_side_effects = true;
+        EmitEAToR9(e, source_mode, insn);
+        EmitMemRead16(e);
+    }
+    emit_load16u(&e, X64_RDX, R_STATE, dst_off);
+    emit_alu16_rr(&e, alu, X64_RDX, X64_RAX);
+    if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
+    if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
+    if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
+    if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
+    if (alu != X64_ALU_CMP)
+        emit_store16(&e, X64_RDX, R_STATE, dst_off);
+    if (const_cycles >= 0)
+        EmitCyclesConst(e, (uint32_t)const_cycles);
+    else
+        EmitCyclesRuntime(e, nat_offset);
+}
+
+// ---------- call/return terminators (block's LAST instruction only) ----------
+
+// JMP ext: PC = baked operand, NatEmuCycles43.
+static void EmitInlineJmpE(emit_t& e, const DecodedInst& insn)
+{
+    emit_mov_mem16_imm16(&e, R_STATE, g_off_pc, insn.operand);
+    EmitCyclesRuntime(e, g_off_nat43);
+}
+
+// RTS: PC = read16(S), S += 2, NatEmuCycles51. The handler reads both
+// bytes at the OLD S (msb first), which the captured R9 preserves.
+static void EmitInlineRts(emit_t& e)
+{
+    g_emit_had_side_effects = true;
+    emit_load16u(&e, X64_R9, R_STATE, g_off_s);
+    emit_lea32(&e, X64_RAX, X64_R9, 2);
+    emit_store16(&e, X64_RAX, R_STATE, g_off_s);
+    EmitMemRead16(e);
+    emit_store16(&e, X64_RAX, R_STATE, g_off_pc);
+    EmitCyclesRuntime(e, g_off_nat51);
+}
+
+// Shared push-return-address sequence for BSR/JSR: S -= 2, then
+// write16(ret_pc, S) - same bytes at the same addresses as the
+// handlers' two MemWrite8 calls (they store lsb then msb; both bytes
+// land within the same instruction, so the order is guest-invisible).
+static void EmitPushReturn(emit_t& e, uint16_t ret_pc)
+{
+    emit_load16u(&e, X64_RAX, R_STATE, g_off_s);
+    emit_add_r_imm(&e, X64_RAX, -2);
+    emit_movzx_r32_r16(&e, X64_RAX, X64_RAX);
+    emit_store16(&e, X64_RAX, R_STATE, g_off_s);
+    emit_mov_rr(&e, X64_R9, X64_RAX);
+    emit_mov_r32_imm32(&e, X64_R8, ret_pc);
+    EmitMemWrite16(e);
+}
+
+// BSR (target = ret_pc + signed8) and JSR ext (target = baked operand).
+static void EmitInlineBsrJsrE(emit_t& e, const DecodedInst& insn,
+                              uint16_t ret_pc, bool is_jsr_ext)
+{
+    g_emit_had_side_effects = true;
+    const uint16_t target = is_jsr_ext
+        ? insn.operand
+        : (uint16_t)(ret_pc + (int8_t)(insn.operand & 0xFF));
+    EmitPushReturn(e, ret_pc);
+    emit_mov_mem16_imm16(&e, R_STATE, g_off_pc, target);
+    EmitCyclesRuntime(e, is_jsr_ext ? g_off_nat87 : g_off_nat76);
+}
+
+// JSR indexed: EA first (the handler computes it before the push, so
+// ,S-relative modes see the pre-push S), stashed across the push.
+static void EmitInlineJsrX(emit_t& e, const DecodedInst& insn, uint16_t ret_pc)
+{
+    g_emit_had_side_effects = true;
+    EmitEA(e, insn.ea_info, insn.operand, X64_R9);
+    emit_store32(&e, X64_R9, X64_RSP, 32);
+    EmitPushReturn(e, ret_pc);
+    emit_load32(&e, X64_RAX, X64_RSP, 32);
+    emit_store16(&e, X64_RAX, R_STATE, g_off_pc);
+    EmitCyclesRuntime(e, g_off_nat76);
+}
+
 // ---------- branch terminators ----------
 // Same table and predicate model as the arm64 backend; the select is a
 // cmov instead of a branch-over-reassignment.
@@ -1184,7 +1506,68 @@ static uint8_t InlinedHandlerWritesMask(InstHandler h)
         return CC_BIT_Z | CC_BIT_N | CC_BIT_V;
     }
 
+    // Memory-operand ALU: sub/cmp/add write all four (add also the
+    // untracked H); the logic ops write Z/N/V.
+    for (int m = 0; m < MM_COUNT; ++m)
+        for (int op = 0; op < ALU8_OP_COUNT; ++op)
+            if (h == g_inlines.alu8_mem_a[op][m] ||
+                h == g_inlines.alu8_mem_b[op][m])
+                return (op <= ALU8_ADD) ? CC_ALL
+                                        : (uint8_t)(CC_BIT_Z | CC_BIT_N | CC_BIT_V);
+
+    // Memory RMW, per the handlers: NEG/COM/ASL/ROL/CLR write all four;
+    // LSR/ASR/ROR write C/Z/N (V untouched); DEC/INC write Z/N/V.
+    for (int m = 0; m < MM_COUNT; ++m)
+        for (int op = 0; op < RMW8_OP_COUNT; ++op)
+            if (h == g_inlines.rmw8_mem[op][m])
+                switch (op)
+                {
+                case RMW8_NEG: case RMW8_COM: case RMW8_ASL:
+                case RMW8_ROL: case RMW8_CLR:
+                    return CC_ALL;
+                case RMW8_LSR: case RMW8_ASR: case RMW8_ROR:
+                    return CC_BIT_C | CC_BIT_Z | CC_BIT_N;
+                default:   // DEC, INC
+                    return CC_BIT_Z | CC_BIT_N | CC_BIT_V;
+                }
+
+    // 16-bit loads/stores (dp/ext): Z/N/V like their indexed cousins.
+    for (int r = 0; r < R16_COUNT; ++r)
+        if (h == g_inlines.ld16_dp[r]  || h == g_inlines.ld16_ext[r] ||
+            h == g_inlines.st16_dp[r]  || h == g_inlines.st16_ext[r])
+            return CC_BIT_Z | CC_BIT_N | CC_BIT_V;
+
+    // 16-bit arithmetic: C/V/Z/N.
+    if (h == g_inlines.addd_m || h == g_inlines.addd_d ||
+        h == g_inlines.addd_x || h == g_inlines.addd_e ||
+        h == g_inlines.subd_m || h == g_inlines.subd_x ||
+        h == g_inlines.cmpd_m || h == g_inlines.cmpd_x ||
+        h == g_inlines.cmpx_m || h == g_inlines.cmpx_x ||
+        h == g_inlines.cmpy_m ||
+        h == g_inlines.cmpu_m || h == g_inlines.cmpu_x)
+    {
+        return CC_ALL;
+    }
+
+    // The call/return terminators (jmp_e/rts_i/bsr_r2/jsr_e/jsr_x) stay
+    // CC_UNKNOWN deliberately: they inline only via the last-instruction
+    // hook in EmitBlock, and CC_UNKNOWN keeps TryEmitInline refusing
+    // them anywhere else.
+
     return CC_UNKNOWN;
+}
+
+// cc[] bits an inlined handler READS. ROL/ROR consume the incoming
+// carry; everything else in the inline set reads nothing. Feeding this
+// into the backward liveness pass keeps DSE from eliding a prior op's
+// carry write that a following ROL/ROR would then read stale.
+static uint8_t InlinedHandlerReadsMask(InstHandler h)
+{
+    for (int m = 0; m < MM_COUNT; ++m)
+        if (h == g_inlines.rmw8_mem[RMW8_ROR][m] ||
+            h == g_inlines.rmw8_mem[RMW8_ROL][m])
+            return CC_BIT_C;
+    return 0;
 }
 
 static void AnalyzeFlagLiveness(const CachedBlock& slot,
@@ -1215,7 +1598,10 @@ static void AnalyzeFlagLiveness(const CachedBlock& slot,
         uint8_t dead = (uint8_t)(mask & ~live);
         while (dead) { elided++; dead &= dead - 1; }
 
-        live &= (uint8_t)~mask;
+        // Backward transfer with the op's reads: writes kill liveness,
+        // reads (ROL/ROR's carry-in) create it.
+        live = (uint8_t)((live & (uint8_t)~mask) |
+                         InlinedHandlerReadsMask(slot.insns[i].handler));
     }
 
     if (requested_out) *requested_out = requested;
@@ -1246,6 +1632,39 @@ static int InlineRank(InstHandler h)
     };
     for (int i = 0; i < (int)(sizeof(order) / sizeof(order[0])); i++)
         if (h == order[i]) return i;
+
+    // Families appended after the flat list, in stable index order, so
+    // VCC_INLINE_MAX bisection covers them too.
+    int base = (int)(sizeof(order) / sizeof(order[0]));
+    for (int op = 0; op < ALU8_OP_COUNT; ++op)
+        for (int m = 0; m < MM_COUNT; ++m)
+        {
+            if (h == g_inlines.alu8_mem_a[op][m]) return base + (op * MM_COUNT + m) * 2;
+            if (h == g_inlines.alu8_mem_b[op][m]) return base + (op * MM_COUNT + m) * 2 + 1;
+        }
+    base += ALU8_OP_COUNT * MM_COUNT * 2;
+    for (int op = 0; op < RMW8_OP_COUNT; ++op)
+        for (int m = 0; m < MM_COUNT; ++m)
+            if (h == g_inlines.rmw8_mem[op][m]) return base + op * MM_COUNT + m;
+    base += RMW8_OP_COUNT * MM_COUNT;
+    for (int r = 0; r < R16_COUNT; ++r)
+    {
+        if (h == g_inlines.ld16_dp[r])  return base + r * 4;
+        if (h == g_inlines.ld16_ext[r]) return base + r * 4 + 1;
+        if (h == g_inlines.st16_dp[r])  return base + r * 4 + 2;
+        if (h == g_inlines.st16_ext[r]) return base + r * 4 + 3;
+    }
+    base += R16_COUNT * 4;
+    const InstHandler a16[] = {
+        g_inlines.addd_m, g_inlines.addd_d, g_inlines.addd_x, g_inlines.addd_e,
+        g_inlines.subd_m, g_inlines.subd_x,
+        g_inlines.cmpd_m, g_inlines.cmpd_x,
+        g_inlines.cmpx_m, g_inlines.cmpx_x,
+        g_inlines.cmpy_m, g_inlines.cmpu_m, g_inlines.cmpu_x,
+    };
+    for (int i = 0; i < (int)(sizeof(a16) / sizeof(a16[0])); ++i)
+        if (h == a16[i]) return base + i;
+
     return -1;
 }
 
@@ -1330,6 +1749,57 @@ static bool TryEmitInline(emit_t& e, const DecodedInst& insn, uint8_t mask)
         if (h == g_inlines.std_x)  { EmitInlineSt16Idx(e, insn, g_off_d, mask); return true; }
         if (h == g_inlines.stx_x)  { EmitInlineSt16Idx(e, insn, g_off_x, mask); return true; }
     }
+
+    // Memory-operand ALU and RMW families (dp/idx/ext). Indexed modes
+    // still require a supported EA.
+    for (int m = 0; m < MM_COUNT; ++m)
+    {
+        if (m == MM_IDX && !EAModeSupported(insn.ea_info))
+            continue;
+        for (int op = 0; op < ALU8_OP_COUNT; ++op)
+        {
+            if (h == g_inlines.alu8_mem_a[op][m])
+            { EmitInlineAlu8Mem(e, insn, op, g_off_a, m, mask); return true; }
+            if (h == g_inlines.alu8_mem_b[op][m])
+            { EmitInlineAlu8Mem(e, insn, op, g_off_b, m, mask); return true; }
+        }
+        for (int op = 0; op < RMW8_OP_COUNT; ++op)
+            if (h == g_inlines.rmw8_mem[op][m])
+            { EmitInlineRmw8(e, insn, op, m, mask); return true; }
+    }
+
+    // 16-bit loads/stores, dp/ext.
+    {
+        static const int32_t* kRegOff[R16_COUNT] = { &g_off_d, &g_off_x, &g_off_u };
+        for (int r = 0; r < R16_COUNT; ++r)
+        {
+            if (h == g_inlines.ld16_dp[r])  { EmitInlineLd16Mem(e, insn, *kRegOff[r], MM_DP,  mask); return true; }
+            if (h == g_inlines.ld16_ext[r]) { EmitInlineLd16Mem(e, insn, *kRegOff[r], MM_EXT, mask); return true; }
+            if (h == g_inlines.st16_dp[r])  { EmitInlineSt16Mem(e, insn, *kRegOff[r], MM_DP,  mask); return true; }
+            if (h == g_inlines.st16_ext[r]) { EmitInlineSt16Mem(e, insn, *kRegOff[r], MM_EXT, mask); return true; }
+        }
+    }
+
+    // 16-bit arithmetic. Cycle charges verified against each handler.
+    if (h == g_inlines.addd_m) { EmitInlineArith16(e, insn, g_off_d, X64_ALU_ADD, -1,     -1, g_off_nat43, mask); return true; }
+    if (h == g_inlines.addd_d) { EmitInlineArith16(e, insn, g_off_d, X64_ALU_ADD, MM_DP,  -1, g_off_nat64, mask); return true; }
+    if (h == g_inlines.addd_x && EAModeSupported(insn.ea_info))
+                               { EmitInlineArith16(e, insn, g_off_d, X64_ALU_ADD, MM_IDX, -1, g_off_nat65, mask); return true; }
+    if (h == g_inlines.addd_e) { EmitInlineArith16(e, insn, g_off_d, X64_ALU_ADD, MM_EXT, -1, g_off_nat76, mask); return true; }
+    if (h == g_inlines.subd_m) { EmitInlineArith16(e, insn, g_off_d, X64_ALU_SUB, -1,     -1, g_off_nat43, mask); return true; }
+    if (h == g_inlines.subd_x && EAModeSupported(insn.ea_info))
+                               { EmitInlineArith16(e, insn, g_off_d, X64_ALU_SUB, MM_IDX, -1, g_off_nat65, mask); return true; }
+    if (h == g_inlines.cmpd_m) { EmitInlineArith16(e, insn, g_off_d, X64_ALU_CMP, -1,     -1, g_off_nat54, mask); return true; }
+    if (h == g_inlines.cmpd_x && EAModeSupported(insn.ea_info))
+                               { EmitInlineArith16(e, insn, g_off_d, X64_ALU_CMP, MM_IDX, -1, g_off_nat76, mask); return true; }
+    if (h == g_inlines.cmpx_m) { EmitInlineArith16(e, insn, g_off_x, X64_ALU_CMP, -1,     -1, g_off_nat43, mask); return true; }
+    if (h == g_inlines.cmpx_x && EAModeSupported(insn.ea_info))
+                               { EmitInlineArith16(e, insn, g_off_x, X64_ALU_CMP, MM_IDX, -1, g_off_nat65, mask); return true; }
+    if (h == g_inlines.cmpy_m) { EmitInlineArith16(e, insn, g_off_y, X64_ALU_CMP, -1,     -1, g_off_nat54, mask); return true; }
+    if (h == g_inlines.cmpu_m) { EmitInlineArith16(e, insn, g_off_u, X64_ALU_CMP, -1,     -1, g_off_nat54, mask); return true; }
+    if (h == g_inlines.cmpu_x && EAModeSupported(insn.ea_info))
+                               { EmitInlineArith16(e, insn, g_off_u, X64_ALU_CMP, MM_IDX, -1, g_off_nat76, mask); return true; }
+
     return false;
 }
 
@@ -1683,6 +2153,31 @@ NativeEntry EmitBlock(const CachedBlock& slot)
             ++g_insns_inlined;
             ++g_pc_writes_skipped;
             continue;
+        }
+
+        // Call/return terminators, last instruction only: both PCs (and
+        // the pushed return address, = local_pc) are emit-time values.
+        if (i == (int)slot.num_insns - 1 && !g_no_inline)
+        {
+            bool done = false;
+            if (insn.handler == g_inlines.jmp_e)
+            { EmitInlineJmpE(e, insn); done = true; }
+            else if (insn.handler == g_inlines.rts_i)
+            { EmitInlineRts(e); done = true; }
+            else if (insn.handler == g_inlines.bsr_r2)
+            { EmitInlineBsrJsrE(e, insn, local_pc, false); done = true; }
+            else if (insn.handler == g_inlines.jsr_e)
+            { EmitInlineBsrJsrE(e, insn, local_pc, true); done = true; }
+            else if (insn.handler == g_inlines.jsr_x &&
+                     EAModeSupported(insn.ea_info))
+            { EmitInlineJsrX(e, insn, local_pc); done = true; }
+            if (done)
+            {
+                pc_dirty = false;   // the terminator stored PC itself
+                ++g_insns_inlined;
+                ++g_pc_writes_skipped;
+                continue;
+            }
         }
 
         if (TryEmitInline(e, insn, live_writes[i]))

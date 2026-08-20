@@ -174,6 +174,38 @@ static inline void emit_store8_sib(emit_t *e, int src, int base, int index,
     emit_mem_sib(e, src, base, index, 0, disp);
 }
 
+/* op r8, r8 (register-direct group 1: dst = dst OP src, flags set) */
+static inline void emit_alu_r8_r8(emit_t *e, int op, int dst, int src) {
+    if (dst >= 4 || src >= 4)
+        emit_byte(e, x64_rex(0, reg_hi(src), 0, reg_hi(dst)));
+    emit_byte(e, (uint8_t)((op << 3) | 0x00));   /* r/m8, r8 */
+    emit_byte(e, x64_modrm(0x03, src, dst));
+}
+
+/* op r16, r16 (66-prefixed group 1: 16-bit CF/OF/ZF/SF) */
+static inline void emit_alu16_rr(emit_t *e, int op, int dst, int src) {
+    emit_byte(e, 0x66);
+    emit_rex_opt(e, 0, reg_hi(src), 0, reg_hi(dst));
+    emit_byte(e, (uint8_t)((op << 3) | 0x01));   /* r/m16, r16 */
+    emit_byte(e, x64_modrm(0x03, src, dst));
+}
+
+/* neg r8 — CF = (input != 0), OF = (input == 0x80) */
+static inline void emit_neg_r8(emit_t *e, int reg) {
+    if (reg >= 4)
+        emit_byte(e, x64_rex(0, 0, 0, reg_hi(reg)));
+    emit_byte(e, 0xF6);
+    emit_byte(e, x64_modrm(0x03, 3, reg));
+}
+
+/* shl/shr/sar r8, 1 (X64_SHIFT_* op numbers) */
+static inline void emit_shift_r8_1(emit_t *e, int op, int reg) {
+    if (reg >= 4)
+        emit_byte(e, x64_rex(0, 0, 0, reg_hi(reg)));
+    emit_byte(e, 0xD0);
+    emit_byte(e, x64_modrm(0x03, op, reg));
+}
+
 /* bt r32, r32 — CF = bit (bit_reg mod 32) of val_reg */
 static inline void emit_bt_rr(emit_t *e, int val, int bit) {
     emit_rex_opt(e, 0, reg_hi(bit), 0, reg_hi(val));

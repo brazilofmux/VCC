@@ -125,7 +125,23 @@ namespace BlockJit
         unsigned char* const* fastmem_read_banks;   // gJitReadBanks[8]
         unsigned char* const* fastmem_write_banks;  // gJitWriteBanks[8]
         const unsigned char*  fastmem_watch_bitmap; // BlockCache::PageBitmapAddr()
+
+        // Runtime cycle bytes for the memory-ALU/RMW/terminator inline
+        // families (x86-64 backend).
+        uint8_t*  nat_cycles_51;  // RTS
+        uint8_t*  nat_cycles_64;  // ADDD <dp
+        uint8_t*  nat_cycles_76;  // BSR, JSR <dp/,X, ADDD ext, CMPD/CMPU ,X, ext RMW
+        uint8_t*  nat_cycles_87;  // JSR ext
     };
+
+    // Index enums for the InlineableHandlers family arrays below.
+    enum Alu8Op  { ALU8_SUB, ALU8_CMP, ALU8_ADD, ALU8_AND, ALU8_OR,
+                   ALU8_EOR, ALU8_BIT, ALU8_OP_COUNT };
+    enum Rmw8Op  { RMW8_NEG, RMW8_COM, RMW8_LSR, RMW8_ROR, RMW8_ASR,
+                   RMW8_ASL, RMW8_ROL, RMW8_DEC, RMW8_INC, RMW8_CLR,
+                   RMW8_OP_COUNT };
+    enum MemMode { MM_DP, MM_IDX, MM_EXT, MM_COUNT };
+    enum Reg16   { R16_D, R16_X, R16_U, R16_COUNT };
 
     // Budget overshoot allowance, shared by the dispatcher's fits-check
     // and the chain stub's. A block may start while (total_cycles -
@@ -236,6 +252,31 @@ namespace BlockJit
         InstHandler ldd_x;        // LDD  (0xEC)
         InstHandler std_x;        // STD  (0xED)
         InstHandler stx_x;        // STX  (0xAF)
+
+        // Memory-operand families (x86-64 backend; appended so backends
+        // that don't know them leave them on the call path). Indexed by
+        // the Alu8Op/Rmw8Op/MemMode/Reg16 enums after this struct.
+        InstHandler alu8_mem_a[7][3];   // [Alu8Op][MemMode], accumulator A
+        InstHandler alu8_mem_b[7][3];   // [Alu8Op][MemMode], accumulator B
+        InstHandler rmw8_mem[10][3];    // [Rmw8Op][MemMode]
+        InstHandler ld16_dp[3];         // [Reg16] LDD/LDX/LDU <dp
+        InstHandler ld16_ext[3];        // [Reg16] LDD/LDX/LDU ext
+        InstHandler st16_dp[3];         // [Reg16] STD/STX/STU <dp
+        InstHandler st16_ext[3];        // [Reg16] STD/STX/STU ext
+        // 16-bit arithmetic.
+        InstHandler addd_m, addd_d, addd_x, addd_e;
+        InstHandler subd_m, subd_x;
+        InstHandler cmpd_m, cmpd_x;
+        InstHandler cmpx_m, cmpx_x;
+        InstHandler cmpy_m;
+        InstHandler cmpu_m, cmpu_x;
+        // Call/return terminators (inline as a block's LAST instruction
+        // only, like the branch terminators).
+        InstHandler jmp_e;        // JMP ext  (0x7E)
+        InstHandler rts_i;        // RTS      (0x39)
+        InstHandler bsr_r2;       // BSR      (0x8D)
+        InstHandler jsr_e;        // JSR ext  (0xBD - handler is Bsr_E)
+        InstHandler jsr_x;        // JSR ,X   (0xAD)
 
         InstHandler tsta_i;       // TSTA (0x4D)
         InstHandler tstb_i;       // TSTB (0x5D)

@@ -264,9 +264,13 @@ static uint32_t gJitArenaFlushes = 0;
 static uint64_t& gJitChainRuns = cpu_state.ChainRuns;
 
 // VCC_COUNT_HANDLERS measurement support: per-handler execution counts
-// on the interpreter block path, dumped (with addresses for symbol
-// resolution) at process exit.
-void Lsra_I(const DecodedInst* inst);   // ASLR anchor for the dump
+// on the interpreter block path, dumped at process exit. Handlers are
+// identified by scanning the JmpVec dispatch tables for the pointer,
+// so the report reads "P1:86 P1:C6" (page:opcode, possibly several)
+// instead of raw addresses needing offline symbol resolution.
+extern InstHandler JmpVec1[256];
+extern InstHandler JmpVec2[256];
+extern InstHandler JmpVec3[256];
 static std::unordered_map<void*, uint64_t>& HandlerCounts()
 {
 	static std::unordered_map<void*, uint64_t> counts;
@@ -276,11 +280,21 @@ static std::unordered_map<void*, uint64_t>& HandlerCounts()
 			                                          HandlerCounts().end());
 			std::sort(v.begin(), v.end(),
 			          [](const auto& a, const auto& b) { return a.second > b.second; });
-			fprintf(stderr, "[HANDLER-COUNTS] anchor Lsra_I=%p\n", (void*)&Lsra_I);
 			fprintf(stderr, "[HANDLER-COUNTS] top interpreter-path handlers:\n");
 			for (size_t i = 0; i < v.size() && i < 40; ++i)
-				fprintf(stderr, "  %14llu  %p\n",
-				        (unsigned long long)v[i].second, v[i].first);
+			{
+				char ids[128];
+				int n = 0;
+				const InstHandler h = (InstHandler)v[i].first;
+				for (int op = 0; op < 256 && n < (int)sizeof(ids) - 8; ++op)
+				{
+					if (JmpVec1[op] == h) n += snprintf(ids + n, sizeof(ids) - n, " P1:%02X", op);
+					if (JmpVec2[op] == h) n += snprintf(ids + n, sizeof(ids) - n, " P2:%02X", op);
+					if (JmpVec3[op] == h) n += snprintf(ids + n, sizeof(ids) - n, " P3:%02X", op);
+				}
+				fprintf(stderr, "  %14llu %s\n",
+				        (unsigned long long)v[i].second, n ? ids : " (not in JmpVec)");
+			}
 		});
 		return true;
 	}();
@@ -760,6 +774,44 @@ void Lsra_I(const DecodedInst* inst);
 void Asra_I(const DecodedInst* inst);
 void Asla_I(const DecodedInst* inst);
 void Abx_I(const DecodedInst* inst);
+// Memory-ALU / RMW / 16-bit / terminator families (x86-64 level-2).
+void Suba_D(const DecodedInst*); void Suba_X(const DecodedInst*); void Suba_E(const DecodedInst*);
+void Cmpa_D(const DecodedInst*); void Cmpa_X(const DecodedInst*); void Cmpa_E(const DecodedInst*);
+void Adda_D(const DecodedInst*); void Adda_X(const DecodedInst*); void Adda_E(const DecodedInst*);
+void Anda_D(const DecodedInst*); void Anda_X(const DecodedInst*); void Anda_E(const DecodedInst*);
+void Ora_D(const DecodedInst*);  void Ora_X(const DecodedInst*);  void Ora_E(const DecodedInst*);
+void Eora_D(const DecodedInst*); void Eora_X(const DecodedInst*); void Eora_E(const DecodedInst*);
+void Bita_D(const DecodedInst*); void Bita_X(const DecodedInst*); void Bita_E(const DecodedInst*);
+void Subb_D(const DecodedInst*); void Subb_X(const DecodedInst*); void Subb_E(const DecodedInst*);
+void Cmpb_D(const DecodedInst*); void Cmpb_X(const DecodedInst*); void Cmpb_E(const DecodedInst*);
+void Addb_D(const DecodedInst*); void Addb_X(const DecodedInst*); void Addb_E(const DecodedInst*);
+void Andb_D(const DecodedInst*); void Andb_X(const DecodedInst*); void Andb_E(const DecodedInst*);
+void Orb_D(const DecodedInst*);  void Orb_X(const DecodedInst*);  void Orb_E(const DecodedInst*);
+void Eorb_D(const DecodedInst*); void Eorb_X(const DecodedInst*); void Eorb_E(const DecodedInst*);
+void Bitb_D(const DecodedInst*); void Bitb_X(const DecodedInst*); void Bitb_E(const DecodedInst*);
+void Neg_D(const DecodedInst*);  void Neg_X(const DecodedInst*);  void Neg_E(const DecodedInst*);
+void Com_D(const DecodedInst*);  void Com_X(const DecodedInst*);  void Com_E(const DecodedInst*);
+void Lsr_D(const DecodedInst*);  void Lsr_X(const DecodedInst*);  void Lsr_E(const DecodedInst*);
+void Ror_D(const DecodedInst*);  void Ror_X(const DecodedInst*);  void Ror_E(const DecodedInst*);
+void Asr_D(const DecodedInst*);  void Asr_X(const DecodedInst*);  void Asr_E(const DecodedInst*);
+void Asl_D(const DecodedInst*);  void Asl_X(const DecodedInst*);  void Asl_E(const DecodedInst*);
+void Rol_D(const DecodedInst*);  void Rol_X(const DecodedInst*);  void Rol_E(const DecodedInst*);
+void Dec_D(const DecodedInst*);  void Dec_X(const DecodedInst*);  void Dec_E(const DecodedInst*);
+void Inc_D(const DecodedInst*);  void Inc_X(const DecodedInst*);  void Inc_E(const DecodedInst*);
+void Clr_D(const DecodedInst*);  void Clr_X(const DecodedInst*);  void Clr_E(const DecodedInst*);
+void Ldd_D(const DecodedInst*);  void Ldx_D(const DecodedInst*);  void Ldu_D(const DecodedInst*);
+void Ldd_E(const DecodedInst*);  void Ldx_E(const DecodedInst*);  void Ldu_E(const DecodedInst*);
+void Std_D(const DecodedInst*);  void Stx_D(const DecodedInst*);  void Stu_D(const DecodedInst*);
+void Std_E(const DecodedInst*);  void Stx_E(const DecodedInst*);  void Stu_E(const DecodedInst*);
+void Addd_M(const DecodedInst*); void Addd_D(const DecodedInst*); void Addd_X(const DecodedInst*); void Addd_E(const DecodedInst*);
+void Subd_M(const DecodedInst*); void Subd_X(const DecodedInst*);
+void Cmpd_M(const DecodedInst*); void Cmpd_X(const DecodedInst*);
+void Cmpx_M(const DecodedInst*); void Cmpx_X(const DecodedInst*);
+void Cmpy_M(const DecodedInst*);
+void Cmpu_M(const DecodedInst*); void Cmpu_X(const DecodedInst*);
+void Jmp_E(const DecodedInst*);  void Rts_I(const DecodedInst*);
+void Bsr_R(const DecodedInst*);  void Bsr_E(const DecodedInst*);
+void Jsr_X(const DecodedInst*);
 
 void HD6309Init()
 {	//Call this first or RESET will core!
@@ -771,7 +823,7 @@ void HD6309Init()
 	// tells the emitter which interpreter handlers it knows how to
 	// inline (currently the immediate-load family).
 	{
-		BlockJit::CpuAddrs addrs;
+		BlockJit::CpuAddrs addrs{};   // value-init: unset fields are null, not stack garbage
 		addrs.base           = &cpu_state;
 		addrs.pc             = &PC_REG;
 		addrs.a              = &A_REG;
@@ -811,8 +863,12 @@ void HD6309Init()
 		addrs.fastmem_read_banks   = gJitReadBanks;
 		addrs.fastmem_write_banks  = gJitWriteBanks;
 		addrs.fastmem_watch_bitmap = blockCache.PageBitmapAddr();
+		addrs.nat_cycles_51 = &NatEmuCycles51;
+		addrs.nat_cycles_64 = &NatEmuCycles64;
+		addrs.nat_cycles_76 = &NatEmuCycles76;
+		addrs.nat_cycles_87 = &NatEmuCycles87;
 
-		BlockJit::InlineableHandlers inlines;
+		BlockJit::InlineableHandlers inlines{};   // value-init: see addrs
 		inlines.lda_m  = &Lda_M;
 		inlines.ldb_m  = &Ldb_M;
 		inlines.ldd_m  = &Ldd_M;
@@ -878,6 +934,74 @@ void HD6309Init()
 		inlines.ldd_x  = &Ldd_X;
 		inlines.std_x  = &Std_X;
 		inlines.stx_x  = &Stx_X;
+		// Memory-operand ALU families ([Alu8Op][MemMode]).
+		{
+			using namespace BlockJit;
+			InstHandler a_tab[ALU8_OP_COUNT][MM_COUNT] = {
+				{ &Suba_D, &Suba_X, &Suba_E },
+				{ &Cmpa_D, &Cmpa_X, &Cmpa_E },
+				{ &Adda_D, &Adda_X, &Adda_E },
+				{ &Anda_D, &Anda_X, &Anda_E },
+				{ &Ora_D,  &Ora_X,  &Ora_E  },
+				{ &Eora_D, &Eora_X, &Eora_E },
+				{ &Bita_D, &Bita_X, &Bita_E },
+			};
+			InstHandler b_tab[ALU8_OP_COUNT][MM_COUNT] = {
+				{ &Subb_D, &Subb_X, &Subb_E },
+				{ &Cmpb_D, &Cmpb_X, &Cmpb_E },
+				{ &Addb_D, &Addb_X, &Addb_E },
+				{ &Andb_D, &Andb_X, &Andb_E },
+				{ &Orb_D,  &Orb_X,  &Orb_E  },
+				{ &Eorb_D, &Eorb_X, &Eorb_E },
+				{ &Bitb_D, &Bitb_X, &Bitb_E },
+			};
+			InstHandler rmw_tab[RMW8_OP_COUNT][MM_COUNT] = {
+				{ &Neg_D, &Neg_X, &Neg_E },
+				{ &Com_D, &Com_X, &Com_E },
+				{ &Lsr_D, &Lsr_X, &Lsr_E },
+				{ &Ror_D, &Ror_X, &Ror_E },
+				{ &Asr_D, &Asr_X, &Asr_E },
+				{ &Asl_D, &Asl_X, &Asl_E },
+				{ &Rol_D, &Rol_X, &Rol_E },
+				{ &Dec_D, &Dec_X, &Dec_E },
+				{ &Inc_D, &Inc_X, &Inc_E },
+				{ &Clr_D, &Clr_X, &Clr_E },
+			};
+			memcpy(inlines.alu8_mem_a, a_tab,   sizeof(a_tab));
+			memcpy(inlines.alu8_mem_b, b_tab,   sizeof(b_tab));
+			memcpy(inlines.rmw8_mem,   rmw_tab, sizeof(rmw_tab));
+		}
+		inlines.ld16_dp[BlockJit::R16_D]  = &Ldd_D;
+		inlines.ld16_dp[BlockJit::R16_X]  = &Ldx_D;
+		inlines.ld16_dp[BlockJit::R16_U]  = &Ldu_D;
+		inlines.ld16_ext[BlockJit::R16_D] = &Ldd_E;
+		inlines.ld16_ext[BlockJit::R16_X] = &Ldx_E;
+		inlines.ld16_ext[BlockJit::R16_U] = &Ldu_E;
+		inlines.st16_dp[BlockJit::R16_D]  = &Std_D;
+		inlines.st16_dp[BlockJit::R16_X]  = &Stx_D;
+		inlines.st16_dp[BlockJit::R16_U]  = &Stu_D;
+		inlines.st16_ext[BlockJit::R16_D] = &Std_E;
+		inlines.st16_ext[BlockJit::R16_X] = &Stx_E;
+		inlines.st16_ext[BlockJit::R16_U] = &Stu_E;
+		inlines.addd_m = &Addd_M;
+		inlines.addd_d = &Addd_D;
+		inlines.addd_x = &Addd_X;
+		inlines.addd_e = &Addd_E;
+		inlines.subd_m = &Subd_M;
+		inlines.subd_x = &Subd_X;
+		inlines.cmpd_m = &Cmpd_M;
+		inlines.cmpd_x = &Cmpd_X;
+		inlines.cmpx_m = &Cmpx_M;
+		inlines.cmpx_x = &Cmpx_X;
+		inlines.cmpy_m = &Cmpy_M;
+		inlines.cmpu_m = &Cmpu_M;
+		inlines.cmpu_x = &Cmpu_X;
+		inlines.jmp_e  = &Jmp_E;
+		inlines.rts_i  = &Rts_I;
+		inlines.bsr_r2 = &Bsr_R;
+		inlines.jsr_e  = &Bsr_E;   // JSR ext lives in Bsr_E (historical name)
+		inlines.jsr_x  = &Jsr_X;
+
 		inlines.tsta_i = &Tsta_I;
 		inlines.tstb_i = &Tstb_I;
 		inlines.inca_i = &Inca_I;
