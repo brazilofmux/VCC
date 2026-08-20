@@ -81,6 +81,17 @@ static inline unsigned short MemFetch16(unsigned short address)
 	return ((unsigned short)MemFetch8(address) << 8)
 	     |  (unsigned short)MemFetch8((unsigned short)(address + 1));
 }
+// JIT data fast-path bank tables: per-8K-bank direct RAM pointers for
+// the CURRENT MmuState, or null when the bank needs the full
+// MemRead8/MemWrite8 (ports, vector-ROM pages, cart space, $FE00+ -
+// bank 7 is permanently null so that whole special region takes the C
+// path). Write banks are additionally null when the bank is not
+// writable. Rebuilt eagerly on every mapping change alongside the
+// fetch-cache invalidation; emitted code loads the pointers at RUN
+// time, so a rebuild propagates to existing thunks instantly.
+extern unsigned char* gJitReadBanks[8];
+extern unsigned char* gJitWriteBanks[8];
+
 unsigned char SafeMemRead8(unsigned short);
 unsigned char * MmuInit(unsigned char);
 unsigned char *	Getint_rom_pointer();

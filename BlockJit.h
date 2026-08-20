@@ -114,6 +114,17 @@ namespace BlockJit
         void*          chain_slot_base;  // &blockCache.blocks_[0]
         uint32_t       chain_slot_size;  // sizeof(CachedBlock)
         uint64_t*      chain_runs;       // stub transitions (VCC_JIT_STATS)
+
+        // RAM fast-path context (x86-64 backend; other backends ignore
+        // it). The bank tables are the MMU's per-8K direct pointers
+        // (gJitReadBanks/gJitWriteBanks - null bank = take the C call);
+        // the watch bitmap is the block cache's coarse write-reject map
+        // (bit set = the write must run the full MemWrite8 so real
+        // invalidation happens). Emitted code loads the bank POINTERS
+        // at run time, so MMU rebuilds propagate with no re-emission.
+        unsigned char* const* fastmem_read_banks;   // gJitReadBanks[8]
+        unsigned char* const* fastmem_write_banks;  // gJitWriteBanks[8]
+        const unsigned char*  fastmem_watch_bitmap; // BlockCache::PageBitmapAddr()
     };
 
     // Budget overshoot allowance, shared by the dispatcher's fits-check

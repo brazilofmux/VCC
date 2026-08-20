@@ -155,6 +155,15 @@ public:
     CachedBlock* SlotBase() { return blocks_; }
     const uint32_t* GenerationAddr() const { return &generation_; }
 
+    // The coarse write-watch bitmap (32 bytes, one bit per 256-byte
+    // page; bit set = a cached block may cover the page). Exposed so
+    // the JIT's inlined store fast path can run InvalidateIfCached's
+    // fast-reject itself and skip the MemWrite8 call entirely for the
+    // 99.99% of writes that touch no cached code. A set bit sends the
+    // write down the full C path, which performs the real
+    // invalidation - the inline check is only ever a rejection test.
+    const uint8_t* PageBitmapAddr() const { return pageBitmap_; }
+
     const CachedBlock* Lookup(uint16_t pc) const
     {
         const CachedBlock& b = blocks_[pc & CACHE_MASK];

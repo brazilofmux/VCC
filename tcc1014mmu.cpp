@@ -56,10 +56,15 @@ unsigned int   GetInternalRomSize()        { return g_internal_rom_size; }
 unsigned char* gFetchPagePtr = nullptr;
 unsigned int   gFetchPageMask = 0xFFFFFFFFu;
 
+unsigned char* gJitReadBanks[8];
+unsigned char* gJitWriteBanks[8];
+static void RebuildJitBanks();
+
 static inline void InvalidateFetchCache()
 {
 	gFetchPageMask = 0xFFFFFFFFu;
 	// gFetchPagePtr is left dangling on purpose; the mask check guards it.
+	RebuildJitBanks();
 }
 
 static unsigned char *MemPages[1024];
@@ -85,6 +90,29 @@ static unsigned int RamSize=0;
 std::atomic_bool mem_initializing;
 
 void UpdateMmuArray();
+
+// See tcc1014mmu.h. Mirrors MemRead8/MemWrite8's fast-path conditions
+// exactly: a read bank is direct when MemPageOffsets[page]==1 (RAM or
+// mapped internal ROM); a write bank additionally requires MemWrite8's
+// writability test (MapType, or the page outside the vector-ROM
+// window). Bank 7 stays null - $E000-$FFFF contains the $FE00+ vector/
+// port region, which must always take the C path.
+static void RebuildJitBanks()
+{
+	for (int i = 0; i < 7; ++i)
+	{
+		const unsigned short page = MmuRegisters[MmuState][i];
+		unsigned char* base =
+			(MemPageOffsets[page] == 1) ? MemPages[page] : nullptr;
+		gJitReadBanks[i] = base;
+		const bool writable = MapType ||
+			(page < VectorMaska[CurrentRamConfig]) ||
+			(page > VectorMask[CurrentRamConfig]);
+		gJitWriteBanks[i] = writable ? base : nullptr;
+	}
+	gJitReadBanks[7] = nullptr;
+	gJitWriteBanks[7] = nullptr;
+}
 
 /*****************************************************************************************
 * MmuInit Initilize and allocate memory for RAM Internal and External ROM Images.        *

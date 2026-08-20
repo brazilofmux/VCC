@@ -123,6 +123,10 @@ static bool               g_emit_had_side_effects = false;
 static uint8_t*           g_chain_stub = nullptr;
 static uint8_t*           g_thunk_runner = nullptr;
 static bool               g_no_link    = false;
+// RAM fast path: inline the MMU's direct-RAM case into thunks (bank
+// pointer tables + the block cache's write-watch fast-reject bitmap),
+// falling back to the MemRead8/MemWrite8 calls for everything else.
+static bool               g_fastmem    = false;
 
 // Field offsets from CpuAddrs.base, computed once at Init. x86-64 disp32
 // forms reach anywhere in the struct, so unlike arm64 there are no
@@ -170,6 +174,15 @@ void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers)
     g_no_link = std::getenv("VCC_NO_LINK") != nullptr ||
                 std::getenv("VCC_VERIFY_PC") != nullptr ||
                 std::getenv("VCC_VERIFY_PURE") != nullptr;
+
+    // RAM fast path: needs the MMU bank tables and the watch bitmap.
+    // VCC_NO_FASTMEM disables it for A/B runs; VCC_LOG_WRITES implies
+    // it off because the inline stores would bypass the write log.
+    g_fastmem = std::getenv("VCC_NO_FASTMEM") == nullptr &&
+                std::getenv("VCC_LOG_WRITES") == nullptr &&
+                addrs.fastmem_read_banks != nullptr &&
+                addrs.fastmem_write_banks != nullptr &&
+                addrs.fastmem_watch_bitmap != nullptr;
 
     if (g_arena_base == nullptr && !g_disabled)
     {
@@ -243,11 +256,12 @@ void Reset()
 
 // Prologue: sub rsp (4) + movabs r14 (10).
 static constexpr size_t kPrologueBytes = 16;
-// Per instruction, worst case: a guarded mid-block long branch (predicate
-// loads + cycle add + two rel32 exits + ChainBreak check + its two exit
-// snippets) or an indexed 16-bit store with every flag live — both land
-// well under 112 bytes.
-static constexpr size_t kMaxBytesPerInsn = 112;
+// Per instruction, worst case: an indexed 16-bit store with every flag
+// live and the inline RAM fast path for the write (EA + flags + the
+// ~120-byte EmitMemWrite16 body) — comfortably under 224 bytes. This
+// is only the arena RESERVATION per instruction; actual consumption is
+// the emitted size.
+static constexpr size_t kMaxBytesPerInsn = 224;
 // Epilogue: final PC flush (11) + add rsp (4) + jmp rel32 (5).
 static constexpr size_t kEpilogueBytes = 24;
 
@@ -322,6 +336,191 @@ static void SafePatchRel32(emit_t& e, uint32_t field_at, uint32_t target)
         emit_patch_rel32(&e, field_at, target);
 }
 
+// ---------- guest memory access (RAM fast path) ----------
+//
+// Uniform register contract across the four helpers:
+//   R9D = guest address (zero-extended 16-bit), consumed
+//   R8D = data (writes only; low 8/16 bits), preserved until the call
+//   EAX = result (reads only; zero-extended 8/16-bit)
+// All other caller-saved registers are clobbered; the pinned set
+// survives. With g_fastmem off, each helper is exactly the old
+// marshal-and-call sequence.
+//
+// The fast path replicates MemRead8/MemWrite8's RAM case against the
+// MMU-maintained bank tables: bank = addr >> 13; a null bank pointer
+// (ports, ROM writes, cart space, the $FE00+ tail via bank 7, vector-
+// ROM pages) falls back to the C call. Stores additionally run
+// InvalidateIfCached's fast-reject bitmap test - a set bit means "a
+// cached block may live in this 256-byte page", and the write takes
+// the full MemWrite8 path so the real invalidation machinery runs.
+// The bank POINTERS are loaded at run time from the tables, so MMU
+// rebuilds propagate to existing thunks with no re-emission or
+// patching, exactly like the chain stub's indirect-through-slot rule.
+
+// EAX = MemRead8(R9D)
+static void EmitMemRead8(emit_t& e)
+{
+    if (!g_fastmem)
+    {
+        emit_mov_rr(&e, ARG0, X64_R9);
+        EmitCallAbs(e, (const void*)g_addrs.mem_read8);
+        emit_movzx_r32_r8(&e, X64_RAX, X64_RAX);
+        return;
+    }
+    emit_mov_rr(&e, X64_R8, X64_R9);
+    emit_shr_r_imm(&e, X64_R8, 13);
+    emit_mov_r64_imm64(&e, X64_R10, (uint64_t)(uintptr_t)g_addrs.fastmem_read_banks);
+    emit_load64_sib(&e, X64_R10, X64_R10, X64_R8, 3, 0);
+    emit_test_r64_r64(&e, X64_R10, X64_R10);
+    emit_jcc_rel32(&e, X64_CC_E, 0);
+    const uint32_t fix_slow = emit_pos(&e) - 4;
+    emit_and_r_imm(&e, X64_R9, 0x1FFF);
+    emit_load8u_sib(&e, X64_RAX, X64_R10, X64_R9, 0);
+    emit_jmp_rel32(&e, 0);
+    const uint32_t fix_done = emit_pos(&e) - 4;
+    SafePatchRel32(e, fix_slow, emit_pos(&e));
+    emit_mov_rr(&e, ARG0, X64_R9);
+    EmitCallAbs(e, (const void*)g_addrs.mem_read8);
+    emit_movzx_r32_r8(&e, X64_RAX, X64_RAX);
+    SafePatchRel32(e, fix_done, emit_pos(&e));
+}
+
+// MemWrite8(R8D low byte, R9D)
+static void EmitMemWrite8(emit_t& e)
+{
+    if (!g_fastmem)
+    {
+        emit_mov_rr(&e, ARG0, X64_R8);
+        emit_mov_rr(&e, ARG1, X64_R9);
+        EmitCallAbs(e, (const void*)g_addrs.mem_write8);
+        return;
+    }
+    uint32_t fix_slow[2];
+    int nslow = 0;
+    emit_mov_rr(&e, X64_RAX, X64_R9);
+    emit_shr_r_imm(&e, X64_RAX, 13);
+    emit_mov_r64_imm64(&e, X64_R10, (uint64_t)(uintptr_t)g_addrs.fastmem_write_banks);
+    emit_load64_sib(&e, X64_R10, X64_R10, X64_RAX, 3, 0);
+    emit_test_r64_r64(&e, X64_R10, X64_R10);
+    emit_jcc_rel32(&e, X64_CC_E, 0);
+    fix_slow[nslow++] = emit_pos(&e) - 4;
+    // Watch bitmap: bit (addr>>8)&7 of byte (addr>>11).
+    emit_mov_r64_imm64(&e, X64_R11, (uint64_t)(uintptr_t)g_addrs.fastmem_watch_bitmap);
+    emit_mov_rr(&e, X64_RAX, X64_R9);
+    emit_shr_r_imm(&e, X64_RAX, 11);
+    emit_load8u_sib(&e, X64_RAX, X64_R11, X64_RAX, 0);
+    emit_mov_rr(&e, X64_RCX, X64_R9);
+    emit_shr_r_imm(&e, X64_RCX, 8);
+    emit_and_r_imm(&e, X64_RCX, 7);
+    emit_bt_rr(&e, X64_RAX, X64_RCX);
+    emit_jcc_rel32(&e, X64_CC_B, 0);        // CF=1: watched page
+    fix_slow[nslow++] = emit_pos(&e) - 4;
+    emit_mov_rr(&e, X64_RAX, X64_R9);
+    emit_and_r_imm(&e, X64_RAX, 0x1FFF);
+    emit_store8_sib(&e, X64_R8, X64_R10, X64_RAX, 0);
+    emit_jmp_rel32(&e, 0);
+    const uint32_t fix_done = emit_pos(&e) - 4;
+    for (int i = 0; i < nslow; ++i)
+        SafePatchRel32(e, fix_slow[i], emit_pos(&e));
+    emit_mov_rr(&e, ARG0, X64_R8);
+    emit_mov_rr(&e, ARG1, X64_R9);
+    EmitCallAbs(e, (const void*)g_addrs.mem_write8);
+    SafePatchRel32(e, fix_done, emit_pos(&e));
+}
+
+// EAX = MemRead16(R9D) - big-endian pair. Fast only when both bytes
+// sit in the same bank ((addr & 0x1FFF) != 0x1FFF); the wrap at
+// $FFFF lands in bank 7 (always null) so it needs no special case.
+static void EmitMemRead16(emit_t& e)
+{
+    if (!g_fastmem)
+    {
+        emit_mov_rr(&e, ARG0, X64_R9);
+        EmitCallAbs(e, (const void*)g_addrs.mem_read16);
+        emit_movzx_r32_r16(&e, X64_RAX, X64_RAX);
+        return;
+    }
+    uint32_t fix_slow[2];
+    int nslow = 0;
+    emit_mov_rr(&e, X64_RAX, X64_R9);
+    emit_and_r_imm(&e, X64_RAX, 0x1FFF);
+    emit_cmp_r_imm(&e, X64_RAX, 0x1FFF);
+    emit_jcc_rel32(&e, X64_CC_E, 0);        // bank-edge pair
+    fix_slow[nslow++] = emit_pos(&e) - 4;
+    emit_mov_rr(&e, X64_R8, X64_R9);
+    emit_shr_r_imm(&e, X64_R8, 13);
+    emit_mov_r64_imm64(&e, X64_R10, (uint64_t)(uintptr_t)g_addrs.fastmem_read_banks);
+    emit_load64_sib(&e, X64_R10, X64_R10, X64_R8, 3, 0);
+    emit_test_r64_r64(&e, X64_R10, X64_R10);
+    emit_jcc_rel32(&e, X64_CC_E, 0);
+    fix_slow[nslow++] = emit_pos(&e) - 4;
+    // EAX still holds addr & 0x1FFF.
+    emit_load8u_sib(&e, X64_RDX, X64_R10, X64_RAX, 1);   // low byte
+    emit_load8u_sib(&e, X64_RAX, X64_R10, X64_RAX, 0);   // high byte
+    emit_shl_r_imm(&e, X64_RAX, 8);
+    emit_or_rr(&e, X64_RAX, X64_RDX);
+    emit_jmp_rel32(&e, 0);
+    const uint32_t fix_done = emit_pos(&e) - 4;
+    for (int i = 0; i < nslow; ++i)
+        SafePatchRel32(e, fix_slow[i], emit_pos(&e));
+    emit_mov_rr(&e, ARG0, X64_R9);
+    EmitCallAbs(e, (const void*)g_addrs.mem_read16);
+    emit_movzx_r32_r16(&e, X64_RAX, X64_RAX);
+    SafePatchRel32(e, fix_done, emit_pos(&e));
+}
+
+// MemWrite16(R8D low 16 bits, R9D) - big-endian pair. Fast only when
+// (addr & 0xFF) != 0xFF, which keeps both bytes in the same bank AND
+// the same 256-byte watch page, so one bitmap test covers the pair.
+static void EmitMemWrite16(emit_t& e)
+{
+    if (!g_fastmem)
+    {
+        emit_mov_rr(&e, ARG0, X64_R8);
+        emit_mov_rr(&e, ARG1, X64_R9);
+        EmitCallAbs(e, (const void*)g_addrs.mem_write16);
+        return;
+    }
+    uint32_t fix_slow[3];
+    int nslow = 0;
+    emit_mov_rr(&e, X64_RAX, X64_R9);
+    emit_and_r_imm(&e, X64_RAX, 0xFF);
+    emit_cmp_r_imm(&e, X64_RAX, 0xFF);
+    emit_jcc_rel32(&e, X64_CC_E, 0);        // page/bank-edge pair
+    fix_slow[nslow++] = emit_pos(&e) - 4;
+    emit_mov_rr(&e, X64_RCX, X64_R9);
+    emit_shr_r_imm(&e, X64_RCX, 13);
+    emit_mov_r64_imm64(&e, X64_R10, (uint64_t)(uintptr_t)g_addrs.fastmem_write_banks);
+    emit_load64_sib(&e, X64_R10, X64_R10, X64_RCX, 3, 0);
+    emit_test_r64_r64(&e, X64_R10, X64_R10);
+    emit_jcc_rel32(&e, X64_CC_E, 0);
+    fix_slow[nslow++] = emit_pos(&e) - 4;
+    emit_mov_r64_imm64(&e, X64_R11, (uint64_t)(uintptr_t)g_addrs.fastmem_watch_bitmap);
+    emit_mov_rr(&e, X64_RAX, X64_R9);
+    emit_shr_r_imm(&e, X64_RAX, 11);
+    emit_load8u_sib(&e, X64_RAX, X64_R11, X64_RAX, 0);
+    emit_mov_rr(&e, X64_RCX, X64_R9);
+    emit_shr_r_imm(&e, X64_RCX, 8);
+    emit_and_r_imm(&e, X64_RCX, 7);
+    emit_bt_rr(&e, X64_RAX, X64_RCX);
+    emit_jcc_rel32(&e, X64_CC_B, 0);
+    fix_slow[nslow++] = emit_pos(&e) - 4;
+    emit_mov_rr(&e, X64_RAX, X64_R9);
+    emit_and_r_imm(&e, X64_RAX, 0x1FFF);
+    emit_mov_rr(&e, X64_RDX, X64_R8);
+    emit_shr_r_imm(&e, X64_RDX, 8);
+    emit_store8_sib(&e, X64_RDX, X64_R10, X64_RAX, 0);   // high byte first
+    emit_store8_sib(&e, X64_R8,  X64_R10, X64_RAX, 1);   // then low
+    emit_jmp_rel32(&e, 0);
+    const uint32_t fix_done = emit_pos(&e) - 4;
+    for (int i = 0; i < nslow; ++i)
+        SafePatchRel32(e, fix_slow[i], emit_pos(&e));
+    emit_mov_rr(&e, ARG0, X64_R8);
+    emit_mov_rr(&e, ARG1, X64_R9);
+    EmitCallAbs(e, (const void*)g_addrs.mem_write16);
+    SafePatchRel32(e, fix_done, emit_pos(&e));
+}
+
 // ---------- inline emitters ----------
 // Each mirrors its interpreter handler exactly (see BlockJitA64.cpp for
 // the semantics discussion); the flag_mask gates which cc[] stores are
@@ -366,8 +565,8 @@ static void EmitInlineClr8(emit_t& e, int32_t reg_off, uint8_t mask)
     EmitCyclesRuntime(e, g_off_nat21);
 }
 
-// LDA/LDB <dp and ext: effective address, MemRead8 call, register
-// store, Z/N/V from the loaded byte.
+// LDA/LDB <dp and ext: effective address, guest read, register store,
+// Z/N/V from the loaded byte.
 static void EmitInlineLd8Mem(emit_t& e, const DecodedInst& insn,
                              int32_t reg_off, bool direct_page,
                              uint8_t mask)
@@ -375,25 +574,23 @@ static void EmitInlineLd8Mem(emit_t& e, const DecodedInst& insn,
     if (direct_page)
     {
         const uint8_t offset = (uint8_t)(insn.operand & 0xFF);
-        emit_load16u(&e, ARG0, R_STATE, g_off_dp);
+        emit_load16u(&e, X64_R9, R_STATE, g_off_dp);
         if (offset != 0)
-            emit_or_r_imm(&e, ARG0, offset);   // dp low byte is always 0
+            emit_or_r_imm(&e, X64_R9, offset);   // dp low byte is always 0
     }
     else
     {
-        emit_mov_r32_imm32(&e, ARG0, insn.operand);
+        emit_mov_r32_imm32(&e, X64_R9, insn.operand);
     }
     g_emit_had_side_effects = true;
-    EmitCallAbs(e, (const void*)g_addrs.mem_read8);
-    // The return value contract only guarantees the low byte.
-    emit_movzx_r32_r8(&e, X64_RAX, X64_RAX);
+    EmitMemRead8(e);
     emit_store8(&e, X64_RAX, R_STATE, reg_off);
     EmitFlagsZNVFromReg8(e, X64_RAX, mask);
     EmitCyclesRuntime(e, direct_page ? g_off_nat43 : g_off_nat54);
 }
 
 // STA/STB <dp and ext: flags from the register value (not memory),
-// then MemWrite8(data, address).
+// then the guest write.
 static void EmitInlineSt8Mem(emit_t& e, const DecodedInst& insn,
                              int32_t reg_off, bool direct_page,
                              uint8_t mask)
@@ -403,17 +600,16 @@ static void EmitInlineSt8Mem(emit_t& e, const DecodedInst& insn,
     if (direct_page)
     {
         const uint8_t offset = (uint8_t)(insn.operand & 0xFF);
-        emit_load16u(&e, ARG1, R_STATE, g_off_dp);
+        emit_load16u(&e, X64_R9, R_STATE, g_off_dp);
         if (offset != 0)
-            emit_or_r_imm(&e, ARG1, offset);
+            emit_or_r_imm(&e, X64_R9, offset);
     }
     else
     {
-        emit_mov_r32_imm32(&e, ARG1, insn.operand);
+        emit_mov_r32_imm32(&e, X64_R9, insn.operand);
     }
-    emit_mov_rr(&e, ARG0, X64_R8);
     g_emit_had_side_effects = true;
-    EmitCallAbs(e, (const void*)g_addrs.mem_write8);
+    EmitMemWrite8(e);
     EmitCyclesRuntime(e, direct_page ? g_off_nat43 : g_off_nat54);
 }
 
@@ -714,21 +910,19 @@ static void EmitInlineLea(emit_t& e, const DecodedInst& insn,
     EmitCyclesConst(e, 4);
 }
 
-// LDA/LDB indexed: MemRead8(EA) -> acc, Z/N/V from the byte, +4.
+// LDA/LDB indexed: read8(EA) -> acc, Z/N/V from the byte, +4.
 static void EmitInlineLd8Idx(emit_t& e, const DecodedInst& insn,
                              int32_t reg_off, uint8_t mask)
 {
     g_emit_had_side_effects = true;   // touches guest memory
     EmitEA(e, insn.ea_info, insn.operand, X64_R9);
-    emit_mov_rr(&e, ARG0, X64_R9);
-    EmitCallAbs(e, (const void*)g_addrs.mem_read8);
-    emit_movzx_r32_r8(&e, X64_RAX, X64_RAX);
+    EmitMemRead8(e);
     emit_store8(&e, X64_RAX, R_STATE, reg_off);
     EmitFlagsZNVFromReg8(e, X64_RAX, mask);
     EmitCyclesConst(e, 4);
 }
 
-// STA/STB indexed: MemWrite8(acc, EA), flags from acc, +4.
+// STA/STB indexed: write8(acc, EA), flags from acc, +4.
 static void EmitInlineSt8Idx(emit_t& e, const DecodedInst& insn,
                              int32_t reg_off, uint8_t mask)
 {
@@ -736,39 +930,33 @@ static void EmitInlineSt8Idx(emit_t& e, const DecodedInst& insn,
     EmitEA(e, insn.ea_info, insn.operand, X64_R9);
     emit_load8u(&e, X64_R8, R_STATE, reg_off);
     EmitFlagsZNVFromReg8(e, X64_R8, mask);
-    emit_mov_rr(&e, ARG0, X64_R8);
-    emit_mov_rr(&e, ARG1, X64_R9);
-    EmitCallAbs(e, (const void*)g_addrs.mem_write8);
+    EmitMemWrite8(e);
     EmitCyclesConst(e, 4);
 }
 
-// TST indexed: flags from MemRead8(EA), no writeback, +NatEmuCycles65.
+// TST indexed: flags from read8(EA), no writeback, +NatEmuCycles65.
 static void EmitInlineTstIdx(emit_t& e, const DecodedInst& insn, uint8_t mask)
 {
     g_emit_had_side_effects = true;   // touches guest memory
     EmitEA(e, insn.ea_info, insn.operand, X64_R9);
-    emit_mov_rr(&e, ARG0, X64_R9);
-    EmitCallAbs(e, (const void*)g_addrs.mem_read8);
-    emit_movzx_r32_r8(&e, X64_RAX, X64_RAX);
+    EmitMemRead8(e);
     EmitFlagsZNVFromReg8(e, X64_RAX, mask);
     EmitCyclesRuntime(e, g_off_nat65);
 }
 
-// LDX/LDU/LDD indexed: MemRead16(EA) -> reg16, Z/N(bit 15)/V=0, +5.
+// LDX/LDU/LDD indexed: read16(EA) -> reg16, Z/N(bit 15)/V=0, +5.
 static void EmitInlineLd16Idx(emit_t& e, const DecodedInst& insn,
                               int32_t reg_off, uint8_t mask)
 {
     g_emit_had_side_effects = true;   // touches guest memory
     EmitEA(e, insn.ea_info, insn.operand, X64_R9);
-    emit_mov_rr(&e, ARG0, X64_R9);
-    EmitCallAbs(e, (const void*)g_addrs.mem_read16);
-    emit_movzx_r32_r16(&e, X64_RAX, X64_RAX);
+    EmitMemRead16(e);
     emit_store16(&e, X64_RAX, R_STATE, reg_off);
     EmitFlagsZNVFromReg16(e, X64_RAX, mask);
     EmitCyclesConst(e, 5);
 }
 
-// STD/STX indexed: MemWrite16(reg16, EA), flags from reg16, +5.
+// STD/STX indexed: write16(reg16, EA), flags from reg16, +5.
 static void EmitInlineSt16Idx(emit_t& e, const DecodedInst& insn,
                               int32_t reg_off, uint8_t mask)
 {
@@ -776,9 +964,7 @@ static void EmitInlineSt16Idx(emit_t& e, const DecodedInst& insn,
     EmitEA(e, insn.ea_info, insn.operand, X64_R9);
     emit_load16u(&e, X64_R8, R_STATE, reg_off);
     EmitFlagsZNVFromReg16(e, X64_R8, mask);
-    emit_mov_rr(&e, ARG0, X64_R8);
-    emit_mov_rr(&e, ARG1, X64_R9);
-    EmitCallAbs(e, (const void*)g_addrs.mem_write16);
+    EmitMemWrite16(e);
     EmitCyclesConst(e, 5);
 }
 

@@ -132,6 +132,55 @@ static inline void emit_mem(emit_t *e, int reg_field, int base, int32_t disp) {
     else if (mod == 0x02) emit_u32(e, (uint32_t)disp);
 }
 
+/* ---- memory operand with SIB: [base + index*scale + disp] ----
+ * index must not be RSP (lo3 == 4 means "no index"); base RBP/R13
+ * forces the disp8 form as in emit_mem. scale_log is 0..3. */
+static inline void emit_mem_sib(emit_t *e, int reg_field, int base, int index,
+                                int scale_log, int32_t disp) {
+    const int lo = reg_lo(base);
+    const int force_disp = (lo == 5);
+    int mod;
+    if (disp == 0 && !force_disp) mod = 0x00;
+    else if (disp >= -128 && disp <= 127) mod = 0x01;
+    else mod = 0x02;
+    emit_byte(e, x64_modrm(mod, reg_field, 4));
+    emit_byte(e, (uint8_t)((scale_log << 6) | (reg_lo(index) << 3) | lo));
+    if (mod == 0x01) emit_byte(e, (uint8_t)(int8_t)disp);
+    else if (mod == 0x02) emit_u32(e, (uint32_t)disp);
+}
+
+/* mov r64, [base + index*(2^scale_log) + disp] */
+static inline void emit_load64_sib(emit_t *e, int dst, int base, int index,
+                                   int scale_log, int32_t disp) {
+    emit_byte(e, x64_rex(1, reg_hi(dst), reg_hi(index), reg_hi(base)));
+    emit_byte(e, 0x8B);
+    emit_mem_sib(e, dst, base, index, scale_log, disp);
+}
+
+/* movzx r32, byte [base + index + disp] */
+static inline void emit_load8u_sib(emit_t *e, int dst, int base, int index,
+                                   int32_t disp) {
+    emit_rex_opt(e, 0, reg_hi(dst), reg_hi(index), reg_hi(base));
+    emit_byte(e, 0x0F); emit_byte(e, 0xB6);
+    emit_mem_sib(e, dst, base, index, 0, disp);
+}
+
+/* mov byte [base + index + disp], r8 — REX forced for src >= 4 */
+static inline void emit_store8_sib(emit_t *e, int src, int base, int index,
+                                   int32_t disp) {
+    if (src >= 4 || reg_hi(index) || reg_hi(base))
+        emit_byte(e, x64_rex(0, reg_hi(src), reg_hi(index), reg_hi(base)));
+    emit_byte(e, 0x88);
+    emit_mem_sib(e, src, base, index, 0, disp);
+}
+
+/* bt r32, r32 — CF = bit (bit_reg mod 32) of val_reg */
+static inline void emit_bt_rr(emit_t *e, int val, int bit) {
+    emit_rex_opt(e, 0, reg_hi(bit), 0, reg_hi(val));
+    emit_byte(e, 0x0F); emit_byte(e, 0xA3);
+    emit_byte(e, x64_modrm(0x03, bit, val));
+}
+
 /* ---- loads (zero/sign extend into r32) ---- */
 
 /* movzx r32, byte [base + disp] */

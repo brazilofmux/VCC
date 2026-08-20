@@ -806,6 +806,12 @@ void HD6309Init()
 		addrs.chain_slot_size   = (uint32_t)sizeof(CachedBlock);
 		addrs.chain_runs        = &gJitChainRuns;
 
+		// RAM fast-path context: the MMU's per-bank direct pointers
+		// and the block cache's write-watch fast-reject bitmap.
+		addrs.fastmem_read_banks   = gJitReadBanks;
+		addrs.fastmem_write_banks  = gJitWriteBanks;
+		addrs.fastmem_watch_bitmap = blockCache.PageBitmapAddr();
+
 		BlockJit::InlineableHandlers inlines;
 		inlines.lda_m  = &Lda_M;
 		inlines.ldb_m  = &Ldb_M;
