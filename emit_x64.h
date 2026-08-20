@@ -190,6 +190,23 @@ static inline void emit_alu16_rr(emit_t *e, int op, int dst, int src) {
     emit_byte(e, x64_modrm(0x03, src, dst));
 }
 
+/* mov r8, imm8 — REX forced for regs >= 4 (SPL..DIL trap) */
+static inline void emit_mov_r8_imm8(emit_t *e, int reg, uint8_t imm) {
+    if (reg >= 4)
+        emit_byte(e, x64_rex(0, 0, 0, reg_hi(reg)));
+    emit_byte(e, (uint8_t)(0xB0 + reg_lo(reg)));
+    emit_byte(e, imm);
+}
+
+/* mov r8, r8 — REX forced for regs >= 4 */
+static inline void emit_mov_r8_r8(emit_t *e, int dst, int src) {
+    if (dst == src) return;
+    if (dst >= 4 || src >= 4)
+        emit_byte(e, x64_rex(0, reg_hi(src), 0, reg_hi(dst)));
+    emit_byte(e, 0x88);
+    emit_byte(e, x64_modrm(0x03, src, dst));
+}
+
 /* neg r8 — CF = (input != 0), OF = (input == 0x80) */
 static inline void emit_neg_r8(emit_t *e, int reg) {
     if (reg >= 4)

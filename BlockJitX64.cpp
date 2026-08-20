@@ -28,12 +28,15 @@ This file is part of VCC (Virtual Color Computer).
 // emitted thunk runner exactly like the arm64 backend's w21/w22/x23/x24):
 //   R13  = &cpu_state (Hd6309State base) — every field is [r13 + disp]
 //   EBX  = CycleCounter (registerized across whole chains)
-//   R12D = CycleFor (dispatch budget, for the chain stub's compares)
+//   BPL  = A_REG, R12B = B_REG (registerized accumulators; handler call
+//          sites spill/reload them, MMU fallback calls don't need to)
 //   R15  = block-cache slot base (chain stub indexing)
 //   R14  = &slot.insns[0] (per-thunk, movabs in the prologue; the runner
 //          saves/restores the dispatcher's r14 around the whole chain)
 //   RAX, RCX, RDX, R8-R11 = scratch (caller-saved on both ABIs; RSI/RDI
 //          are deliberately untouched except as SysV argument registers)
+// CycleFor is read from memory in the chain stub (two loads per hop)
+// so R12 can carry the B accumulator instead.
 //
 // Thunk shape:
 //   sub  rsp, 40                ; Win64 shadow (32) + alignment (8);
@@ -90,12 +93,20 @@ static constexpr int ARG0 = X64_RDI;
 static constexpr int ARG1 = X64_RSI;
 #endif
 
-// Pinned registers (see file header).
+// Pinned registers (see file header). The guest accumulators are
+// register-resident across whole chains: A lives in BPL and B in R12B
+// (both callee-saved on both ABIs), established/spilled by the runner
+// exactly like the cycle counter. Handler call sites spill and reload
+// them (handlers read the memory copies); the MMU functions the memory
+// fast paths fall back to never touch CPU registers, so those calls
+// need no spill - which is the point of using callee-saved registers.
+// CycleFor moved to memory reads in the chain stub to free R12.
 static constexpr int R_STATE = X64_R13;
 static constexpr int R_INSNS = X64_R14;
 static constexpr int R_SLOTS = X64_R15;
 static constexpr int R_CYC   = X64_RBX;   // 32-bit view
-static constexpr int R_FOR   = X64_R12;   // 32-bit view
+static constexpr int R_ACC_A = X64_RBP;   // BPL = A_REG
+static constexpr int R_ACC_B = X64_R12;   // R12B = B_REG
 
 // Thunk stack adjustment: Win64 shadow space + alignment. Entry rsp is
 // 8 mod 16 (call pushed the return address); -40 restores 16-alignment
@@ -334,6 +345,47 @@ static void EmitCallAbs(emit_t& e, const void* fn)
     emit_call_r(&e, X64_RAX);
 }
 
+// Host register holding a guest accumulator, or -1 when the offset is
+// a memory-resident register (X/Y/U/S/dp...).
+static int AccHostReg(int32_t reg_off)
+{
+    if (reg_off == g_off_a) return R_ACC_A;
+    if (reg_off == g_off_b) return R_ACC_B;
+    return -1;
+}
+
+// Spill/reload the register-resident accumulators around instruction-
+// handler calls (handlers read and write the cpu_state copies).
+static void EmitSpillAcc(emit_t& e)
+{
+    emit_store8(&e, R_ACC_A, R_STATE, g_off_a);
+    emit_store8(&e, R_ACC_B, R_STATE, g_off_b);
+}
+
+static void EmitReloadAcc(emit_t& e)
+{
+    emit_load8u(&e, R_ACC_A, R_STATE, g_off_a);
+    emit_load8u(&e, R_ACC_B, R_STATE, g_off_b);
+}
+
+// D = A:B, composed from / decomposed into the accumulator registers.
+// Both clobber the scratch register.
+static void EmitLoadD(emit_t& e, int dst, int scratch)
+{
+    emit_movzx_r32_r8(&e, dst, R_ACC_A);
+    emit_shl_r_imm(&e, dst, 8);
+    emit_movzx_r32_r8(&e, scratch, R_ACC_B);
+    emit_or_rr(&e, dst, scratch);
+}
+
+static void EmitStoreD(emit_t& e, int src, int scratch)
+{
+    emit_mov_rr(&e, scratch, src);
+    emit_shr_r_imm(&e, scratch, 8);
+    emit_mov_r8_r8(&e, R_ACC_A, scratch);
+    emit_mov_r8_r8(&e, R_ACC_B, src);
+}
+
 // Bounds-checked rel32 patch: if the field fell past the capacity the
 // bytes were never written (emit_byte drops them), so patching would
 // scribble out of bounds; the end-of-emit capacity check is about to
@@ -535,11 +587,12 @@ static void EmitMemWrite16(emit_t& e)
 // emitted, per the backward liveness pass.
 
 // LDA/LDB #imm - flags are compile-time constants of the immediate.
+// The accumulators are register-resident.
 static void EmitInlineLd8Imm(emit_t& e, const DecodedInst& insn,
                              int32_t reg_off, uint8_t mask)
 {
     const uint8_t imm = (uint8_t)(insn.operand & 0xFF);
-    emit_mov_mem8_imm8(&e, R_STATE, reg_off, imm);
+    emit_mov_r8_imm8(&e, AccHostReg(reg_off), imm);
     if (mask & CC_BIT_N) EmitCcConst(e, 3, (imm & 0x80) ? 1 : 0);
     if (mask & CC_BIT_Z) EmitCcConst(e, 2, (imm == 0) ? 1 : 0);
     if (mask & CC_BIT_V) EmitCcConst(e, 1, 0);
@@ -547,12 +600,21 @@ static void EmitInlineLd8Imm(emit_t& e, const DecodedInst& insn,
 }
 
 // LDD/LDX/LDU #imm16 (constant cycles) and LDY/LDS (runtime cycles).
+// D decomposes into the accumulator registers; the rest stay memory.
 static void EmitInlineLd16Imm(emit_t& e, const DecodedInst& insn,
                               int32_t reg_off, int const_cycles,
                               int32_t nat_offset, uint8_t mask)
 {
     const uint16_t imm = insn.operand;
-    emit_mov_mem16_imm16(&e, R_STATE, reg_off, imm);
+    if (reg_off == g_off_d)
+    {
+        emit_mov_r8_imm8(&e, R_ACC_A, (uint8_t)(imm >> 8));
+        emit_mov_r8_imm8(&e, R_ACC_B, (uint8_t)(imm & 0xFF));
+    }
+    else
+    {
+        emit_mov_mem16_imm16(&e, R_STATE, reg_off, imm);
+    }
     if (mask & CC_BIT_N) EmitCcConst(e, 3, (imm & 0x8000) ? 1 : 0);
     if (mask & CC_BIT_Z) EmitCcConst(e, 2, (imm == 0) ? 1 : 0);
     if (mask & CC_BIT_V) EmitCcConst(e, 1, 0);
@@ -565,7 +627,7 @@ static void EmitInlineLd16Imm(emit_t& e, const DecodedInst& insn,
 // CLRA/CLRB: register = 0, CC = fixed pattern C=0 V=0 Z=1 N=0.
 static void EmitInlineClr8(emit_t& e, int32_t reg_off, uint8_t mask)
 {
-    emit_mov_mem8_imm8(&e, R_STATE, reg_off, 0);
+    emit_mov_r8_imm8(&e, AccHostReg(reg_off), 0);
     if (mask & CC_BIT_C) EmitCcConst(e, 0, 0);
     if (mask & CC_BIT_V) EmitCcConst(e, 1, 0);
     if (mask & CC_BIT_Z) EmitCcConst(e, 2, 1);
@@ -592,7 +654,7 @@ static void EmitInlineLd8Mem(emit_t& e, const DecodedInst& insn,
     }
     g_emit_had_side_effects = true;
     EmitMemRead8(e);
-    emit_store8(&e, X64_RAX, R_STATE, reg_off);
+    emit_mov_r8_r8(&e, AccHostReg(reg_off), X64_RAX);
     EmitFlagsZNVFromReg8(e, X64_RAX, mask);
     EmitCyclesRuntime(e, direct_page ? g_off_nat43 : g_off_nat54);
 }
@@ -603,7 +665,7 @@ static void EmitInlineSt8Mem(emit_t& e, const DecodedInst& insn,
                              int32_t reg_off, bool direct_page,
                              uint8_t mask)
 {
-    emit_load8u(&e, X64_R8, R_STATE, reg_off);
+    emit_movzx_r32_r8(&e, X64_R8, AccHostReg(reg_off));
     EmitFlagsZNVFromReg8(e, X64_R8, mask);
     if (direct_page)
     {
@@ -621,13 +683,13 @@ static void EmitInlineSt8Mem(emit_t& e, const DecodedInst& insn,
     EmitCyclesRuntime(e, direct_page ? g_off_nat43 : g_off_nat54);
 }
 
-// TSTA/TSTB: Z/N from the register, V=0, C untouched. One cmp-with-0
-// straight on the state byte gives ZF/SF without any register loads.
+// TSTA/TSTB: Z/N from the register, V=0, C untouched.
 static void EmitInlineTst8(emit_t& e, int32_t reg_off, uint8_t mask)
 {
     if (mask & (CC_BIT_Z | CC_BIT_N))
     {
-        emit_alu_mem8_imm8(&e, X64_ALU_CMP, R_STATE, reg_off, 0);
+        const int acc = AccHostReg(reg_off);
+        emit_test_r8_r8(&e, acc, acc);
         if (mask & CC_BIT_Z)
             emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
         if (mask & CC_BIT_N)
@@ -638,25 +700,24 @@ static void EmitInlineTst8(emit_t& e, int32_t reg_off, uint8_t mask)
     EmitCyclesRuntime(e, g_off_nat21);
 }
 
-// INCA/INCB, DECA/DECB: x86 inc/dec m8 leave CF alone and set OF on
-// exactly the 0x7F->0x80 / 0x80->0x7F wraps — the 6309 V rules verbatim.
+// INCA/INCB, DECA/DECB: add/sub r8, 1 sets OF on exactly the
+// 0x7F->0x80 / 0x80->0x7F wraps — the 6309 V rules. The host CF is
+// clobbered but 6309 INC/DEC never write C, so no setc is emitted.
 static void EmitInlineIncDec8(emit_t& e, int32_t reg_off, bool is_inc,
                               uint8_t mask)
 {
-    if (is_inc)
-        emit_inc_mem8(&e, R_STATE, reg_off);
-    else
-        emit_dec_mem8(&e, R_STATE, reg_off);
+    emit_alu_r8_imm8(&e, is_inc ? X64_ALU_ADD : X64_ALU_SUB,
+                     AccHostReg(reg_off), 1);
     if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
     if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
     if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
     EmitCyclesRuntime(e, g_off_nat21);
 }
 
-// COMA/COMB: ones-complement via xor m8, 0xFF (sets ZF/SF); V=0, C=1.
+// COMA/COMB: ones-complement via xor r8, 0xFF (sets ZF/SF); V=0, C=1.
 static void EmitInlineCom8(emit_t& e, int32_t reg_off, uint8_t mask)
 {
-    emit_alu_mem8_imm8(&e, X64_ALU_XOR, R_STATE, reg_off, 0xFF);
+    emit_alu_r8_imm8(&e, X64_ALU_XOR, AccHostReg(reg_off), 0xFF);
     if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
     if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
     if (mask & CC_BIT_V) EmitCcConst(e, 1, 0);
@@ -664,11 +725,11 @@ static void EmitInlineCom8(emit_t& e, int32_t reg_off, uint8_t mask)
     EmitCyclesRuntime(e, g_off_nat21);
 }
 
-// NEGA/NEGB: x86 neg m8 sets CF=(input!=0), OF=(input==0x80), ZF/SF
+// NEGA/NEGB: x86 neg r8 sets CF=(input!=0), OF=(input==0x80), ZF/SF
 // from the result — all four 6309 NEG flag rules from one instruction.
 static void EmitInlineNeg8(emit_t& e, int32_t reg_off, uint8_t mask)
 {
-    emit_neg_mem8(&e, R_STATE, reg_off);
+    emit_neg_r8(&e, AccHostReg(reg_off));
     if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
     if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
     if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
@@ -679,7 +740,7 @@ static void EmitInlineNeg8(emit_t& e, int32_t reg_off, uint8_t mask)
 // LSRA: C = old bit 0, Z from result, N = 0 (top bit cleared). V untouched.
 static void EmitInlineLsr8(emit_t& e, int32_t reg_off, uint8_t mask)
 {
-    emit_shift_mem8_1(&e, X64_SHIFT_SHR, R_STATE, reg_off);
+    emit_shift_r8_1(&e, X64_SHIFT_SHR, AccHostReg(reg_off));
     if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
     if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
     if (mask & CC_BIT_N) EmitCcConst(e, 3, 0);
@@ -689,7 +750,7 @@ static void EmitInlineLsr8(emit_t& e, int32_t reg_off, uint8_t mask)
 // ASRA: sign bit propagates; C = old bit 0, Z/N from result. V untouched.
 static void EmitInlineAsr8(emit_t& e, int32_t reg_off, uint8_t mask)
 {
-    emit_shift_mem8_1(&e, X64_SHIFT_SAR, R_STATE, reg_off);
+    emit_shift_r8_1(&e, X64_SHIFT_SAR, AccHostReg(reg_off));
     if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
     if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
     if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
@@ -700,7 +761,7 @@ static void EmitInlineAsr8(emit_t& e, int32_t reg_off, uint8_t mask)
 // old bit 6 ^ old bit 7, exactly the 6309 V formula; Z/N from result.
 static void EmitInlineAsl8(emit_t& e, int32_t reg_off, uint8_t mask)
 {
-    emit_shift_mem8_1(&e, X64_SHIFT_SHL, R_STATE, reg_off);
+    emit_shift_r8_1(&e, X64_SHIFT_SHL, AccHostReg(reg_off));
     if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
     if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
     if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
@@ -711,7 +772,7 @@ static void EmitInlineAsl8(emit_t& e, int32_t reg_off, uint8_t mask)
 // ABX: X += B, no flags.
 static void EmitInlineAbx(emit_t& e)
 {
-    emit_load8u(&e, X64_RAX, R_STATE, g_off_b);
+    emit_movzx_r32_r8(&e, X64_RAX, R_ACC_B);
     emit_add_mem16_r16(&e, R_STATE, g_off_x, X64_RAX);
     EmitCyclesRuntime(e, g_off_nat31);
 }
@@ -725,16 +786,19 @@ static void EmitInlineLogic8Imm(emit_t& e, const DecodedInst& insn,
                                 bool writeback, uint8_t mask)
 {
     const uint8_t imm = (uint8_t)(insn.operand & 0xFF);
+    const int acc = AccHostReg(reg_off);
     if (writeback)
     {
         const int alu = (op == LogicOp::And) ? X64_ALU_AND
                       : (op == LogicOp::Or)  ? X64_ALU_OR
                                              : X64_ALU_XOR;
-        emit_alu_mem8_imm8(&e, alu, R_STATE, reg_off, imm);
+        emit_alu_r8_imm8(&e, alu, acc, imm);
     }
     else
     {
-        emit_test_mem8_imm8(&e, R_STATE, reg_off, imm);   // BIT = AND, no store
+        // BIT = AND without writeback: flag it on a copy.
+        emit_movzx_r32_r8(&e, X64_RAX, acc);
+        emit_alu_r8_imm8(&e, X64_ALU_AND, X64_RAX, imm);
     }
     if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
     if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
@@ -753,10 +817,10 @@ static void EmitInlineArith8Imm(emit_t& e, const DecodedInst& insn,
                                 bool writeback, uint8_t mask)
 {
     const uint8_t imm = (uint8_t)(insn.operand & 0xFF);
+    const int acc = AccHostReg(reg_off);
     if (!is_add)
     {
-        emit_alu_mem8_imm8(&e, writeback ? X64_ALU_SUB : X64_ALU_CMP,
-                           R_STATE, reg_off, imm);
+        emit_alu_r8_imm8(&e, writeback ? X64_ALU_SUB : X64_ALU_CMP, acc, imm);
         if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
         if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
         if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
@@ -764,17 +828,15 @@ static void EmitInlineArith8Imm(emit_t& e, const DecodedInst& insn,
     }
     else
     {
-        emit_load8u(&e, X64_RAX, R_STATE, reg_off);       // old value
-        emit_mov_rr(&e, X64_RDX, X64_RAX);
-        emit_alu_r8_imm8(&e, X64_ALU_ADD, X64_RDX, imm);  // 8-bit add: flags
+        emit_movzx_r32_r8(&e, X64_RAX, acc);              // old value
+        emit_alu_r8_imm8(&e, X64_ALU_ADD, acc, imm);      // 8-bit add: flags
         // setcc preserves flags; capture everything before the H math.
         if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
         if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
         if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
         if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
-        if (writeback)
-            emit_store8(&e, X64_RDX, R_STATE, reg_off);
         // H = bit 4 of (old ^ imm ^ result), unconditional per the handler.
+        emit_movzx_r32_r8(&e, X64_RDX, acc);              // result
         emit_xor_rr(&e, X64_RAX, X64_RDX);
         if (imm & 0x10)
             emit_xor_r_imm(&e, X64_RAX, 0x10);
@@ -869,8 +931,8 @@ static void EmitEA(emit_t& e, uint8_t ea_info, uint16_t operand, int dst)
     case EA_OFFSET_A:
     case EA_OFFSET_B:
         emit_load16u(&e, dst, R_STATE, reg_off);
-        emit_load8s(&e, X64_RAX, R_STATE,
-                    EA_MODE(ea_info) == EA_OFFSET_A ? g_off_a : g_off_b);
+        emit_movsx_r32_r8(&e, X64_RAX,
+                          EA_MODE(ea_info) == EA_OFFSET_A ? R_ACC_A : R_ACC_B);
         emit_add_rr(&e, dst, X64_RAX);
         emit_movzx_r32_r16(&e, dst, dst);
         EmitCyclesConst(e, 1);
@@ -925,7 +987,7 @@ static void EmitInlineLd8Idx(emit_t& e, const DecodedInst& insn,
     g_emit_had_side_effects = true;   // touches guest memory
     EmitEA(e, insn.ea_info, insn.operand, X64_R9);
     EmitMemRead8(e);
-    emit_store8(&e, X64_RAX, R_STATE, reg_off);
+    emit_mov_r8_r8(&e, AccHostReg(reg_off), X64_RAX);
     EmitFlagsZNVFromReg8(e, X64_RAX, mask);
     EmitCyclesConst(e, 4);
 }
@@ -936,7 +998,7 @@ static void EmitInlineSt8Idx(emit_t& e, const DecodedInst& insn,
 {
     g_emit_had_side_effects = true;   // touches guest memory
     EmitEA(e, insn.ea_info, insn.operand, X64_R9);
-    emit_load8u(&e, X64_R8, R_STATE, reg_off);
+    emit_movzx_r32_r8(&e, X64_R8, AccHostReg(reg_off));
     EmitFlagsZNVFromReg8(e, X64_R8, mask);
     EmitMemWrite8(e);
     EmitCyclesConst(e, 4);
@@ -953,13 +1015,17 @@ static void EmitInlineTstIdx(emit_t& e, const DecodedInst& insn, uint8_t mask)
 }
 
 // LDX/LDU/LDD indexed: read16(EA) -> reg16, Z/N(bit 15)/V=0, +5.
+// D decomposes into the accumulator registers.
 static void EmitInlineLd16Idx(emit_t& e, const DecodedInst& insn,
                               int32_t reg_off, uint8_t mask)
 {
     g_emit_had_side_effects = true;   // touches guest memory
     EmitEA(e, insn.ea_info, insn.operand, X64_R9);
     EmitMemRead16(e);
-    emit_store16(&e, X64_RAX, R_STATE, reg_off);
+    if (reg_off == g_off_d)
+        EmitStoreD(e, X64_RAX, X64_RCX);
+    else
+        emit_store16(&e, X64_RAX, R_STATE, reg_off);
     EmitFlagsZNVFromReg16(e, X64_RAX, mask);
     EmitCyclesConst(e, 5);
 }
@@ -970,7 +1036,10 @@ static void EmitInlineSt16Idx(emit_t& e, const DecodedInst& insn,
 {
     g_emit_had_side_effects = true;   // touches guest memory
     EmitEA(e, insn.ea_info, insn.operand, X64_R9);
-    emit_load16u(&e, X64_R8, R_STATE, reg_off);
+    if (reg_off == g_off_d)
+        EmitLoadD(e, X64_R8, X64_RCX);
+    else
+        emit_load16u(&e, X64_R8, R_STATE, reg_off);
     EmitFlagsZNVFromReg16(e, X64_R8, mask);
     EmitMemWrite16(e);
     EmitCyclesConst(e, 5);
@@ -1016,31 +1085,29 @@ static void EmitInlineAlu8Mem(emit_t& e, const DecodedInst& insn,
                               int op, int32_t reg_off, int mode, uint8_t mask)
 {
     g_emit_had_side_effects = true;
+    const int acc = AccHostReg(reg_off);
     EmitEAToR9(e, mode, insn);
     EmitMemRead8(e);                                  // eax = operand byte
-    emit_load8u(&e, X64_RDX, R_STATE, reg_off);       // edx = old acc
     switch (op)
     {
     case ALU8_SUB:
     case ALU8_CMP:
         emit_alu_r8_r8(&e, (op == ALU8_SUB) ? X64_ALU_SUB : X64_ALU_CMP,
-                       X64_RDX, X64_RAX);
+                       acc, X64_RAX);
         if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
         if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
         if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
         if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
-        if (op == ALU8_SUB)
-            emit_store8(&e, X64_RDX, R_STATE, reg_off);
         break;
     case ALU8_ADD:
-        emit_mov_rr(&e, X64_RCX, X64_RDX);            // save old for H
-        emit_alu_r8_r8(&e, X64_ALU_ADD, X64_RDX, X64_RAX);
+        emit_movzx_r32_r8(&e, X64_RCX, acc);          // save old for H
+        emit_alu_r8_r8(&e, X64_ALU_ADD, acc, X64_RAX);
         if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
         if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
         if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
         if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
-        emit_store8(&e, X64_RDX, R_STATE, reg_off);
         // H = bit 4 of (old ^ operand ^ result), unconditional.
+        emit_movzx_r32_r8(&e, X64_RDX, acc);          // result
         emit_xor_rr(&e, X64_RCX, X64_RAX);
         emit_xor_rr(&e, X64_RCX, X64_RDX);
         emit_shr_r_imm(&e, X64_RCX, 4);
@@ -1052,14 +1119,13 @@ static void EmitInlineAlu8Mem(emit_t& e, const DecodedInst& insn,
     case ALU8_EOR:
         emit_alu_r8_r8(&e, (op == ALU8_AND) ? X64_ALU_AND
                          : (op == ALU8_OR)  ? X64_ALU_OR : X64_ALU_XOR,
-                       X64_RDX, X64_RAX);
+                       acc, X64_RAX);
         if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
         if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
         if (mask & CC_BIT_V) EmitCcConst(e, 1, 0);
-        emit_store8(&e, X64_RDX, R_STATE, reg_off);
         break;
     default:   // ALU8_BIT: AND flags, no writeback
-        emit_test_r8_r8(&e, X64_RDX, X64_RAX);
+        emit_test_r8_r8(&e, acc, X64_RAX);
         if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
         if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
         if (mask & CC_BIT_V) EmitCcConst(e, 1, 0);
@@ -1178,7 +1244,10 @@ static void EmitInlineLd16Mem(emit_t& e, const DecodedInst& insn,
     g_emit_had_side_effects = true;
     EmitEAToR9(e, mode, insn);
     EmitMemRead16(e);
-    emit_store16(&e, X64_RAX, R_STATE, reg_off);
+    if (reg_off == g_off_d)
+        EmitStoreD(e, X64_RAX, X64_RCX);
+    else
+        emit_store16(&e, X64_RAX, R_STATE, reg_off);
     EmitFlagsZNVFromReg16(e, X64_RAX, mask);
     EmitCyclesRuntime(e, mode == MM_DP ? g_off_nat54 : g_off_nat65);
 }
@@ -1187,7 +1256,10 @@ static void EmitInlineSt16Mem(emit_t& e, const DecodedInst& insn,
                               int32_t reg_off, int mode, uint8_t mask)
 {
     g_emit_had_side_effects = true;
-    emit_load16u(&e, X64_R8, R_STATE, reg_off);
+    if (reg_off == g_off_d)
+        EmitLoadD(e, X64_R8, X64_RCX);
+    else
+        emit_load16u(&e, X64_R8, R_STATE, reg_off);
     EmitFlagsZNVFromReg16(e, X64_R8, mask);
     EmitEAToR9(e, mode, insn);
     EmitMemWrite16(e);
@@ -1213,14 +1285,22 @@ static void EmitInlineArith16(emit_t& e, const DecodedInst& insn,
         EmitEAToR9(e, source_mode, insn);
         EmitMemRead16(e);
     }
-    emit_load16u(&e, X64_RDX, R_STATE, dst_off);
+    if (dst_off == g_off_d)
+        EmitLoadD(e, X64_RDX, X64_RCX);
+    else
+        emit_load16u(&e, X64_RDX, R_STATE, dst_off);
     emit_alu16_rr(&e, alu, X64_RDX, X64_RAX);
     if (mask & CC_BIT_C) emit_setcc_mem(&e, X64_CC_B, R_STATE, g_off_cc + 0);
     if (mask & CC_BIT_V) emit_setcc_mem(&e, X64_CC_O, R_STATE, g_off_cc + 1);
     if (mask & CC_BIT_Z) emit_setcc_mem(&e, X64_CC_E, R_STATE, g_off_cc + 2);
     if (mask & CC_BIT_N) emit_setcc_mem(&e, X64_CC_S, R_STATE, g_off_cc + 3);
     if (alu != X64_ALU_CMP)
-        emit_store16(&e, X64_RDX, R_STATE, dst_off);
+    {
+        if (dst_off == g_off_d)
+            EmitStoreD(e, X64_RDX, X64_RCX);
+        else
+            emit_store16(&e, X64_RDX, R_STATE, dst_off);
+    }
     if (const_cycles >= 0)
         EmitCyclesConst(e, (uint32_t)const_cycles);
     else
@@ -1824,34 +1904,43 @@ static void EnsureThunkRunner()
     if (off_cycle_for < 0 || off_cycle_for > INT32_MAX)
         return;
 
-    constexpr size_t kRunnerBytes = 96;
+    constexpr size_t kRunnerBytes = 128;
     if (g_arena_used + kRunnerBytes > kArenaSize)
         return;
 
     uint8_t* const entry = g_arena_base + g_arena_used;
     emit_t e { entry, 0, (uint32_t)kRunnerBytes };
 
-    // Entry rsp is 8 mod 16; five pushes make it 0; the 32-byte shadow
-    // keeps it 0, so the call below leaves the thunk at 8 mod 16 —
-    // which kThunkFrame then corrects at every interior call site.
+    // Entry rsp is 8 mod 16; six pushes make it 8 again; the 40-byte
+    // adjustment (32 shadow + 8 align) makes the call site 0 mod 16,
+    // so the thunk enters at 8 mod 16 — which kThunkFrame then
+    // corrects at every interior call site. The runner establishes the
+    // full register convention: cycles in ebx, A in bpl, B in r12b,
+    // state base in r13, slot base in r15; it spills cycles and the
+    // accumulators back to cpu_state when the chain finally returns.
     emit_push(&e, X64_RBX);
+    emit_push(&e, X64_RBP);
     emit_push(&e, X64_R12);
     emit_push(&e, X64_R13);
     emit_push(&e, X64_R14);
     emit_push(&e, X64_R15);
-    emit_sub_rsp_imm8(&e, 32);
+    emit_sub_rsp_imm8(&e, 40);
     emit_mov_r64_r64(&e, X64_RAX, ARG0);
     emit_mov_r64_imm64(&e, R_STATE, (uint64_t)(uintptr_t)g_addrs.base);
     emit_mov_r64_imm64(&e, R_SLOTS, (uint64_t)(uintptr_t)g_addrs.chain_slot_base);
     emit_load32(&e, R_CYC, R_STATE, g_off_cyc);
-    emit_load32(&e, R_FOR, R_STATE, (int32_t)off_cycle_for);
+    emit_load8u(&e, R_ACC_A, R_STATE, g_off_a);
+    emit_load8u(&e, R_ACC_B, R_STATE, g_off_b);
     emit_call_r(&e, X64_RAX);
     emit_store32(&e, R_CYC, R_STATE, g_off_cyc);
-    emit_add_rsp_imm8(&e, 32);
+    emit_store8(&e, R_ACC_A, R_STATE, g_off_a);
+    emit_store8(&e, R_ACC_B, R_STATE, g_off_b);
+    emit_add_rsp_imm8(&e, 40);
     emit_pop(&e, X64_R15);
     emit_pop(&e, X64_R14);
     emit_pop(&e, X64_R13);
     emit_pop(&e, X64_R12);
+    emit_pop(&e, X64_RBP);
     emit_pop(&e, X64_RBX);
     emit_x64_ret(&e);
 
@@ -1900,9 +1989,11 @@ static void EnsureChainStub()
     uint32_t fixups[8];
     int nfix = 0;
 
-    // Budget exhausted -> bail. CycleCounter/CycleFor are LIVE in
-    // ebx/r12d and &cpu_state in r13 (runner convention).
-    emit_cmp_rr(&e, R_CYC, R_FOR);
+    // Budget exhausted -> bail. CycleCounter is LIVE in ebx and
+    // &cpu_state in r13 (runner convention); CycleFor is a memory read
+    // now that r12 carries the B accumulator.
+    const int64_t off_cycle_for_stub = (const uint8_t*)g_addrs.cycle_for - cbase;
+    emit_cmp_r32_mem32(&e, R_CYC, R_STATE, (int32_t)off_cycle_for_stub);
     emit_jcc_rel32(&e, X64_CC_GE, 0);
     fixups[nfix++] = emit_pos(&e) - 4;
 
@@ -1932,7 +2023,7 @@ static void EnsureChainStub()
     emit_load8u(&e, X64_RAX, X64_R9, (int32_t)offsetof(CachedBlock, total_cycles));
     emit_add_rr(&e, X64_RAX, R_CYC);
     emit_add_r_imm(&e, X64_RAX, -(int32_t)kBudgetSlack);
-    emit_cmp_rr(&e, X64_RAX, R_FOR);
+    emit_cmp_r32_mem32(&e, X64_RAX, R_STATE, (int32_t)off_cycle_for_stub);
     emit_jcc_rel32(&e, X64_CC_G, 0);
     fixups[nfix++] = emit_pos(&e) - 4;
 
@@ -2121,9 +2212,11 @@ NativeEntry EmitBlock(const CachedBlock& slot)
             emit_mov_mem16_imm16(&e, R_STATE, g_off_pc, fall_pc);
             ++g_pc_writes_emitted;
             emit_store32(&e, R_CYC, R_STATE, g_off_cyc);
+            EmitSpillAcc(e);
             emit_lea64(&e, ARG0, R_INSNS, (int32_t)(i * sizeof(DecodedInst)));
             EmitCallAbs(e, (const void*)insn.handler);
             emit_load32(&e, R_CYC, R_STATE, g_off_cyc);
+            EmitReloadAcc(e);
             emit_load16u(&e, X64_RAX, R_STATE, g_off_pc);
             emit_cmp_r_imm(&e, X64_RAX, cont_pc);
             emit_jcc_rel32(&e, X64_CC_NE, 0);
@@ -2195,12 +2288,15 @@ NativeEntry EmitBlock(const CachedBlock& slot)
             pc_dirty = false;
 
             // handler(&slot.insns[i]) - handlers read and add cycles in
-            // cpu_state, so sync the registerized counter around the call.
+            // cpu_state, so sync the registerized counter AND the
+            // accumulators around the call.
             g_emit_had_side_effects = true;
             emit_store32(&e, R_CYC, R_STATE, g_off_cyc);
+            EmitSpillAcc(e);
             emit_lea64(&e, ARG0, R_INSNS, (int32_t)(i * sizeof(DecodedInst)));
             EmitCallAbs(e, (const void*)insn.handler);
             emit_load32(&e, R_CYC, R_STATE, g_off_cyc);
+            EmitReloadAcc(e);
             ++g_insns_called;
         }
     }
