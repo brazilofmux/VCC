@@ -409,6 +409,54 @@ Next levers, from the post-change profile: MemRead8/MemWrite8 helper
 calls (inline coverage is 33%), BlockCache::InvalidateIfCached on the
 store path, and UpdateScreen32 costing ~5% even at VCC_FRAMESKIP=100.
 
+## The fastmem + inline-family arc (2026-08-25, same day as bursts)
+
+With bursts landed, the profile's shopping list was memory-helper
+calls (inline coverage 33%), the per-store invalidation check, and
+rendering-at-frameskip. The x86-64 backend had meanwhile grown ~80
+inline families to arm64's ~59 plus an inlined RAM fast path - the
+donor for this arc was our own sibling backend.
+
+Three chunks, each verified before the next:
+
+1. **RAM fast path** (EmitMemRead8FP/Write8FP/Read16FP/Write16FP):
+   bank-table indirect loads (address>>13, null bank -> C helper),
+   watch-bitmap fast-reject folded into stores, MMU rebuilds propagate
+   with no re-emission. Slow paths sync w21 to cpu_state first, which
+   also closes the burst-observer staleness gap on port I/O. All five
+   existing memory-op emitters retrofitted. Sieve 2831x -> 4240x.
+2. **16-bit families**: LDD/LDX/LDU + STD/STX/STU dp/ext,
+   ADDD/SUBD/CMPD/CMPX/CMPY/CMPU with imm/dp/idx/ext operands, flag
+   math straight from the handlers (V = C ^ bit15(res^old^opnd) -
+   OVERFLOW16 is XOR-symmetric). Blocked at first by the backend's
+   private InlinedHandlerWritesMask table: an unlisted handler is
+   CC_UNKNOWN and the structural guard refuses it - the masks are part
+   of a family's port, not an optional extra. Sieve -> 5330x, inline
+   coverage 51%.
+3. **8-bit memory-ALU + RMW families** (alu8_mem[7][3], rmw8_mem[10][3]),
+   with a JitScratch16 spill slot in the state block so an RMW's EA
+   survives a slow-path read. Inline coverage 78%.
+
+**The bug that mattered:** the memory ROR/ROL rotate the carry IN, and
+the liveness walk (live &= ~writes) silently assumed every known op
+reads nothing - so upstream C-stores were elided as dead and chained
+long rotates saw stale carries. VCC_VERIFY_PURE could not catch it:
+side-effecting blocks are excluded from pure verification by design.
+What caught it was tests/journal.sh - ChaCha20 decrypting garbage is a
+merciless flag-semantics detector. Fix: InlinedHandlerReadsMask feeding
+`live |=` in the walk (converging on the design the x86-64 backend
+already carried). Lesson recorded: a crypto round-trip in the guest is
+a better verifier for flag semantics than any boot.
+
+Day's total (interleaved A/B): compiled-C sieve 1801x -> ~5330x
+(2.96x), NitrOS-9 boot 4819x -> ~11,400x (2.4x), effective clock on
+the short bench ~2.6 -> ~3.2 GHz; steady-state sieve runs at ~4.8 GHz
+equivalent. Post-arc profile is dominated by anonymous JIT frames -
+the named residue is the batched line edges, UpdateScreen at
+frameskip, and the watch-bitmap slow path. Kill switches:
+VCC_NO_FASTMEM, VCC_NO_BURST, VCC_NO_INLINE, plus per-family gates
+(VCC_NO_FAM_*) kept for bisection.
+
 ## The DriveWire file-flow arc (pyDriveWire, 2026-08)
 
 Goal: reach files on the Mac from inside NitrOS-9 over the becker

@@ -203,6 +203,9 @@ struct Hd6309State
 	// RecomputeChainBreak at every input mutation site.
 	unsigned char ChainBreak = 0;         // +5
 	unsigned char ChainPad[2] = {0,0};    // +6..7: always zero
+	// Spill slot for emitted code (e.g. an RMW effective address held
+	// across a slow-path helper call that clobbers the scratch regs).
+	uint16_t      JitScratch16 = 0;
 };
 
 static Hd6309State cpu_state;
@@ -919,6 +922,7 @@ void HD6309Init()
 		addrs.fastmem_read_banks   = gJitReadBanks;
 		addrs.fastmem_write_banks  = gJitWriteBanks;
 		addrs.fastmem_watch_bitmap = blockCache.PageBitmapAddr();
+		addrs.jit_scratch16        = &cpu_state.JitScratch16;
 		addrs.nat_cycles_51 = &NatEmuCycles51;
 		addrs.nat_cycles_64 = &NatEmuCycles64;
 		addrs.nat_cycles_76 = &NatEmuCycles76;
