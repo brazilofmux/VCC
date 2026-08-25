@@ -280,7 +280,7 @@ static constexpr size_t kPrologueBytes = 16;
 // spill/reload, and the write fast path with its bitmap check — lands
 // around 220 bytes. This is only the arena RESERVATION per
 // instruction; actual consumption is the emitted size.
-static constexpr size_t kMaxBytesPerInsn = 288;
+static constexpr size_t kMaxBytesPerInsn = 320;
 // Epilogue: final PC flush (11) + add rsp (4) + jmp rel32 (5).
 static constexpr size_t kEpilogueBytes = 24;
 
@@ -417,13 +417,30 @@ static void SafePatchRel32(emit_t& e, uint32_t field_at, uint32_t target)
 // rebuilds propagate to existing thunks with no re-emission or
 // patching, exactly like the chain stub's indirect-through-slot rule.
 
+// Cycle-counter sync around the C memory helpers: a call can reach a
+// port handler, and the scanline-burst machinery (CoCoLineObserve)
+// reads cpu_state.CycleCounter mid-slice to fire the hsync edges owed
+// so far. Without the sync it would see a value stale by the whole
+// native chain since the last handler call. RAM fast paths never
+// reach a port, so they skip it.
+static void EmitSyncCyclesPre(emit_t& e)
+{
+    emit_store32(&e, R_CYC, R_STATE, g_off_cyc);
+}
+static void EmitSyncCyclesPost(emit_t& e)
+{
+    emit_load32(&e, R_CYC, R_STATE, g_off_cyc);
+}
+
 // EAX = MemRead8(R9D)
 static void EmitMemRead8(emit_t& e)
 {
     if (!g_fastmem)
     {
+        EmitSyncCyclesPre(e);
         emit_mov_rr(&e, ARG0, X64_R9);
         EmitCallAbs(e, (const void*)g_addrs.mem_read8);
+        EmitSyncCyclesPost(e);
         emit_movzx_r32_r8(&e, X64_RAX, X64_RAX);
         return;
     }
@@ -439,8 +456,10 @@ static void EmitMemRead8(emit_t& e)
     emit_jmp_rel32(&e, 0);
     const uint32_t fix_done = emit_pos(&e) - 4;
     SafePatchRel32(e, fix_slow, emit_pos(&e));
+    EmitSyncCyclesPre(e);
     emit_mov_rr(&e, ARG0, X64_R9);
     EmitCallAbs(e, (const void*)g_addrs.mem_read8);
+    EmitSyncCyclesPost(e);
     emit_movzx_r32_r8(&e, X64_RAX, X64_RAX);
     SafePatchRel32(e, fix_done, emit_pos(&e));
 }
@@ -450,9 +469,11 @@ static void EmitMemWrite8(emit_t& e)
 {
     if (!g_fastmem)
     {
+        EmitSyncCyclesPre(e);
         emit_mov_rr(&e, ARG0, X64_R8);
         emit_mov_rr(&e, ARG1, X64_R9);
         EmitCallAbs(e, (const void*)g_addrs.mem_write8);
+        EmitSyncCyclesPost(e);
         return;
     }
     uint32_t fix_slow[2];
@@ -482,9 +503,11 @@ static void EmitMemWrite8(emit_t& e)
     const uint32_t fix_done = emit_pos(&e) - 4;
     for (int i = 0; i < nslow; ++i)
         SafePatchRel32(e, fix_slow[i], emit_pos(&e));
+    EmitSyncCyclesPre(e);
     emit_mov_rr(&e, ARG0, X64_R8);
     emit_mov_rr(&e, ARG1, X64_R9);
     EmitCallAbs(e, (const void*)g_addrs.mem_write8);
+    EmitSyncCyclesPost(e);
     SafePatchRel32(e, fix_done, emit_pos(&e));
 }
 
@@ -495,8 +518,10 @@ static void EmitMemRead16(emit_t& e)
 {
     if (!g_fastmem)
     {
+        EmitSyncCyclesPre(e);
         emit_mov_rr(&e, ARG0, X64_R9);
         EmitCallAbs(e, (const void*)g_addrs.mem_read16);
+        EmitSyncCyclesPost(e);
         emit_movzx_r32_r16(&e, X64_RAX, X64_RAX);
         return;
     }
@@ -523,8 +548,10 @@ static void EmitMemRead16(emit_t& e)
     const uint32_t fix_done = emit_pos(&e) - 4;
     for (int i = 0; i < nslow; ++i)
         SafePatchRel32(e, fix_slow[i], emit_pos(&e));
+    EmitSyncCyclesPre(e);
     emit_mov_rr(&e, ARG0, X64_R9);
     EmitCallAbs(e, (const void*)g_addrs.mem_read16);
+    EmitSyncCyclesPost(e);
     emit_movzx_r32_r16(&e, X64_RAX, X64_RAX);
     SafePatchRel32(e, fix_done, emit_pos(&e));
 }
@@ -536,9 +563,11 @@ static void EmitMemWrite16(emit_t& e)
 {
     if (!g_fastmem)
     {
+        EmitSyncCyclesPre(e);
         emit_mov_rr(&e, ARG0, X64_R8);
         emit_mov_rr(&e, ARG1, X64_R9);
         EmitCallAbs(e, (const void*)g_addrs.mem_write16);
+        EmitSyncCyclesPost(e);
         return;
     }
     uint32_t fix_slow[3];
@@ -575,9 +604,11 @@ static void EmitMemWrite16(emit_t& e)
     const uint32_t fix_done = emit_pos(&e) - 4;
     for (int i = 0; i < nslow; ++i)
         SafePatchRel32(e, fix_slow[i], emit_pos(&e));
+    EmitSyncCyclesPre(e);
     emit_mov_rr(&e, ARG0, X64_R8);
     emit_mov_rr(&e, ARG1, X64_R9);
     EmitCallAbs(e, (const void*)g_addrs.mem_write16);
+    EmitSyncCyclesPost(e);
     SafePatchRel32(e, fix_done, emit_pos(&e));
 }
 
