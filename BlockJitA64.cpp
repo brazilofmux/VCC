@@ -109,6 +109,11 @@ static uint32_t g_off_nat54 = 0;
 static uint32_t g_off_nat32 = 0;
 static uint32_t g_off_nat53 = 0;
 static uint32_t g_off_nat65 = 0;
+static uint32_t g_off_nat64 = 0;
+static uint32_t g_off_scratch16 = 0;
+static uint32_t g_off_nat76 = 0;
+// RAM fast path (bank tables + watch bitmap); see EmitMemRead8FP.
+static bool g_fastmem = false;
 static int64_t  g_off_pending = -1;   // packed pending quadword in cpu_state
 
 // ---------- cc[] bit ordering (matches BlockJit.cpp / hd6309.cpp) ----------
@@ -183,6 +188,13 @@ void Init(const CpuAddrs& addrs, const InlineableHandlers& handlers)
         g_off_nat32 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_32 - base);
         g_off_nat53 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_53 - base);
         g_off_nat65 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_65 - base);
+        g_off_nat64 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_64 - base);
+        g_off_nat76 = (uint32_t)((uint8_t*)g_addrs.nat_cycles_76 - base);
+        g_off_scratch16 = (uint32_t)((uint8_t*)g_addrs.jit_scratch16 - base);
+        g_fastmem = g_addrs.fastmem_read_banks != nullptr &&
+                    g_addrs.fastmem_write_banks != nullptr &&
+                    g_addrs.fastmem_watch_bitmap != nullptr &&
+                    std::getenv("VCC_NO_FASTMEM") == nullptr;
         g_off_pending = (g_addrs.chain_break != nullptr)
             ? (int64_t)((uint8_t*)g_addrs.chain_break - base) : -1;
         if (g_off_pending < 0 || g_off_pending >= 4096)
@@ -221,10 +233,12 @@ void Reset()
 
 // Prologue: 3 frame insns + two imm64 materializations (up to 4 each).
 static constexpr size_t kPrologueBytes = (3 + 4 + 4) * 4;
-// Per instruction, worst case: an inlined ADDA #imm with every flag
-// live (including the unconditional H write) runs about 30
-// instructions; the called path is 8. 40 is a safe ceiling.
-static constexpr size_t kMaxBytesPerInsn = 40 * 4;
+// Per instruction, worst case: a 16-bit arithmetic op with an indexed
+// operand and every flag live runs the EA computation, an inlined
+// two-byte RAM fast path with its slow-path fallback, and the manual
+// flag math - about 60 instructions. 80 is a safe ceiling; the called
+// path is still 8.
+static constexpr size_t kMaxBytesPerInsn = 80 * 4;
 // Epilogue: 2 ldp + ret, plus a final PC flush (movz+strh) when the
 // block ends on an inlined op.
 static constexpr size_t kEpilogueBytes = (2 + 1 + 2) * 4;
@@ -366,6 +380,205 @@ static void EmitInlineClr8(emit_t& e, uint32_t reg_off, uint8_t mask)
     EmitCyclesRuntime(e, g_off_nat21);
 }
 
+// ---------- guest memory access (RAM fast path) ----------
+//
+// Same design as the x86-64 backend: the MMU maintains 8 bank pointers
+// (address >> 13); a null bank (I/O, ROM-as-write, cart space, the
+// $FE00+ tail) falls back to the C helper. Stores additionally run
+// InvalidateIfCached's fast-reject watch bitmap - a set bit means "a
+// cached block may live in this 256-byte page" and the write takes the
+// full MemWrite8 path so the real invalidation machinery runs. Bank
+// pointers load indirectly at run time, so MMU rebuilds propagate to
+// existing thunks with no re-emission.
+//
+// Register contract: W0 = data in (writes) / result out (reads),
+// W1 = address (writes), or W0 = address in (reads). Scratch: W2-W4,
+// X10-X12, X16. The pinned set (x19-x24) and W1/W5+ survive the fast
+// path; a slow-path helper call clobbers all caller-saved registers.
+// Slow paths sync w21 (CycleCounter) to cpu_state first so on-demand
+// observers (scanline bursts, coco3.cpp) see exact guest time at every
+// I/O access - the helpers never modify CycleCounter, so no reload.
+
+static uint32_t HoleCbzX(emit_t& e, a64_reg_t r)
+{
+    const uint32_t at = e.offset;
+    emit_cbz_x64(&e, r, 0);
+    return at;
+}
+static uint32_t HoleCbnzW(emit_t& e, a64_reg_t r)
+{
+    const uint32_t at = e.offset;
+    emit_cbnz_w32(&e, r, 0);
+    return at;
+}
+static uint32_t HoleB(emit_t& e)
+{
+    const uint32_t at = e.offset;
+    emit_b(&e, 0);
+    return at;
+}
+static void PatchCbzX(emit_t& e, uint32_t at, a64_reg_t r)
+{
+    emit_t p { e.buf + at, 0, 4 };
+    emit_cbz_x64(&p, r, (int32_t)(e.offset - at));
+}
+static void PatchCbnzW(emit_t& e, uint32_t at, a64_reg_t r)
+{
+    emit_t p { e.buf + at, 0, 4 };
+    emit_cbnz_w32(&p, r, (int32_t)(e.offset - at));
+}
+static void PatchB(emit_t& e, uint32_t at)
+{
+    emit_t p { e.buf + at, 0, 4 };
+    emit_b(&p, (int32_t)(e.offset - at));
+}
+
+// Watch-bitmap test for the page holding the address in `addr_reg`:
+// leaves bit 0 of W2 = watched. Clobbers W2, W4; X12 must hold the
+// bitmap base.
+static void EmitWatchBit(emit_t& e, a64_reg_t addr_reg)
+{
+    emit_lsr_w32_imm(&e, A64_W2, addr_reg, 11);
+    emit_ldrb_reg_uxtw(&e, A64_W2, A64_W12, A64_W2);
+    emit_lsr_w32_imm(&e, A64_W4, addr_reg, 8);
+    EmitAndImm(e, A64_W4, A64_W4, 7);
+    emit_lsrv_w32(&e, A64_W2, A64_W2, A64_W4);
+    emit_ubfx_w32(&e, A64_W2, A64_W2, 0, 1);
+}
+
+// W0 = MemRead8(W0). Fast: bank load + ldrb. Slow: helper call.
+static void EmitMemRead8FP(emit_t& e)
+{
+    if (!g_fastmem)
+    {
+        emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read8);
+        emit_blr(&e, A64_W16);
+        return;
+    }
+    emit_lsr_w32_imm(&e, A64_W2, A64_W0, 13);
+    emit_mov_x64_imm64(&e, A64_W10, (uint64_t)(uintptr_t)g_addrs.fastmem_read_banks);
+    emit_ldr_x64_reg_lsl3(&e, A64_W10, A64_W10, A64_W2);
+    const uint32_t to_slow = HoleCbzX(e, A64_W10);
+    EmitAndImm(e, A64_W2, A64_W0, 0x1FFF);
+    emit_ldrb_reg_uxtw(&e, A64_W0, A64_W10, A64_W2);
+    const uint32_t to_done = HoleB(e);
+    PatchCbzX(e, to_slow, A64_W10);
+    emit_str_w32_imm(&e, A64_W21, A64_W19, g_off_cyc);
+    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read8);
+    emit_blr(&e, A64_W16);
+    PatchB(e, to_done);
+}
+
+// MemWrite8(W0, W1): data in W0's low byte, address in W1.
+static void EmitMemWrite8FP(emit_t& e)
+{
+    if (!g_fastmem)
+    {
+        emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_write8);
+        emit_blr(&e, A64_W16);
+        return;
+    }
+    uint32_t to_slow[2];
+    emit_lsr_w32_imm(&e, A64_W2, A64_W1, 13);
+    emit_mov_x64_imm64(&e, A64_W10, (uint64_t)(uintptr_t)g_addrs.fastmem_write_banks);
+    emit_ldr_x64_reg_lsl3(&e, A64_W10, A64_W10, A64_W2);
+    to_slow[0] = HoleCbzX(e, A64_W10);
+    emit_mov_x64_imm64(&e, A64_W12, (uint64_t)(uintptr_t)g_addrs.fastmem_watch_bitmap);
+    EmitWatchBit(e, A64_W1);
+    to_slow[1] = HoleCbnzW(e, A64_W2);
+    EmitAndImm(e, A64_W2, A64_W1, 0x1FFF);
+    emit_strb_reg_uxtw(&e, A64_W0, A64_W10, A64_W2);
+    const uint32_t to_done = HoleB(e);
+    PatchCbzX(e, to_slow[0], A64_W10);
+    PatchCbnzW(e, to_slow[1], A64_W2);
+    emit_str_w32_imm(&e, A64_W21, A64_W19, g_off_cyc);
+    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_write8);
+    emit_blr(&e, A64_W16);
+    PatchB(e, to_done);
+}
+
+// W0 = MemRead16(W0): big-endian pair, each byte's bank checked
+// independently (a page-crossing pair is two lookups, exactly like the
+// helper's two MemRead8 calls). Any miss falls back to the helper for
+// the WHOLE pair - W0 is still the untouched address at both test
+// points, so no state needs saving for the fallback.
+static void EmitMemRead16FP(emit_t& e)
+{
+    if (!g_fastmem)
+    {
+        emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read16);
+        emit_blr(&e, A64_W16);
+        EmitAndImm(e, A64_W0, A64_W0, 0xFFFF);
+        return;
+    }
+    uint32_t to_slow[2];
+    emit_lsr_w32_imm(&e, A64_W2, A64_W0, 13);
+    emit_mov_x64_imm64(&e, A64_W10, (uint64_t)(uintptr_t)g_addrs.fastmem_read_banks);
+    emit_ldr_x64_reg_lsl3(&e, A64_W11, A64_W10, A64_W2);
+    to_slow[0] = HoleCbzX(e, A64_W11);
+    emit_add_w32_imm(&e, A64_W3, A64_W0, 1);
+    EmitAndImm(e, A64_W3, A64_W3, 0xFFFF);
+    emit_lsr_w32_imm(&e, A64_W2, A64_W3, 13);
+    emit_ldr_x64_reg_lsl3(&e, A64_W10, A64_W10, A64_W2);
+    to_slow[1] = HoleCbzX(e, A64_W10);
+    EmitAndImm(e, A64_W2, A64_W0, 0x1FFF);
+    emit_ldrb_reg_uxtw(&e, A64_W4, A64_W11, A64_W2);   // hi
+    EmitAndImm(e, A64_W2, A64_W3, 0x1FFF);
+    emit_ldrb_reg_uxtw(&e, A64_W0, A64_W10, A64_W2);   // lo
+    emit_orr_w32_lsl(&e, A64_W0, A64_W0, A64_W4, 8);
+    const uint32_t to_done = HoleB(e);
+    PatchCbzX(e, to_slow[0], A64_W11);
+    PatchCbzX(e, to_slow[1], A64_W10);
+    emit_str_w32_imm(&e, A64_W21, A64_W19, g_off_cyc);
+    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read16);
+    emit_blr(&e, A64_W16);
+    EmitAndImm(e, A64_W0, A64_W0, 0xFFFF);
+    PatchB(e, to_done);
+}
+
+// MemWrite16(W0, W1): 16-bit value in W0, address in W1. Both bytes'
+// banks and watch bits are tested before either store so the fallback
+// (whole-pair helper call, hi then lo like MemWrite16) never sees a
+// half-committed pair. W0/W1 are preserved up to the commit point.
+static void EmitMemWrite16FP(emit_t& e)
+{
+    if (!g_fastmem)
+    {
+        emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_write16);
+        emit_blr(&e, A64_W16);
+        return;
+    }
+    uint32_t to_slow[4];
+    emit_lsr_w32_imm(&e, A64_W2, A64_W1, 13);
+    emit_mov_x64_imm64(&e, A64_W10, (uint64_t)(uintptr_t)g_addrs.fastmem_write_banks);
+    emit_ldr_x64_reg_lsl3(&e, A64_W11, A64_W10, A64_W2);
+    to_slow[0] = HoleCbzX(e, A64_W11);
+    emit_add_w32_imm(&e, A64_W3, A64_W1, 1);
+    EmitAndImm(e, A64_W3, A64_W3, 0xFFFF);
+    emit_lsr_w32_imm(&e, A64_W2, A64_W3, 13);
+    emit_ldr_x64_reg_lsl3(&e, A64_W10, A64_W10, A64_W2);
+    to_slow[1] = HoleCbzX(e, A64_W10);
+    emit_mov_x64_imm64(&e, A64_W12, (uint64_t)(uintptr_t)g_addrs.fastmem_watch_bitmap);
+    EmitWatchBit(e, A64_W1);
+    to_slow[2] = HoleCbnzW(e, A64_W2);
+    EmitWatchBit(e, A64_W3);
+    to_slow[3] = HoleCbnzW(e, A64_W2);
+    emit_lsr_w32_imm(&e, A64_W4, A64_W0, 8);
+    EmitAndImm(e, A64_W2, A64_W1, 0x1FFF);
+    emit_strb_reg_uxtw(&e, A64_W4, A64_W11, A64_W2);   // hi at addr
+    EmitAndImm(e, A64_W2, A64_W3, 0x1FFF);
+    emit_strb_reg_uxtw(&e, A64_W0, A64_W10, A64_W2);   // lo at addr+1
+    const uint32_t to_done = HoleB(e);
+    PatchCbzX(e, to_slow[0], A64_W11);
+    PatchCbzX(e, to_slow[1], A64_W10);
+    PatchCbnzW(e, to_slow[2], A64_W2);
+    PatchCbnzW(e, to_slow[3], A64_W2);
+    emit_str_w32_imm(&e, A64_W21, A64_W19, g_off_cyc);
+    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_write16);
+    emit_blr(&e, A64_W16);
+    PatchB(e, to_done);
+}
+
 // LDA/LDB <dp and ext: effective address, MemRead8 call, register
 // store, Z/N/V from the loaded byte. The call clobbers caller-saved
 // registers; x19/x20 survive.
@@ -392,8 +605,7 @@ static void EmitInlineLd8Mem(emit_t& e, const DecodedInst& insn,
         emit_movz_w32(&e, A64_W0, insn.operand, 0);
     }
     g_emit_had_side_effects = true;
-    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read8);
-    emit_blr(&e, A64_W16);
+    EmitMemRead8FP(e);
     // The return value contract only guarantees the low byte.
     EmitAndImm(e, A64_W0, A64_W0, 0xFF);
     emit_strb_imm(&e, A64_W0, A64_W19, reg_off);
@@ -427,8 +639,7 @@ static void EmitInlineSt8Mem(emit_t& e, const DecodedInst& insn,
         emit_movz_w32(&e, A64_W1, insn.operand, 0);
     }
     g_emit_had_side_effects = true;
-    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_write8);
-    emit_blr(&e, A64_W16);
+    EmitMemWrite8FP(e);
     EmitCyclesRuntime(e, direct_page ? g_off_nat43 : g_off_nat54);
 }
 
@@ -849,8 +1060,7 @@ static void EmitInlineLd8Idx(emit_t& e, const DecodedInst& insn,
 {
     g_emit_had_side_effects = true;   // touches guest memory
     EmitEA(e, insn.ea_info, insn.operand, A64_W0);
-    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read8);
-    emit_blr(&e, A64_W16);
+    EmitMemRead8FP(e);
     EmitAndImm(e, A64_W0, A64_W0, 0xFF);
     emit_strb_imm(&e, A64_W0, A64_W19, reg_off);
     EmitFlagsZNVFromReg(e, A64_W0, mask);
@@ -869,8 +1079,7 @@ static void EmitInlineSt8Idx(emit_t& e, const DecodedInst& insn,
     emit_orr_w32(&e, A64_W1, A64_WZR, A64_W0);   // mov w1, w0 (address)
     emit_ldrb_imm(&e, A64_W0, A64_W19, reg_off);
     EmitFlagsZNVFromReg(e, A64_W0, mask);
-    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_write8);
-    emit_blr(&e, A64_W16);
+    EmitMemWrite8FP(e);
     EmitCyclesConst(e, 4);
 }
 
@@ -879,8 +1088,7 @@ static void EmitInlineTstIdx(emit_t& e, const DecodedInst& insn, uint8_t mask)
 {
     g_emit_had_side_effects = true;   // touches guest memory
     EmitEA(e, insn.ea_info, insn.operand, A64_W0);
-    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read8);
-    emit_blr(&e, A64_W16);
+    EmitMemRead8FP(e);
     EmitAndImm(e, A64_W0, A64_W0, 0xFF);
     EmitFlagsZNVFromReg(e, A64_W0, mask);
     EmitCyclesRuntime(e, g_off_nat65);
@@ -892,9 +1100,7 @@ static void EmitInlineLd16Idx(emit_t& e, const DecodedInst& insn,
 {
     g_emit_had_side_effects = true;   // touches guest memory
     EmitEA(e, insn.ea_info, insn.operand, A64_W0);
-    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_read16);
-    emit_blr(&e, A64_W16);
-    EmitAndImm(e, A64_W0, A64_W0, 0xFFFF);
+    EmitMemRead16FP(e);
     emit_strh_imm(&e, A64_W0, A64_W19, reg_off);
     if (mask & CC_BIT_Z)
     {
@@ -934,8 +1140,7 @@ static void EmitInlineSt16Idx(emit_t& e, const DecodedInst& insn,
     }
     if (mask & CC_BIT_V)
         emit_strb_imm(&e, A64_WZR, A64_W19, g_off_cc + 1);
-    emit_mov_x64_imm64(&e, A64_W16, (uint64_t)(uintptr_t)g_addrs.mem_write16);
-    emit_blr(&e, A64_W16);
+    EmitMemWrite16FP(e);
     EmitCyclesConst(e, 5);
 }
 
@@ -1170,7 +1375,82 @@ static uint8_t InlinedHandlerWritesMask(InstHandler h)
         return CC_BIT_Z | CC_BIT_N | CC_BIT_V;
     }
 
+    // 16-bit load/store dp/ext: Z/N from the value, V=0, C untouched.
+    {
+        using namespace BlockJit;
+        for (int r = 0; r < R16_COUNT; ++r)
+        {
+            if (h == g_inlines.ld16_dp[r]  || h == g_inlines.ld16_ext[r] ||
+                h == g_inlines.st16_dp[r]  || h == g_inlines.st16_ext[r])
+                return CC_BIT_Z | CC_BIT_N | CC_BIT_V;
+        }
+    }
+
+    // 16-bit arithmetic: C/V/Z/N (no H).
+    if (h == g_inlines.addd_m || h == g_inlines.addd_d ||
+        h == g_inlines.addd_x || h == g_inlines.addd_e ||
+        h == g_inlines.subd_m || h == g_inlines.subd_x ||
+        h == g_inlines.cmpd_m || h == g_inlines.cmpd_x ||
+        h == g_inlines.cmpx_m || h == g_inlines.cmpx_x ||
+        h == g_inlines.cmpy_m ||
+        h == g_inlines.cmpu_m || h == g_inlines.cmpu_x)
+    {
+        return CC_ALL;
+    }
+
+    // Memory-operand 8-bit ALU: logic ops write Z/N/V (V=0),
+    // arithmetic writes all four (ADD also the untracked H).
+    {
+        using namespace BlockJit;
+        for (int m = 0; m < MM_COUNT; ++m)
+        {
+            for (int op = 0; op < ALU8_OP_COUNT; ++op)
+            {
+                if (h == g_inlines.alu8_mem_a[op][m] ||
+                    h == g_inlines.alu8_mem_b[op][m])
+                {
+                    return (op == ALU8_AND || op == ALU8_OR ||
+                            op == ALU8_EOR || op == ALU8_BIT)
+                        ? (uint8_t)(CC_BIT_Z | CC_BIT_N | CC_BIT_V)
+                        : CC_ALL;
+                }
+            }
+            // Memory RMW: exact per-op sets, straight from the handlers.
+            // NEG/COM/CLR/ASL/ROL write all four; LSR/ROR/ASR leave V;
+            // DEC/INC leave C.
+            for (int op = 0; op < RMW8_OP_COUNT; ++op)
+            {
+                if (h == g_inlines.rmw8_mem[op][m])
+                {
+                    if (op == RMW8_LSR || op == RMW8_ROR || op == RMW8_ASR)
+                        return CC_BIT_C | CC_BIT_Z | CC_BIT_N;
+                    if (op == RMW8_DEC || op == RMW8_INC)
+                        return CC_BIT_Z | CC_BIT_N | CC_BIT_V;
+                    return CC_ALL;
+                }
+            }
+        }
+    }
+
     return CC_UNKNOWN;
+}
+
+// Flags a known-mask handler READS at run time. Every op in the
+// original inline set read nothing - the analyzer's "live &= ~mask"
+// walk silently relied on that. The memory ROR/ROL rotate the carry
+// IN, so any upstream C-store they depend on must stay live or the
+// rotate sees a stale cc[C] (found the hard way: ChaCha20's chained
+// long rotates in the journal app decrypting garbage).
+static uint8_t InlinedHandlerReadsMask(InstHandler h)
+{
+    using namespace BlockJit;
+    for (int m = 0; m < MM_COUNT; ++m)
+    {
+        if (h == g_inlines.rmw8_mem[RMW8_ROR][m] ||
+            h == g_inlines.rmw8_mem[RMW8_ROL][m])
+            return CC_BIT_C;
+    }
+    return 0;
 }
 
 static void AnalyzeFlagLiveness(const CachedBlock& slot,
@@ -1202,6 +1482,7 @@ static void AnalyzeFlagLiveness(const CachedBlock& slot,
         while (dead) { elided++; dead &= dead - 1; }
 
         live &= (uint8_t)~mask;
+        live |= InlinedHandlerReadsMask(slot.insns[i].handler);
     }
 
     if (requested_out) *requested_out = requested;
@@ -1233,6 +1514,397 @@ static int InlineRank(InstHandler h)
     for (int i = 0; i < (int)(sizeof(order) / sizeof(order[0])); i++)
         if (h == order[i]) return i;
     return -1;
+}
+
+// ---------- 16-bit memory-operand families (fastmem-based) ----------
+
+// Effective address for the MM_DP/MM_IDX/MM_EXT memory modes, into
+// `dst`. DP builds dp.Reg|offset (low byte of dp.Reg is zero); EXT is
+// the baked operand; IDX runs EmitEA, which also charges the EA mode's
+// cycles exactly like the interpreter's EA_Fn helpers. Clobbers W2
+// (and, for IDX, EmitEA's scratch set).
+static void EmitEAForMode(emit_t& e, int mode, const DecodedInst& insn,
+                          a64_reg_t dst)
+{
+    if (mode == BlockJit::MM_DP)
+    {
+        const uint8_t offset = (uint8_t)(insn.operand & 0xFF);
+        emit_ldrh_imm(&e, dst, A64_W19, g_off_dp);
+        if (offset != 0)
+        {
+            if (!emit_orr_w32_imm(&e, dst, dst, offset))
+            {
+                emit_movz_w32(&e, A64_W2, offset, 0);
+                emit_orr_w32(&e, dst, dst, A64_W2);
+            }
+        }
+    }
+    else if (mode == BlockJit::MM_EXT)
+    {
+        emit_movz_w32(&e, dst, insn.operand, 0);
+    }
+    else
+    {
+        EmitEA(e, insn.ea_info, insn.operand, dst);
+    }
+}
+
+// Z/N(bit15)/V=0 from the 16-bit value in `v` - the LD16/ST16 flag set.
+static void EmitFlags16ZNV(emit_t& e, a64_reg_t v, uint8_t mask)
+{
+    if (mask & CC_BIT_Z)
+    {
+        emit_cmp_w32_imm(&e, v, 0);
+        emit_cset_w32(&e, A64_W2, A64_COND_EQ);
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 2);
+    }
+    if (mask & CC_BIT_N)
+    {
+        emit_lsr_w32_imm(&e, A64_W2, v, 15);
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 3);
+    }
+    if (mask & CC_BIT_V)
+        emit_strb_imm(&e, A64_WZR, A64_W19, g_off_cc + 1);
+}
+
+// LDD/LDX/LDU <dp and ext: MemRead16(EA) -> reg16, Z/N/V=0.
+static void EmitInlineLd16Mem(emit_t& e, const DecodedInst& insn,
+                              uint32_t reg_off, int mode, uint8_t mask)
+{
+    g_emit_had_side_effects = true;
+    EmitEAForMode(e, mode, insn, A64_W0);
+    EmitMemRead16FP(e);
+    emit_strh_imm(&e, A64_W0, A64_W19, reg_off);
+    EmitFlags16ZNV(e, A64_W0, mask);
+    EmitCyclesRuntime(e, mode == BlockJit::MM_DP ? g_off_nat54 : g_off_nat65);
+}
+
+// STD/STX/STU <dp and ext: MemWrite16(reg16, EA), flags from the value.
+static void EmitInlineSt16Mem(emit_t& e, const DecodedInst& insn,
+                              uint32_t reg_off, int mode, uint8_t mask)
+{
+    g_emit_had_side_effects = true;
+    EmitEAForMode(e, mode, insn, A64_W1);
+    emit_ldrh_imm(&e, A64_W0, A64_W19, reg_off);
+    EmitFlags16ZNV(e, A64_W0, mask);
+    EmitMemWrite16FP(e);
+    EmitCyclesRuntime(e, mode == BlockJit::MM_DP ? g_off_nat54 : g_off_nat65);
+}
+
+// 16-bit ADD/SUB/CMP against an immediate (mode < 0) or memory
+// operand. Flag math mirrors the handlers exactly: C is the unsigned
+// carry/borrow, V = C ^ bit15(res ^ old ^ operand) (OVERFLOW16 is
+// XOR-symmetric in its value arguments), N/Z from the truncated
+// result. No H - the 16-bit ops never touch it.
+enum { A16_ADD, A16_SUB, A16_CMP };
+static void EmitInlineArith16(emit_t& e, const DecodedInst& insn,
+                              uint32_t reg_off, int op, int mode,
+                              uint32_t nat_off, uint8_t mask)
+{
+    // Operand into W5 (preserved across the fastmem primitives' fast
+    // paths; the slow helper call happens before W5 would be loaded
+    // only in the memory-operand case, where W5 is loaded after).
+    if (mode < 0)
+    {
+        emit_movz_w32(&e, A64_W5, insn.operand, 0);
+    }
+    else
+    {
+        g_emit_had_side_effects = true;
+        EmitEAForMode(e, mode, insn, A64_W0);
+        EmitMemRead16FP(e);
+        emit_mov_w32_w32(&e, A64_W5, A64_W0);
+    }
+    emit_ldrh_imm(&e, A64_W0, A64_W19, reg_off);       // old value
+    if (op == A16_ADD)
+        emit_add_w32(&e, A64_W1, A64_W0, A64_W5);
+    else
+        emit_sub_w32(&e, A64_W1, A64_W0, A64_W5);
+    EmitAndImm(e, A64_W3, A64_W1, 0xFFFF);             // result16
+
+    // C into W2 unconditionally - it feeds V.
+    if (op == A16_ADD)
+    {
+        emit_lsr_w32_imm(&e, A64_W2, A64_W1, 16);      // carry out
+    }
+    else
+    {
+        emit_cmp_w32_w32(&e, A64_W0, A64_W5);
+        emit_cset_w32(&e, A64_W2, A64_COND_LO);        // borrow
+    }
+    if (mask & CC_BIT_C)
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 0);
+    if (mask & CC_BIT_V)
+    {
+        emit_eor_w32(&e, A64_W4, A64_W3, A64_W0);
+        emit_eor_w32(&e, A64_W4, A64_W4, A64_W5);
+        emit_lsr_w32_imm(&e, A64_W4, A64_W4, 15);
+        EmitAndImm(e, A64_W4, A64_W4, 1);
+        emit_eor_w32(&e, A64_W4, A64_W4, A64_W2);
+        emit_strb_imm(&e, A64_W4, A64_W19, g_off_cc + 1);
+    }
+    if (op != A16_CMP)
+        emit_strh_imm(&e, A64_W3, A64_W19, reg_off);
+    if (mask & CC_BIT_Z)
+    {
+        emit_cmp_w32_imm(&e, A64_W3, 0);
+        emit_cset_w32(&e, A64_W2, A64_COND_EQ);
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 2);
+    }
+    if (mask & CC_BIT_N)
+    {
+        emit_lsr_w32_imm(&e, A64_W2, A64_W3, 15);
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 3);
+    }
+    EmitCyclesRuntime(e, nat_off);
+}
+
+// ---------- 8-bit memory-operand ALU and RMW families ----------
+
+// Shared 8-bit SUB/CMP/ADD flag+result body: old value in W0, operand
+// byte in W5. Result byte lands in W3. Mirrors EmitInlineArith8Imm
+// with a runtime operand.
+static void EmitArith8Body(emit_t& e, uint32_t reg_off, bool is_add,
+                           bool writeback, uint8_t mask)
+{
+    if (is_add)
+        emit_add_w32(&e, A64_W1, A64_W0, A64_W5);
+    else
+        emit_sub_w32(&e, A64_W1, A64_W0, A64_W5);
+    EmitAndImm(e, A64_W3, A64_W1, 0xFF);
+    if (writeback)
+        emit_strb_imm(&e, A64_W3, A64_W19, reg_off);
+
+    if (is_add)
+    {
+        emit_lsr_w32_imm(&e, A64_W2, A64_W1, 8);       // carry out
+    }
+    else
+    {
+        emit_cmp_w32_w32(&e, A64_W0, A64_W5);
+        emit_cset_w32(&e, A64_W2, A64_COND_LO);        // borrow
+    }
+    if (mask & CC_BIT_C)
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 0);
+    if (mask & CC_BIT_V)
+    {
+        emit_eor_w32(&e, A64_W4, A64_W3, A64_W0);
+        emit_eor_w32(&e, A64_W4, A64_W4, A64_W5);
+        emit_lsr_w32_imm(&e, A64_W4, A64_W4, 7);
+        EmitAndImm(e, A64_W4, A64_W4, 1);
+        emit_eor_w32(&e, A64_W4, A64_W4, A64_W2);
+        emit_strb_imm(&e, A64_W4, A64_W19, g_off_cc + 1);
+    }
+    if (is_add)
+    {
+        // H = bit 4 of (old ^ operand ^ result), unconditional.
+        emit_eor_w32(&e, A64_W4, A64_W0, A64_W3);
+        emit_eor_w32(&e, A64_W4, A64_W4, A64_W5);
+        emit_lsr_w32_imm(&e, A64_W4, A64_W4, 4);
+        EmitAndImm(e, A64_W4, A64_W4, 1);
+        emit_strb_imm(&e, A64_W4, A64_W19, g_off_cc + 5);
+    }
+    if (mask & CC_BIT_Z)
+    {
+        emit_cmp_w32_imm(&e, A64_W3, 0);
+        emit_cset_w32(&e, A64_W2, A64_COND_EQ);
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 2);
+    }
+    if (mask & CC_BIT_N)
+    {
+        emit_lsr_w32_imm(&e, A64_W2, A64_W3, 7);
+        emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 3);
+    }
+}
+
+// ALU with a memory operand: SUBA/CMPA/ADDA/ANDA/ORA/EORA/BITA (and
+// the B forms) against dp/indexed/extended. The operand byte is read
+// through the RAM fast path; the accumulator loads AFTER the read so
+// nothing lives across a possible slow-path helper call.
+static void EmitInlineAlu8Mem(emit_t& e, const DecodedInst& insn, int op,
+                              uint32_t reg_off, int mode, uint8_t mask)
+{
+    using namespace BlockJit;
+    g_emit_had_side_effects = true;
+    EmitEAForMode(e, mode, insn, A64_W0);
+    EmitMemRead8FP(e);
+    EmitAndImm(e, A64_W5, A64_W0, 0xFF);               // operand byte
+    emit_ldrb_imm(&e, A64_W0, A64_W19, reg_off);       // accumulator
+
+    switch (op)
+    {
+    case ALU8_SUB: EmitArith8Body(e, reg_off, false, true,  mask); break;
+    case ALU8_CMP: EmitArith8Body(e, reg_off, false, false, mask); break;
+    case ALU8_ADD: EmitArith8Body(e, reg_off, true,  true,  mask); break;
+    default:
+    {
+        // AND/OR/EOR/BIT: result in W3, V=0, C untouched.
+        if (op == ALU8_AND || op == ALU8_BIT)
+            emit_and_w32(&e, A64_W3, A64_W0, A64_W5);
+        else if (op == ALU8_OR)
+            emit_orr_w32(&e, A64_W3, A64_W0, A64_W5);
+        else
+            emit_eor_w32(&e, A64_W3, A64_W0, A64_W5);
+        if (op != ALU8_BIT)
+            emit_strb_imm(&e, A64_W3, A64_W19, reg_off);
+        EmitFlagsZNVFromReg(e, A64_W3, mask);
+        break;
+    }
+    }
+    if (mode == MM_DP)       EmitCyclesRuntime(e, g_off_nat43);
+    else if (mode == MM_IDX) EmitCyclesConst(e, 4);
+    else                     EmitCyclesRuntime(e, g_off_nat54);
+}
+
+// Memory read-modify-write: NEG/COM/LSR/ROR/ASR/ASL/ROL/DEC/INC/CLR
+// against dp/indexed/extended. The EA is spilled to the state block's
+// scratch slot so it survives a slow-path read (the helper call
+// clobbers every caller-saved register). Flag order matches the
+// handlers: flags first, then the write - so an I/O store that raises
+// an interrupt sees the completed flag state.
+static void EmitInlineRmw8(emit_t& e, const DecodedInst& insn, int op,
+                           int mode, uint8_t mask)
+{
+    using namespace BlockJit;
+    g_emit_had_side_effects = true;
+    EmitEAForMode(e, mode, insn, A64_W0);
+
+    if (op == RMW8_CLR)
+    {
+        // The handler writes 0 without reading first; mirror it.
+        emit_orr_w32(&e, A64_W1, A64_WZR, A64_W0);     // address
+        emit_movz_w32(&e, A64_W0, 0, 0);
+        if (mask & CC_BIT_C) EmitCcConst(e, 0, 0);
+        if (mask & CC_BIT_V) EmitCcConst(e, 1, 0);
+        if (mask & CC_BIT_Z) EmitCcConst(e, 2, 1);
+        if (mask & CC_BIT_N) EmitCcConst(e, 3, 0);
+        EmitMemWrite8FP(e);
+    }
+    else
+    {
+        emit_strh_imm(&e, A64_W0, A64_W19, g_off_scratch16);
+        EmitMemRead8FP(e);
+        EmitAndImm(e, A64_W0, A64_W0, 0xFF);           // old value
+
+        // Result byte into W3; flags per the handler bodies.
+        switch (op)
+        {
+        case RMW8_NEG:
+            emit_sub_w32(&e, A64_W3, A64_WZR, A64_W0);
+            EmitAndImm(e, A64_W3, A64_W3, 0xFF);
+            if (mask & CC_BIT_C)
+            {
+                emit_cmp_w32_imm(&e, A64_W3, 0);
+                emit_cset_w32(&e, A64_W2, A64_COND_NE);
+                emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 0);
+            }
+            if (mask & CC_BIT_V)
+            {
+                emit_cmp_w32_imm(&e, A64_W0, 0x80);
+                emit_cset_w32(&e, A64_W2, A64_COND_EQ);
+                emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 1);
+            }
+            break;
+        case RMW8_COM:
+            EmitEorImm(e, A64_W3, A64_W0, 0xFF);
+            if (mask & CC_BIT_C) EmitCcConst(e, 0, 1);
+            if (mask & CC_BIT_V) EmitCcConst(e, 1, 0);
+            break;
+        case RMW8_LSR:
+            if (mask & CC_BIT_C)
+            {
+                EmitAndImm(e, A64_W2, A64_W0, 1);
+                emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 0);
+            }
+            emit_lsr_w32_imm(&e, A64_W3, A64_W0, 1);
+            break;
+        case RMW8_ROR:
+            emit_ldrb_imm(&e, A64_W4, A64_W19, g_off_cc + 0);
+            emit_lsl_w32_imm(&e, A64_W4, A64_W4, 7);   // old C into bit 7
+            if (mask & CC_BIT_C)
+            {
+                EmitAndImm(e, A64_W2, A64_W0, 1);
+                emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 0);
+            }
+            emit_lsr_w32_imm(&e, A64_W3, A64_W0, 1);
+            emit_orr_w32(&e, A64_W3, A64_W3, A64_W4);
+            break;
+        case RMW8_ASR:
+            if (mask & CC_BIT_C)
+            {
+                EmitAndImm(e, A64_W2, A64_W0, 1);
+                emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 0);
+            }
+            EmitAndImm(e, A64_W3, A64_W0, 0x80);
+            emit_lsr_w32_imm(&e, A64_W2, A64_W0, 1);
+            emit_orr_w32(&e, A64_W3, A64_W3, A64_W2);
+            break;
+        case RMW8_ASL:
+        case RMW8_ROL:
+        {
+            // ROL's incoming bit is the OLD carry - load it before the
+            // new carry overwrites cc[C]. W5 is free in this family.
+            if (op == RMW8_ROL)
+                emit_ldrb_imm(&e, A64_W5, A64_W19, g_off_cc + 0);
+            emit_lsr_w32_imm(&e, A64_W2, A64_W0, 7);   // new C
+            if (mask & CC_BIT_C)
+                emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 0);
+            if (mask & CC_BIT_V)
+            {
+                // V = newC ^ old bit 6, computed BEFORE the shift.
+                emit_lsr_w32_imm(&e, A64_W4, A64_W0, 6);
+                EmitAndImm(e, A64_W4, A64_W4, 1);
+                emit_eor_w32(&e, A64_W4, A64_W4, A64_W2);
+                emit_strb_imm(&e, A64_W4, A64_W19, g_off_cc + 1);
+            }
+            emit_lsl_w32_imm(&e, A64_W3, A64_W0, 1);
+            if (op == RMW8_ROL)
+                emit_orr_w32(&e, A64_W3, A64_W3, A64_W5);
+            EmitAndImm(e, A64_W3, A64_W3, 0xFF);
+            break;
+        }
+        case RMW8_DEC:
+            emit_sub_w32_imm(&e, A64_W3, A64_W0, 1);
+            EmitAndImm(e, A64_W3, A64_W3, 0xFF);
+            if (mask & CC_BIT_V)
+            {
+                emit_cmp_w32_imm(&e, A64_W3, 0x7F);
+                emit_cset_w32(&e, A64_W2, A64_COND_EQ);
+                emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 1);
+            }
+            break;
+        default:  // RMW8_INC
+            emit_add_w32_imm(&e, A64_W3, A64_W0, 1);
+            EmitAndImm(e, A64_W3, A64_W3, 0xFF);
+            if (mask & CC_BIT_V)
+            {
+                emit_cmp_w32_imm(&e, A64_W3, 0x80);
+                emit_cset_w32(&e, A64_W2, A64_COND_EQ);
+                emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 1);
+            }
+            break;
+        }
+
+        // Z/N from the result byte (LSR forces N=0 via the shifted
+        // value naturally - bit 7 of a >>1 result is 0).
+        if (mask & CC_BIT_Z)
+        {
+            emit_cmp_w32_imm(&e, A64_W3, 0);
+            emit_cset_w32(&e, A64_W2, A64_COND_EQ);
+            emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 2);
+        }
+        if (mask & CC_BIT_N)
+        {
+            emit_lsr_w32_imm(&e, A64_W2, A64_W3, 7);
+            emit_strb_imm(&e, A64_W2, A64_W19, g_off_cc + 3);
+        }
+        emit_orr_w32(&e, A64_W0, A64_WZR, A64_W3);     // data
+        emit_ldrh_imm(&e, A64_W1, A64_W19, g_off_scratch16);
+        EmitMemWrite8FP(e);
+    }
+    if (mode == MM_DP)       EmitCyclesRuntime(e, g_off_nat65);
+    else if (mode == MM_IDX) EmitCyclesConst(e, 6);
+    else                     EmitCyclesRuntime(e, g_off_nat76);
 }
 
 static bool TryEmitInline(emit_t& e, const DecodedInst& insn, uint8_t mask)
@@ -1317,6 +1989,68 @@ static bool TryEmitInline(emit_t& e, const DecodedInst& insn, uint8_t mask)
         if (h == g_inlines.std_x)  { EmitInlineSt16Idx(e, insn, g_off_d, mask); return true; }
         if (h == g_inlines.stx_x)  { EmitInlineSt16Idx(e, insn, g_off_x, mask); return true; }
     }
+    // 8-bit memory-operand ALU and RMW families (dp/idx/ext).
+    if (std::getenv("VCC_NO_FAM_C") == nullptr)
+    {
+        using namespace BlockJit;
+        for (int m = 0; m < MM_COUNT; ++m)
+        {
+            if (m == MM_IDX && !EAModeSupported(insn.ea_info))
+                continue;
+            if (std::getenv("VCC_NO_FAM_ALU8") == nullptr)
+            for (int op = 0; op < ALU8_OP_COUNT; ++op)
+            {
+                if (h == g_inlines.alu8_mem_a[op][m])
+                { EmitInlineAlu8Mem(e, insn, op, g_off_a, m, mask); return true; }
+                if (h == g_inlines.alu8_mem_b[op][m])
+                { EmitInlineAlu8Mem(e, insn, op, g_off_b, m, mask); return true; }
+            }
+            if (std::getenv("VCC_NO_FAM_RMW8") == nullptr)
+            for (int op = 0; op < RMW8_OP_COUNT; ++op)
+                if (h == g_inlines.rmw8_mem[op][m])
+                { EmitInlineRmw8(e, insn, op, m, mask); return true; }
+        }
+    }
+
+    // 16-bit loads/stores, dp/ext (fastmem).
+    if (std::getenv("VCC_NO_FAM_LDST16") == nullptr)
+    {
+        using namespace BlockJit;
+        static const uint32_t* kRegOff16[R16_COUNT] = { &g_off_d, &g_off_x, &g_off_u };
+        for (int r = 0; r < R16_COUNT; ++r)
+        {
+            if (h == g_inlines.ld16_dp[r])  { EmitInlineLd16Mem(e, insn, *kRegOff16[r], MM_DP,  mask); return true; }
+            if (h == g_inlines.ld16_ext[r]) { EmitInlineLd16Mem(e, insn, *kRegOff16[r], MM_EXT, mask); return true; }
+            if (h == g_inlines.st16_dp[r])  { EmitInlineSt16Mem(e, insn, *kRegOff16[r], MM_DP,  mask); return true; }
+            if (h == g_inlines.st16_ext[r]) { EmitInlineSt16Mem(e, insn, *kRegOff16[r], MM_EXT, mask); return true; }
+        }
+    }
+
+    // 16-bit arithmetic; cycle charges mirror each handler.
+    if (std::getenv("VCC_NO_FAM_ARITH16") == nullptr)
+    {
+        using namespace BlockJit;
+        const bool ea_ok = EAModeSupported(insn.ea_info);
+        if (h == g_inlines.addd_m) { EmitInlineArith16(e, insn, g_off_d, A16_ADD, -1,     g_off_nat43, mask); return true; }
+        if (h == g_inlines.addd_d) { EmitInlineArith16(e, insn, g_off_d, A16_ADD, MM_DP,  g_off_nat64, mask); return true; }
+        if (h == g_inlines.addd_x && ea_ok)
+                                   { EmitInlineArith16(e, insn, g_off_d, A16_ADD, MM_IDX, g_off_nat65, mask); return true; }
+        if (h == g_inlines.addd_e) { EmitInlineArith16(e, insn, g_off_d, A16_ADD, MM_EXT, g_off_nat76, mask); return true; }
+        if (h == g_inlines.subd_m) { EmitInlineArith16(e, insn, g_off_d, A16_SUB, -1,     g_off_nat43, mask); return true; }
+        if (h == g_inlines.subd_x && ea_ok)
+                                   { EmitInlineArith16(e, insn, g_off_d, A16_SUB, MM_IDX, g_off_nat65, mask); return true; }
+        if (h == g_inlines.cmpd_m) { EmitInlineArith16(e, insn, g_off_d, A16_CMP, -1,     g_off_nat54, mask); return true; }
+        if (h == g_inlines.cmpd_x && ea_ok)
+                                   { EmitInlineArith16(e, insn, g_off_d, A16_CMP, MM_IDX, g_off_nat76, mask); return true; }
+        if (h == g_inlines.cmpx_m) { EmitInlineArith16(e, insn, g_off_x, A16_CMP, -1,     g_off_nat43, mask); return true; }
+        if (h == g_inlines.cmpx_x && ea_ok)
+                                   { EmitInlineArith16(e, insn, g_off_x, A16_CMP, MM_IDX, g_off_nat65, mask); return true; }
+        if (h == g_inlines.cmpy_m) { EmitInlineArith16(e, insn, g_off_y, A16_CMP, -1,     g_off_nat54, mask); return true; }
+        if (h == g_inlines.cmpu_m) { EmitInlineArith16(e, insn, g_off_u, A16_CMP, -1,     g_off_nat54, mask); return true; }
+        if (h == g_inlines.cmpu_x && ea_ok)
+                                   { EmitInlineArith16(e, insn, g_off_u, A16_CMP, MM_IDX, g_off_nat76, mask); return true; }
+    }
+
     return false;
 }
 

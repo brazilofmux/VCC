@@ -122,6 +122,7 @@ namespace BlockJit
         // (bit set = the write must run the full MemWrite8 so real
         // invalidation happens). Emitted code loads the bank POINTERS
         // at run time, so MMU rebuilds propagate with no re-emission.
+        uint16_t* jit_scratch16;                    // emitted-code spill slot
         unsigned char* const* fastmem_read_banks;   // gJitReadBanks[8]
         unsigned char* const* fastmem_write_banks;  // gJitWriteBanks[8]
         const unsigned char*  fastmem_watch_bitmap; // BlockCache::PageBitmapAddr()

@@ -42,7 +42,7 @@ DiskRom=1
 Disk#0=$WORK/sieve.dsk
 EOF
 
-VCC_INI="$WORK/bench.ini" VCC_FRAMESKIP=100 \
+VCC_INI="$WORK/bench.ini" VCC_FRAMESKIP=250 \
     "$REPO/build/vcc-headless" "$HOME/roms/coco3.rom" "$FRAMES" \
     $'LOADM"SIEVE\n~~~~~~~~~~EXEC\n' 2>/dev/null \
     | grep -E 'PRIMES|BENCH|realtime|effective' || true

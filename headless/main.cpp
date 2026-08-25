@@ -136,6 +136,12 @@ int main(int argc, char** argv)
 	const auto start = std::chrono::steady_clock::now();
 	for (int i = 0; i < frames; ++i)
 	{
+		// The last few frames always render, whatever the frameskip:
+		// VCC_SHOT_FILE reads the framebuffer, so the final screen
+		// must be real. (FrameSkip is draw-calls only - emulation
+		// timing is identical either way.)
+		if (i >= frames - 3 && EmuState.FrameSkip > 1)
+			EmuState.FrameSkip = 1;
 		if (type_text && i == 150)
 			HeadlessTypeText(type_text);
 		HeadlessKeyboardTick();
