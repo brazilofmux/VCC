@@ -133,8 +133,16 @@ LRESULT CALLBACK PrintMon(HWND, UINT , WPARAM , LPARAM );
 static BOOL MonState=FALSE;
 
 // Shift Row Col
+// Scanline-burst observer (coco3.cpp): any PIA0 access materializes the
+// hsync edges owed so far, so flag-polling loops see exact timing even
+// inside a multi-line CPU burst.
+extern void CoCoLineObserve();
+extern void CoCoLineObserveAndCut();
+
 unsigned char pia0_read(unsigned char port)
 {
+	CoCoLineObserve();
+
 	unsigned char dda,ddb;
 	dda=(rega[1] & 4);
 	ddb=(rega[3] & 4);
@@ -223,6 +231,11 @@ unsigned char pia1_read(unsigned char port)
 
 void pia0_write(unsigned char data,unsigned char port)
 {
+	// A control-register write can arm the hsync IRQ (CA1/CB1 enable
+	// bits), which creates a per-line obligation mid-burst: catch up
+	// and cut so the remaining lines deliver edges on time.
+	CoCoLineObserveAndCut();
+
 	unsigned char dda,ddb;
 	dda=(rega[1] & 4);
 	ddb=(rega[3] & 4);

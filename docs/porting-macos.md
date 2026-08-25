@@ -367,6 +367,48 @@ Diagnostics added: VCC_LOG_PC in vcc-headless (once-a-second register
 dump + bytes at PC) and a first-24-fetches trace in MC6809Exec behind
 the same variable.
 
+## The scanline-burst arc (2026-08-25): the Amdahl lever
+
+The per-scanline Exec slice (~57 cycles, two dozen instructions, then
+back through the dispatch loop) was the standing serial fraction. The
+measurement pass found something better than overhead: **the slice was
+gating the JIT tier itself.** A block whose total_cycles exceeds
+remaining+kBudgetSlack cannot run as a native thunk, and taken-trace
+superblocks exist precisely to be big - on the compiled-C sieve, 28%
+of all dispatcher entries were known-but-over-budget and fell into
+interpreter replay (VCC_BUDGET_STATS: over avg_block=76.6cyc vs
+avg_remaining=13.7cyc). The interpreter crumbs at 20-30x the cost per
+cycle dominated the wall-clock profile, and taken traces measured as a
+LOSS on that workload for exactly this reason.
+
+The fix: when nothing software-visible needs per-line service, run a
+whole section of lines as ONE CPUCycle call. Everything event-driven
+(GIME timer, audio sampling) already fires at exact nanosecond
+deadlines inside a slice of any length. The per-line residue - the PIA
+hsync flag and cartridge ticks - is materialized on demand: any guest
+access to PIA0, the GIME control block ($FF90-$FF97), or a cartridge
+port fires the owed HSYNC edge triples before the access proceeds
+(CoCoLineObserve). A mid-burst state change that creates a per-line
+obligation (arming the hsync IRQ, FDC motor-on raising tick demand)
+additionally hands the remaining lines to a per-line event-heap event
+and cuts the CPU slice (HD6309CutSlice: gCycleFor=CycleCounter plus a
+forced ChainBreak, healed at next exec entry; the unexecuted cycles
+return to CPUCycle as positive drift and re-run against the new
+deadline). Drawn frames keep the exact per-line render path - at
+FrameSkip=1 (SDL, realtime) nothing changes but the never-drawn
+blanking regions.
+
+Interleaved results: NitrOS-9 boot 4819x -> 9008x (+87%), compiled-C
+sieve 1801x -> 2755x (+53%), DECB boot flat (never budget-bound).
+Cycles per CPUExec went 49.7 -> 1541; over-budget replay dispatches
+fell 39x. VCC_VERIFY_PURE lockstep stays clean over both DECB and
+NitrOS-9 boots, and the full regression suite (becker, journal,
+drivewire) passes. VCC_NO_BURST is the kill switch.
+
+Next levers, from the post-change profile: MemRead8/MemWrite8 helper
+calls (inline coverage is 33%), BlockCache::InvalidateIfCached on the
+store path, and UpdateScreen32 costing ~5% even at VCC_FRAMESKIP=100.
+
 ## The DriveWire file-flow arc (pyDriveWire, 2026-08)
 
 Goal: reach files on the Mac from inside NitrOS-9 over the becker

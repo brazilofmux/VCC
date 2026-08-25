@@ -21,6 +21,8 @@ This file is part of VCC (Virtual Color Computer).
 
 void MC6809Init();
 int  MC6809Exec( int);
+int MC6809LiveCycles();
+void MC6809CutSlice();
 void MC6809Reset();
 void MC6809AssertInterupt(InterruptSource, Interrupt);
 void MC6809DeAssertInterupt(InterruptSource, Interrupt);

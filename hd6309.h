@@ -20,6 +20,8 @@ This file is part of VCC (Virtual Color Computer).
 
 void HD6309Init();
 int  HD6309Exec( int);
+int HD6309LiveCycles();
+void HD6309CutSlice();
 void HD6309Reset();
 void HD6309AssertInterupt(InterruptSource, Interrupt);
 void HD6309DeAssertInterupt(InterruptSource, Interrupt);

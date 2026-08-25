@@ -248,6 +248,27 @@ static inline void RecomputeChainBreak()
 		 cpu_state.ChainSyncWaiting || cpu_state.ChainHaltedPending) ? 1 : 0);
 }
 
+// Scanline-burst support (coco3.cpp): cycles consumed so far in the
+// current HD6309Exec call, readable mid-execution - the JIT syncs its
+// registerized counter to cpu_state around every helper call, so a
+// port handler always sees a current value.
+int HD6309LiveCycles()
+{
+	return CycleCounter;
+}
+
+// End the current HD6309Exec slice as soon as possible: the dispatcher
+// and replay loops test gCycleFor, and ChainBreak makes native chains
+// bail at their next transition or back-edge (bounded by one block).
+// The unexecuted remainder returns to CPUCycle as positive drift and
+// is re-run there against any newly scheduled deadline. ChainBreak is
+// recomputed at the next exec entry, so the forced value cannot leak.
+void HD6309CutSlice()
+{
+	gCycleFor = CycleCounter;
+	cpu_state.ChainBreak = 1;
+}
+
 static std::vector<unsigned short> CPUBreakpoints;
 static std::vector<unsigned short> CPUTraceTriggers;
 
@@ -257,6 +278,23 @@ static std::vector<unsigned short> CPUTraceTriggers;
 // cumulative.
 static uint64_t gJitBlockRuns = 0;
 static uint32_t gJitArenaFlushes = 0;
+// Budget-split probe (VCC_BUDGET_STATS): how dispatcher entries divide
+// between thunk-fitting blocks, known-but-over-budget blocks (replayed
+// interpreted), and unknown PCs - plus the cycle sizes involved, to
+// show how often the slice budget gates the JIT tier.
+static uint64_t gDispFit = 0, gDispOver = 0, gDispUnknown = 0;
+static uint64_t gDispOverCycles = 0, gDispOverRemaining = 0;
+static bool     gBudgetStats = false;
+static void BudgetStatsReport()
+{
+	fprintf(stderr,
+	        "[BUDGET] fit=%llu over=%llu unknown=%llu  over: avg_block=%.1fcyc avg_remaining=%.1fcyc\n",
+	        (unsigned long long)gDispFit, (unsigned long long)gDispOver,
+	        (unsigned long long)gDispUnknown,
+	        gDispOver ? (double)gDispOverCycles / (double)gDispOver : 0.0,
+	        gDispOver ? (double)gDispOverRemaining / (double)gDispOver : 0.0);
+}
+
 // Chain-stub transitions: block->block jumps that never returned to
 // the dispatcher. Incremented by emitted code (single-threaded CPU
 // loop, no atomicity needed). Interval-reset with the other stats.
@@ -814,7 +852,15 @@ void Bsr_R(const DecodedInst*);  void Bsr_E(const DecodedInst*);
 void Jsr_X(const DecodedInst*);
 
 void HD6309Init()
-{	//Call this first or RESET will core!
+{
+	static bool budget_probe_armed = false;
+	if (!budget_probe_armed && getenv("VCC_BUDGET_STATS"))
+	{
+		gBudgetStats = true;
+		atexit(BudgetStatsReport);
+		budget_probe_armed = true;
+	}
+	//Call this first or RESET will core!
 	// One-time setup for the JIT code arena. The level-1 emitter needs
 	// the address of PC_REG so it can pre-set PC before each handler
 	// call; the level-2 inline emitters also need the addresses of A,
@@ -8004,12 +8050,16 @@ int HD6309Exec(int CycleFor)
 	int PrevCycleCount = 0;
 	CycleCounter = 0;
 	gCycleFor = CycleFor;
+	// A prior HD6309CutSlice may have forced ChainBreak; restore truth.
+	RecomputeChainBreak();
 
 	if (DebuggerActive())
 		goto debugger_path;
 
-	// Fast path: no debugger overhead, with block execution
-	while (CycleCounter < CycleFor) {
+	// Fast path: no debugger overhead, with block execution.
+	// The bound reads gCycleFor (not the parameter) so HD6309CutSlice
+	// can end the slice from inside a port handler.
+	while (CycleCounter < gCycleFor) {
 
 
 		// One-compare gate: no line asserted, nothing in flight through
@@ -8052,10 +8102,11 @@ int HD6309Exec(int CycleFor)
 		// Try block execution: look up a cached block at the current PC.
 		{
 			const CachedBlock* block = blockCache.Lookup(PC_REG);
-			int remaining = CycleFor - CycleCounter;
+			int remaining = gCycleFor - CycleCounter;
 
 			if (block && block->total_cycles <= remaining + BlockJit::kBudgetSlack)
 			{
+				if (gBudgetStats) ++gDispFit;
 				// CRITICAL: if a recording is in progress, end it HERE before
 				// the cached sub-block dispatches. The recording's instructions
 				// up to this point are sequential from rec_start_pc_, so the
@@ -8227,10 +8278,16 @@ int HD6309Exec(int CycleFor)
 			// there through the normal path on a later visit.
 			if (block)
 			{
+				if (gBudgetStats)
+				{
+					++gDispOver;
+					gDispOverCycles += block->total_cycles;
+					gDispOverRemaining += (remaining > 0) ? remaining : 0;
+				}
 				if (blockCache.IsRecording())
 					blockCache.EndRecord(PC_REG, CycleCounter);
 
-				ReplayBlock(block, CycleFor);
+				ReplayBlock(block, gCycleFor);
 
 				if (JS_Ramp_Clock < 0xFFFF)
 					JS_Ramp_Clock += CycleCounter - PrevCycleCount;
@@ -8241,6 +8298,7 @@ int HD6309Exec(int CycleFor)
 			}
 
 			// No cached block: single-step and record.
+			if (gBudgetStats) ++gDispUnknown;
 			if (!blockCache.IsRecording())
 			{
 				blockCache.BeginRecord(PC_REG);

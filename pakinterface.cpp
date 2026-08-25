@@ -140,6 +140,10 @@ static void PakRegisterRomBlocks(slot_id_type /*SlotId*/,
 // transitions are picked up by the refresh after each real tick.
 static std::atomic<bool> gPakTickDemand{true};
 
+// Scanline-burst observers (coco3.cpp).
+extern void CoCoLineObserve();
+extern void CoCoLineObserveAndCut();
+
 static void RefreshPakTickDemand()   // call with gPakMutex held
 {
 	gPakTickDemand.store(gActiveCartrige->wants_horizontal_sync(),
@@ -189,8 +193,19 @@ void GetModuleStatus(SystemState *SMState)
 	gActiveCartrige->status(SMState->StatusLine, sizeof(SMState->StatusLine));
 }
 
+// Scanline-burst predicate (coco3.cpp): does the active cartridge want
+// per-line hsync ticks right now?
+bool PakTickDemandActive()
+{
+	return gPakTickDemand.load(std::memory_order_relaxed);
+}
+
 unsigned char PakReadPort (unsigned char port)
 {
+	// Burst catch-up BEFORE the lock: the observer may deliver owed
+	// hsync edges, and those take gPakMutex themselves via PakTimer.
+	CoCoLineObserve();
+
 	VCC::Util::section_locker lock(gPakMutex);
 
 	return gActiveCartrige->read_port(port);
@@ -198,10 +213,19 @@ unsigned char PakReadPort (unsigned char port)
 
 void PakWritePort(unsigned char Port,unsigned char Data)
 {
-	VCC::Util::section_locker lock(gPakMutex);
+	CoCoLineObserve();
 
-	gActiveCartrige->write_port(Port,Data);
-	RefreshPakTickDemand();
+	{
+		VCC::Util::section_locker lock(gPakMutex);
+		gActiveCartrige->write_port(Port,Data);
+		RefreshPakTickDemand();
+	}
+
+	// If this write just created per-line tick demand (e.g. the FDC
+	// motor turning on) mid-burst, the remaining lines must get their
+	// ticks on time - hand them to the per-line event and cut.
+	if (PakTickDemandActive())
+		CoCoLineObserveAndCut();
 }
 
 unsigned char PackMem8Read (unsigned short Address)

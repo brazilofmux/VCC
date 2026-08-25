@@ -21,6 +21,7 @@
 #include <vcc/bus/cartridge_loader.h>
 
 void PakTimer();
+bool PakTickDemandActive();
 unsigned char PakReadPort (unsigned char);
 void PakWritePort(unsigned char,unsigned char);
 unsigned char PackMem8Read (unsigned short);

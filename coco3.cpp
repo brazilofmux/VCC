@@ -140,6 +140,144 @@ using namespace std;
 
 _inline void CPUCycle(double nanoseconds);
 
+
+void UpdateAudio();
+bool PakTickDemandActive();
+
+// ---------------------------------------------------------------------------
+// Scanline bursts: when nothing software-visible needs per-line service
+// (no GIME horizontal interrupt, no PIA hsync IRQ armed, no cartridge
+// hsync-tick demand, and the frame's draw calls are being skipped), the
+// CPU runs a whole run of lines as ONE CPUCycle call. That gives the
+// block-cache dispatcher a budget of thousands of cycles instead of ~57,
+// so large trace blocks run as native thunks instead of falling into
+// interpreter replay at every slice seam - measured at 28% of dispatch
+// entries on compiled-C workloads before this change.
+//
+// Correctness is preserved by observation, not by hope:
+//  - Everything already event-driven (GIME timer, audio sampling) fires
+//    at exact nanosecond deadlines inside CPUCycle regardless of slice
+//    length.
+//  - The PIA hsync flag and cartridge ticks are materialized ON DEMAND:
+//    any guest access to PIA0, the GIME control registers, or a
+//    cartridge port calls CoCoLineObserve(), which fires the HSYNC edge
+//    triples owed up to the current cycle before the access proceeds.
+//  - A mid-burst state change that creates a per-line obligation (the
+//    guest arms the hsync IRQ, or a cartridge starts wanting ticks)
+//    calls CoCoLineObserveAndCut(): owed edges fire, a per-line heap
+//    event takes over edge delivery for the burst's remaining lines,
+//    and the CPU slice is cut so the event heap deadline is honored
+//    immediately (the unexecuted cycles hand back to CPUCycle's loop).
+//  - Any lines still owed when the burst call returns get their edges
+//    fired then, in the same order the per-line path would have used.
+static struct
+{
+	bool   active = false;
+	int    linesTotal = 0;
+	int    linesFired = 0;
+	double nanosDone = 0;      // completed CPU slices within the burst
+	bool   eventArmed = false; // per-line heap event took over edges
+} gBurst;
+static int evtBurstLine = -1;
+
+static int CPULiveCycles()
+{
+	return (EmuState.CpuType == 1) ? HD6309LiveCycles() : MC6809LiveCycles();
+}
+static void CPUCutSlice()
+{
+	if (EmuState.CpuType == 1) HD6309CutSlice(); else MC6809CutSlice();
+}
+
+// One line's worth of hsync edges, exactly as the per-line path fires
+// them at end of line: falling edge, cartridge tick, rising edge.
+static void FireLineEdges()
+{
+	HSYNC(0);
+	PakTimer();
+	HSYNC(1);
+	UpdateAudio();
+}
+
+static void OnBurstLine()
+{
+	if (gBurst.active && gBurst.linesFired < gBurst.linesTotal)
+	{
+		FireLineEdges();
+		++gBurst.linesFired;
+	}
+	if (!gBurst.active || gBurst.linesFired >= gBurst.linesTotal)
+		eventHeap.SetEnabled(evtBurstLine, false);
+}
+
+// Nanoseconds of guest time elapsed inside the current burst, including
+// the live position within the CPU slice now executing.
+static double BurstLiveNanos()
+{
+	return gBurst.nanosDone + (double)CPULiveCycles() / CyclesPerNano;
+}
+
+void CoCoLineObserve()
+{
+	if (!gBurst.active || gBurst.eventArmed)
+		return;
+	int owed = (int)(BurstLiveNanos() / NanosPerLine);
+	if (owed > gBurst.linesTotal)
+		owed = gBurst.linesTotal;
+	while (gBurst.linesFired < owed)
+	{
+		FireLineEdges();
+		++gBurst.linesFired;
+	}
+}
+
+void CoCoLineObserveAndCut()
+{
+	if (!gBurst.active || gBurst.eventArmed)
+		return;
+	CoCoLineObserve();
+	// Hand the burst's remaining lines to a per-line heap event, phase
+	// aligned to the next line boundary, and end the CPU slice so the
+	// event heap deadline takes effect now rather than at burst end.
+	if (gBurst.linesFired < gBurst.linesTotal)
+	{
+		const double live = BurstLiveNanos();
+		double phase = NanosPerLine - fmod(live, NanosPerLine);
+		eventHeap.SetRearmDelta(evtBurstLine, NanosPerLine);
+		eventHeap.SetDeadline(evtBurstLine, phase);
+		eventHeap.SetEnabled(evtBurstLine, true);
+		gBurst.eventArmed = true;
+	}
+	CPUCutSlice();
+}
+
+static bool CanBurstLines()
+{
+	// VCC_NO_BURST: kill switch for A/B measurement and refuge.
+	static const bool no_burst = getenv("VCC_NO_BURST") != nullptr;
+	return !no_burst && !HorzInteruptEnabled && !PiaHsyncIrqArmed() &&
+	       !PakTickDemandActive();
+}
+
+static void BurstLines(int count)
+{
+	gBurst.active = true;
+	gBurst.linesTotal = count;
+	gBurst.linesFired = 0;
+	gBurst.nanosDone = 0;
+	gBurst.eventArmed = false;
+	CPUCycle(NanosPerLine * count);
+	gBurst.active = false;
+	if (gBurst.eventArmed)
+		eventHeap.SetEnabled(evtBurstLine, false);
+	// Edges still owed (bulk case: all of them) fire here, in order.
+	while (gBurst.linesFired < gBurst.linesTotal)
+	{
+		FireLineEdges();
+		++gBurst.linesFired;
+	}
+}
+
 void UpdateAudio()
 {
 #if USE_DEBUG_AUDIOTAPE
@@ -211,6 +349,21 @@ void DebugDrawAudio()
 }
 
 
+// Run `count` lines that need no draw calls: one burst when the burst
+// predicate allows, the classic per-line path otherwise.
+static void RunBlankLines(SystemState* st, int count)
+{
+	if (count <= 0)
+		return;
+	if (CanBurstLines())
+	{
+		BurstLines(count);
+		return;
+	}
+	for (int i = 0; i < count; ++i)
+		HLINE();
+}
+
 float RenderFrame (SystemState *RFState)
 {
 	static unsigned int FrameCounter=0;
@@ -255,25 +408,16 @@ float RenderFrame (SystemState *RFState)
 	VSYNC(0);
 
 	// Four lines of blank during VSYNC low
-	for (RFState->LineCounter = 0; RFState->LineCounter < 4; RFState->LineCounter++)
-	{
-		HLINE();
-	}
+	RunBlankLines(RFState, 4);
 
 	// VSYNC goes High
 	VSYNC(1);
 
 	// Three lines of blank after VSYNC goes high
-	for (RFState->LineCounter = 0; RFState->LineCounter < 3; RFState->LineCounter++)
-	{
-		HLINE();
-	}
+	RunBlankLines(RFState, 3);
 
 	// Top Border actually begins here, but is offscreen
-	for (RFState->LineCounter = 0; RFState->LineCounter < TopOffScreen; RFState->LineCounter++)
-	{
-		HLINE();
-	}
+	RunBlankLines(RFState, TopOffScreen);
 
 	if (!(FrameCounter % RFState->FrameSkip))
 	{
@@ -283,29 +427,35 @@ float RenderFrame (SystemState *RFState)
 
 	// Visible Top Border begins here. (Remove 4 lines for centering)
 	RFState->Debugger.TraceCaptureScreenEvent(VCC::TraceEvent::ScreenTopBorder, 0);
+	if (FrameCounter % RFState->FrameSkip)
+		RunBlankLines(RFState, TopBoarder);
+	else
 	for (RFState->LineCounter = 0; RFState->LineCounter < TopBoarder; RFState->LineCounter++)
 	{
 		HLINE();
-		if (!(FrameCounter % RFState->FrameSkip))
-			DrawTopBoarder[RFState->BitDepth](RFState);
+		DrawTopBoarder[RFState->BitDepth](RFState);
 	}
 
 	// Main Screen begins here: LPF = 192, 200 (actually 199), 225
 	RFState->Debugger.TraceCaptureScreenEvent(VCC::TraceEvent::ScreenRender, 0);
+	if (FrameCounter % RFState->FrameSkip)
+		RunBlankLines(RFState, LinesperScreen);
+	else
 	for (RFState->LineCounter = 0; RFState->LineCounter < LinesperScreen; RFState->LineCounter++)		
 	{
 		HLINE();
-		if (!(FrameCounter % RFState->FrameSkip))
-			UpdateScreen[RFState->BitDepth](RFState);
+		UpdateScreen[RFState->BitDepth](RFState);
 	}
 
 	// Bottom Border begins here.
 	RFState->Debugger.TraceCaptureScreenEvent(VCC::TraceEvent::ScreenBottomBorder, 0);
+	if (FrameCounter % RFState->FrameSkip)
+		RunBlankLines(RFState, BottomBoarder);
+	else
 	for (RFState->LineCounter=0;RFState->LineCounter < BottomBoarder;RFState->LineCounter++)
 	{
 		HLINE();
-		if (!(FrameCounter % RFState->FrameSkip))
-			DrawBottomBoarder[RFState->BitDepth](RFState);
+		DrawBottomBoarder[RFState->BitDepth](RFState);
 	}
 
 	if (!(FrameCounter % RFState->FrameSkip))
@@ -316,10 +466,7 @@ float RenderFrame (SystemState *RFState)
 	}
 
 	// Bottom Border continues but is offscreen
-	for (RFState->LineCounter = 0; RFState->LineCounter < BottomOffScreen; RFState->LineCounter++)
-	{
-		HLINE();
-	}
+	RunBlankLines(RFState, BottomOffScreen);
 
 	switch (SoundOutputMode)
 	{
@@ -511,7 +658,7 @@ _inline void CPUCycle(double NanosToRun)
 		}
 
 		const bool hitsDeadline = (nextDeadline <= NanosThisLine);
-		const double nanosToConsume = hitsDeadline ? nextDeadline : NanosThisLine;
+		double nanosToConsume = hitsDeadline ? nextDeadline : NanosThisLine;
 
 		// Convert nanos to CPU cycles and execute
 		CyclesThisLine = CycleDrift + nanosToConsume * CyclesPerNano;
@@ -520,6 +667,23 @@ _inline void CPUCycle(double NanosToRun)
 			const double whole = floor(CyclesThisLine);
 			if (cycle_stats) { ++stat_execs; stat_cycles += (uint64_t)whole; }
 			CycleDrift = CPUExec((int)whole) + (CyclesThisLine - whole);
+			// A slice cut (CoCoLineObserveAndCut) returns unexecuted
+			// whole cycles as positive drift. Hand them back as nanos
+			// so this loop re-slices them - against the per-line event
+			// deadline the cut just armed. Never true otherwise: the
+			// normal exit overshoots (drift <= 0) plus a fraction.
+			if (CycleDrift >= 1)
+			{
+				const double back = floor(CycleDrift);
+				// Shrink this slice to what actually executed: the
+				// remainder then stays in NanosThisLine for the next
+				// loop pass, and AdvanceTime below sees only the
+				// guest time that really elapsed.
+				nanosToConsume -= back / CyclesPerNano;
+				if (nanosToConsume < 0)
+					nanosToConsume = 0;
+				CycleDrift -= back;
+			}
 		}
 		else
 			CycleDrift = CyclesThisLine;
@@ -532,6 +696,8 @@ _inline void CPUCycle(double NanosToRun)
 		// Advance time; only scan for expired events when this slice
 		// actually reached the nearest deadline.
 		NanosThisLine -= nanosToConsume;
+		if (gBurst.active)
+			gBurst.nanosDone += nanosToConsume;
 		eventHeap.AdvanceTime(nanosToConsume);
 		if (hitsDeadline)
 			eventHeap.FireExpired(0);
@@ -605,6 +771,7 @@ void MiscReset()
 	eventHeap.Clear();
 	evtTimerInterrupt = eventHeap.Schedule("GIMETimer", 0, 0, OnTimerInterrupt, false);
 	evtAudioSample = eventHeap.Schedule("AudioSample", 0, 0, OnAudioSample, false);
+	evtBurstLine = eventHeap.Schedule("BurstLine", 0, 0, OnBurstLine, false);
 	return;
 }
 

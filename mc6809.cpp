@@ -488,12 +488,26 @@ static inline bool DebuggerActive()
 		|| EmuState.Debugger.IsTracingEnabled();
 }
 
+// Scanline-burst support (coco3.cpp): see the HD6309 versions. The
+// 6809 core has no native chains, so a checked flag in the dispatch
+// loop is the whole cut mechanism.
+static bool gCutRequested = false;
+int MC6809LiveCycles()
+{
+	return CycleCounter;
+}
+void MC6809CutSlice()
+{
+	gCutRequested = true;
+}
+
 // Do instructions for CycleFor cycles. Return number cycles over.
 int MC6809Exec(int CycleFor)
 {
 	extern int JS_Ramp_Clock;
 	int PrevCycleCount = 0;
 	CycleCounter=0;
+	gCutRequested = false;
 
 	if (DebuggerActive())
 		goto debugger_path;
@@ -504,7 +518,7 @@ int MC6809Exec(int CycleFor)
 		log_fetches = std::getenv("VCC_LOG_PC") ? 24 : 0;
 
 	// Fast path: no debugger overhead, with block execution
-	while (CycleCounter<CycleFor) {
+	while (CycleCounter<CycleFor && !gCutRequested) {
 
 		if (log_fetches > 0)
 		{

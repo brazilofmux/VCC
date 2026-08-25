@@ -57,8 +57,20 @@ void GimeSetKeyboardInteruptState(unsigned char State)
 	KeyboardInteruptEnabled = !!State;
 }
 
+// Scanline-burst observer (coco3.cpp).
+extern void CoCoLineObserveAndCut();
+
 void GimeWrite(unsigned char port,unsigned char data)
 {
+	// Writes to the GIME control block ($FF90-$FF97: INIT0/1, IRQ and
+	// FIRQ enables, timer) can arm per-line interrupt sources or
+	// change machine timing mid-burst; catch up owed hsync edges and
+	// cut the CPU slice so the change takes effect at the exact line.
+	// MMU bank pokes ($FFA0+) and palette/video-mode writes stay burst
+	// transparent - they have no per-line timing obligation.
+	if (port >= 0x90 && port <= 0x97)
+		CoCoLineObserveAndCut();
+
 	GimeRegisters[port]=data;
 
 	switch (port)
