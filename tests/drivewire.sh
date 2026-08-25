@@ -51,10 +51,21 @@ grep -q 'Shell' "$W/noserv.txt" || bad "baked VHD did not boot without server"
 ok "baked VHD boots serverless, modules resident"
 
 # 4. Start pyDriveWire and push files both ways through /x1.
+# The server subshell gets its OWN stdio (never the script's pipes -
+# an inherited stderr would hold the harness's output pipe open long
+# after this script exits), and cleanup kills the actual server
+# processes, not just the subshell wrapper.
 ( tail -f /dev/null | "$PYDW/.venv/bin/python" -u "$PYDW/pyDriveWire.py" \
-      -a -p 65510 "$W/dw0.dsk" "$W/dw1.dsk" >"$W/pydw.log" 2>&1 ) &
+      -a -p 65510 "$W/dw0.dsk" "$W/dw1.dsk" ) </dev/null >"$W/pydw.log" 2>&1 &
 SERVER=$!
-trap 'kill $SERVER 2>/dev/null || true' EXIT
+disown $SERVER 2>/dev/null || true
+cleanup() {
+    pkill -P $SERVER 2>/dev/null || true
+    kill $SERVER 2>/dev/null || true
+    pkill -f "pyDriveWire.py -a -p 65510" 2>/dev/null || true
+    wait $SERVER 2>/dev/null || true
+}
+trap cleanup EXIT
 sleep 2
 
 run read.txt $'dir /x1\n~~~~~~list /x1/hello.txt\n~~~~~~~~~~'

@@ -38,9 +38,16 @@ fi
 
 LOG="${TMPDIR:-/tmp}/pydrivewire.log"
 ( tail -f /dev/null | "$PYDW/.venv/bin/python" -u "$PYDW/pyDriveWire.py" \
-      -a -p 65504 "${DISKS[@]}" >"$LOG" 2>&1 ) &
+      -a -p 65504 "${DISKS[@]}" ) </dev/null >"$LOG" 2>&1 &
 SERVER=$!
-trap 'kill $SERVER 2>/dev/null || true' EXIT
+disown $SERVER 2>/dev/null || true
+cleanup() {
+    pkill -P $SERVER 2>/dev/null || true
+    kill $SERVER 2>/dev/null || true
+    pkill -f "pyDriveWire.py -a -p 65504" 2>/dev/null || true
+    wait $SERVER 2>/dev/null || true
+}
+trap cleanup EXIT
 sleep 1
 kill -0 $SERVER 2>/dev/null || { echo "dw-serve: server died - see $LOG" >&2; exit 1; }
 echo "dw-serve: pyDriveWire up on 65504 (${DISKS[*]}), log: $LOG"
