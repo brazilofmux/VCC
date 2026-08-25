@@ -121,6 +121,13 @@ builds on it:
 - `tests/becker.sh` — DriveWire transport regression
 - `tests/journal.sh` — the encrypted journal, end to end
 - `tests/drivewire.sh` — Mac ↔ NitrOS-9 file flow over the wire
+- `tests/smoke.sh` — DECB / NitrOS-9 / Basic09 boot assertions
+
+On Windows, PowerShell twins of the suite run against the CMake x64
+build: `tests/smoke.ps1`, `tests/journal.ps1`, `tests/becker.ps1`, and
+`tests/bench/run.ps1`. The guest builds use the ECR cmoc image
+imported as a WSL1 distro (`tools/ecr-to-wsl.ps1`), and becker's
+loopback listener is a .NET `TcpListener` — no Python needed.
 
 Useful environment knobs (tooling overrides, never required):
 
