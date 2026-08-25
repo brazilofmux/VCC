@@ -22,7 +22,11 @@ This file is part of VCC (Virtual Color Computer).
 // shared machine bootstrap and device-absent stubs live in shell/.
 
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
+
+int HD6309LiveCycles();
 
 // ---- keyboard: scripted matrix ----
 //
@@ -118,6 +122,18 @@ void HeadlessKeyboardTick()
 
 extern "C" unsigned char vccKeyboardGetScan(unsigned char Col)
 {
+	// Diagnostic (VCC_LOG_SCAN): one line per matrix scan with the
+	// live cycle position and feeder state - diffing these between
+	// CPU tiers pinpoints guest keyboard-sampling divergence (this is
+	// what caught the stale-latch phantom IRQ under scanline bursts).
+	static const bool log_scan = getenv("VCC_LOG_SCAN") != nullptr;
+	if (log_scan)
+	{
+		static long n = 0;
+		std::fprintf(stderr, "[SCAN %ld] col=%02X cyc=%d idx=%zu ph=%d\n",
+		             n++, Col, HD6309LiveCycles(),
+		             gTypeIndex, gTypePhase);
+	}
 	unsigned char rows = 0;
 	if (gTypeIndex < gTypeText.size() && gTypePhase < kHoldFrames)
 	{

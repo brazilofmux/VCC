@@ -241,10 +241,20 @@ static int& gCycleFor = cpu_state.ChainCycleFor;
 static inline void RecomputeChainBreak()
 {
 	const unsigned char OR = cpu_state.ChainIntOR;
+	// A latch out of step with the lines must also break the chain:
+	// the dispatcher's per-pass Clock() is what drains a stale stage,
+	// and a chain that never comes home leaves a delivered interrupt
+	// sitting in Q. The next bail - a whole scanline burst later -
+	// would then re-deliver it as a phantom after RTI cleared the
+	// mask. Two passes settle the latch (Q=D=lines) and the recompute
+	// after them lets the chain re-link.
+	const bool latch_settling = (cpu_state.ChainIntLatch.D != OR) ||
+	                            (cpu_state.ChainIntLatch.Q != OR);
 	cpu_state.ChainBreak = (unsigned char)(
 		((OR & (1u << INT_NMI)) ||
 		 ((OR & (1u << INT_FIRQ)) && !cpu_state.cc[F]) ||
 		 ((OR & (1u << INT_IRQ)) && !cpu_state.cc[I]) ||
+		 latch_settling ||
 		 cpu_state.ChainSyncWaiting || cpu_state.ChainHaltedPending) ? 1 : 0);
 }
 
@@ -8091,6 +8101,11 @@ int HD6309Exec(int CycleFor)
 			// in-progress block recording before executing the ISR stream.
 			if (interrupted && blockCache.IsRecording())
 				blockCache.CancelRecord();
+
+			// The latch just clocked (and delivery may have changed the
+			// masks), so re-derive ChainBreak: once the latch settles to
+			// the lines, native chains may link again.
+			RecomputeChainBreak();
 		}
 
 		if (SyncWaiting == 1)
@@ -9088,7 +9103,10 @@ void setcc (unsigned char bincc)
 	ccbits = bincc;
 	for (bit=0;bit<=7;bit++)
 		cc[bit]=!!(bincc & (1<<bit));
-	return;
+	// The F/I masks may just have changed: a pending line can become
+	// deliverable (ANDCC/RTI/CWAI unmask), and a native chain must see
+	// that through ChainBreak or delivery waits for the next budget
+	// bail - a whole scanline burst in the worst case.
 	RecomputeChainBreak();
 }
 
