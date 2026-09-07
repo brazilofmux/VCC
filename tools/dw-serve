@@ -10,8 +10,9 @@
 # tools/dw-bake so /x0 and /x1 exist at boot. The server is killed
 # when VCC exits. Inside OS-9, DW drive 0 is /x0 and drive 1 is /x1;
 # on the Mac the same images are readable with ToolShed ("os9 dir
-# ~/coco/dw/drive1.dsk"). Never touch /x0//x1 without the server -
-# the driver polls with interrupts masked and the machine freezes.
+# ~/coco/dw/drive1.dsk"). Without the server, /x0 and /x1 error
+# (checksum/protocol) instead of hanging; still start the server
+# first if you actually want the disks.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PYDW="$HOME/g/pyDriveWire"

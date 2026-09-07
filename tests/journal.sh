@@ -35,6 +35,13 @@ podman run --rm -v "$W":/work localhost/cmoc:freshen sh -c '
     os9 attr -q -e -pe -r -pr j.dsk,CMDS/seektest' >/dev/null
 ok "container build"
 
+# coco-run must pick up chacha.c / os9sys.c beside journal.c.
+tools/coco-run --os9 apps/journal/journal.c >/dev/null
+podman run --rm -v "${TMPDIR:-/tmp}/coco-run/journal":/work localhost/cmoc:freshen \
+    sh -c 'os9 dir /work/journal.dsk,CMDS' | grep -q journal \
+    || bad "coco-run sibling .c (CMDS/journal missing)"
+ok "coco-run sibling .c files"
+
 BOOT=$'DOS\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~chx /d1/cmds\n~~'
 run() {  # run "<keys after boot>" <screen file>
     VCC_DISK1="$W/j.dsk" VCC_FRAMESKIP=100 VCC_SHOT_TEXT="$W/$2" \
@@ -75,5 +82,16 @@ if strings "$W/j.dsk" | grep -qi 'secret entry'; then
     bad "plaintext found on disk image"
 fi
 ok "ciphertext only on disk"
+
+# Day files are public-readable so ToolShed can copy ciphertext off
+# the image (error 214 was owner-only attrs).
+day=$(grep -oE 'Journal for [0-9]{4}/[0-9]{2}/[0-9]{2}' "$W/w.txt" | head -1 \
+      | awk '{print $3}' | tr -d '/')
+[ -n "$day" ] || bad "could not parse journal date from screen"
+podman run --rm -v "$W":/work localhost/cmoc:freshen \
+    sh -c "os9 copy /work/j.dsk,$day /work/day.bin" >/dev/null \
+    || bad "os9 copy of day file (public-read attrs)"
+[ -s "$W/day.bin" ] || bad "copied day file was empty"
+ok "day file public-readable ($day)"
 
 echo "journal: PASS"

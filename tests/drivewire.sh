@@ -45,9 +45,10 @@ run() {  # run <screenfile> <keys-after-boot>
         "$HOME/roms/coco3.rom" 140000 \
         $'DOS\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~'"$2" >/dev/null 2>&1
 }
-run noserv.txt $'mdir\n~~~~~~~~~~'
+run noserv.txt $'mdir\n~~~~~~dir /x0\n~~~~~~~~~~'
 grep -q 'rbdw' "$W/noserv.txt" || bad "DW modules not resident after bake"
 grep -q 'Shell' "$W/noserv.txt" || bad "baked VHD did not boot without server"
+grep -qi 'error' "$W/noserv.txt" || bad "dir /x0 without server should error, not hang"
 ok "baked VHD boots serverless, modules resident"
 
 # 4. Start pyDriveWire and push files both ways through /x1.

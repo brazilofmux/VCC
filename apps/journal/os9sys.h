@@ -25,5 +25,10 @@ int  os9_time(unsigned char* buf);
 // 32-bit seek and file-size (I$Seek / I$GetStt SS.Size).
 int  os9_seek(int pathnum, unsigned long pos);
 long os9_filesize(int pathnum);
+// SCF PD.OPT (32 bytes): I$GetStt/I$SetStt SS.Opt. PD.EKO is byte 4.
+int  os9_getopt(int pathnum, unsigned char* buf);
+int  os9_setopt(int pathnum, unsigned char* buf);
+// I$GetStt SS.ScSiz: window columns and rows.
+int  os9_scrnsize(int pathnum, unsigned* cols, unsigned* rows);
 
 #endif

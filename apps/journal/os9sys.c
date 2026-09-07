@@ -307,3 +307,79 @@ os9fs_out:
     if (gErr) { os9_errno = gErr; return -1; }
     return ((long)gPosHi << 16) | (long)gPosLo;
 }
+
+int os9_getopt(int pathnum, unsigned char* buf)
+{
+    gByteA = (unsigned char)pathnum; gBuf = buf; gErr = 0;
+    asm
+    {
+        lda   :gByteA
+        ldb   #0            // SS.Opt
+        ldx   :gBuf
+        swi2
+        fcb   $8D           // I$GetStt
+        bcc   os9go_ok
+        stb   :gErr
+        bra   os9go_done
+os9go_ok:
+        clrb
+        stb   :gErr
+os9go_done:
+    }
+    if (gErr) { os9_errno = gErr; return -1; }
+    return 0;
+}
+
+int os9_setopt(int pathnum, unsigned char* buf)
+{
+    gByteA = (unsigned char)pathnum; gBuf = buf; gErr = 0;
+    asm
+    {
+        lda   :gByteA
+        ldb   #0            // SS.Opt
+        ldx   :gBuf
+        swi2
+        fcb   $8E           // I$SetStt
+        bcc   os9so_ok
+        stb   :gErr
+        bra   os9so_done
+os9so_ok:
+        clrb
+        stb   :gErr
+os9so_done:
+    }
+    if (gErr) { os9_errno = gErr; return -1; }
+    return 0;
+}
+
+int os9_scrnsize(int pathnum, unsigned* cols, unsigned* rows)
+{
+    gByteA = (unsigned char)pathnum;
+    gErr = 0;
+    // SS.ScSiz ($26) returns columns in X and rows in Y. Y is also
+    // CMOC's static-data pointer, so it is saved around the call.
+    asm
+    {
+        lda   :gByteA
+        ldb   #$26          // SS.ScSiz
+        pshs  y
+        swi2
+        fcb   $8D           // I$GetStt
+        bcs   os9ss_err
+        stx   :gPosHi
+        tfr   y,d
+        puls  y
+        std   :gPosLo
+        clrb
+        stb   :gErr
+        bra   os9ss_done
+os9ss_err:
+        puls  y
+        stb   :gErr
+os9ss_done:
+    }
+    if (gErr) { os9_errno = gErr; return -1; }
+    *cols = gPosHi;
+    *rows = gPosLo;
+    return 0;
+}

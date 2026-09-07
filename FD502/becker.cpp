@@ -202,6 +202,13 @@ unsigned char becker_read(unsigned short port)
 #endif
 				return 2;
 			}
+			// dwio_becker's DWRead polls $FF41 with interrupts masked
+			// and no timeout. A missing server used to freeze the
+			// guest. Report "data ready" so the read completes with
+			// dummy zeros and the transfer fails (checksum/protocol)
+			// instead of hanging. Live connections still yield below.
+			if (dwSocket == 0 || retry)
+				return 2;
 #ifndef _WIN32
 			// The emulated CPU can run thousands of times faster than
 			// real time, which shrinks the DriveWire driver's
@@ -213,7 +220,7 @@ unsigned char becker_read(unsigned short port)
 			// when data is flowing, and the yield is capped (~1s of
 			// wall time per wait) so a mute server degrades to the
 			// driver's own fast timeout instead of stalling emulation.
-			if (dwSocket != 0 && !retry && ++empty_polls > 16 && empty_polls < 20016)
+			if (++empty_polls > 16 && empty_polls < 20016)
 				std::this_thread::sleep_for(std::chrono::microseconds(50));
 #endif
 			return 0;

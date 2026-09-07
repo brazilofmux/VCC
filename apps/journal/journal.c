@@ -29,25 +29,128 @@ Licensed under the GNU GPL v3 or later; see <http://www.gnu.org/licenses/>.
 #include "os9sys.h"
 
 #define MAX_ENTRY 1536
+// Owner read+write and public read: ciphertext is still encrypted,
+// but ToolShed on the Mac can copy the day file off the VHD.
+#define ATTR_FILE 0x0B
 
 static cc_u32 gKey[8];
 static unsigned char gDir[64] = "/dd/JOURNAL";
 static unsigned char gFile[96];
 static unsigned char gPlain[MAX_ENTRY + 8];
 static unsigned char gRecord[MAX_ENTRY + 32];
+static unsigned gCols = 80;
 
-// Read one line from stdin via I$ReadLn: the SCF line editor handles
-// backspace etc. and the count includes the terminating CR, which we
-// strip. Returns the length, or -1 on EOF/error.
-static int get_line(char* buf, unsigned max)
+static void putch(unsigned char c)
 {
-    int n = os9_readln(0, buf, max - 1);
-    if (n <= 0)
-        return -1;
-    if (buf[n - 1] == '\r')
-        --n;
-    buf[n] = 0;
-    return n;
+    os9_write(1, &c, 1);
+}
+
+// Erase the last buffered character on screen. Tracks wrap: SCF's
+// own editor does not, so a backspace after a wrap left a blank row
+// and the next line of input landed after the gap.
+static void erase_one(unsigned* len, unsigned* col)
+{
+    unsigned i;
+    if (*len == 0)
+        return;
+    --*len;
+    if (*col > 0)
+    {
+        putch(0x08);
+        putch(' ');
+        putch(0x08);
+        --*col;
+        return;
+    }
+    // col==0: sitting on the wrap row. Delete that row, sit on the
+    // previous line's last column, wipe the character without writing
+    // a space that would wrap again.
+    putch(0x1F);
+    putch(0x31);
+    putch(0x09);
+    for (i = 1; i < gCols; ++i)
+        putch(0x06);
+    putch(0x04);
+    *col = gCols - 1;
+}
+
+// Character-at-a-time line editor. echo=0 hides the passphrase.
+// Returns the length, or -1 on EOF/error. Does not store the CR.
+static int get_line(char* buf, unsigned max, unsigned echo)
+{
+    unsigned len = 0;
+    unsigned col = 0;
+    unsigned char opt[32];
+    unsigned char eko = 1;
+    unsigned char ch;
+    unsigned have_opt = 0;
+    int n;
+
+    if (os9_getopt(0, opt) == 0)
+    {
+        have_opt = 1;
+        eko = opt[4];
+        opt[4] = 0;
+        os9_setopt(0, opt);
+    }
+
+    for (;;)
+    {
+        n = os9_read(0, &ch, 1);
+        if (n <= 0)
+        {
+            buf[len] = 0;
+            if (have_opt) { opt[4] = eko; os9_setopt(0, opt); }
+            return len ? (int)len : -1;
+        }
+        if (ch == '\r')
+        {
+            buf[len] = 0;
+            // A line that filled the width exactly already wrapped
+            // onto the next row; another CR would skip a line.
+            if (!echo || !(col == 0 && len > 0))
+                putch('\r');
+            if (have_opt) { opt[4] = eko; os9_setopt(0, opt); }
+            return (int)len;
+        }
+        if (ch == 8 || ch == 0x7F || ch == 0x1D)
+        {
+            if (len == 0)
+                continue;
+            if (echo)
+                erase_one(&len, &col);
+            else
+                --len;
+            continue;
+        }
+        if (ch == 0x18)
+        {
+            if (echo)
+            {
+                while (len)
+                    erase_one(&len, &col);
+            }
+            else
+                len = 0;
+            continue;
+        }
+        if (ch < 32)
+            continue;
+        if (len + 1 >= max)
+        {
+            if (echo)
+                putch(7);
+            continue;
+        }
+        buf[len++] = (char)ch;
+        if (echo)
+        {
+            putch(ch);
+            ++col;
+            if (col == gCols)
+                col = 0;
+        }
+    }
 }
 
 static void derive_key(const char* pass)
@@ -105,7 +208,7 @@ static int write_entry(void)
     memcpy(gPlain, "DOOGIE01", 8);
     for (;;)
     {
-        n = get_line(line, sizeof(line));
+        n = get_line(line, sizeof(line), 1);
         if (n < 0)
             break;
         if (n == 1 && line[0] == '.')
@@ -131,7 +234,7 @@ static int write_entry(void)
     journal_path(day);
     p = os9_open((char*)gFile, 3);
     if (p < 0)
-        p = os9_create((char*)gFile, 0x03);
+        p = os9_create((char*)gFile, ATTR_FILE);
     if (p < 0) { printf("cannot open %s (error %u)\n", (char*)gFile, os9_errno); return 1; }
     size = os9_filesize(p);
     if (size < 0) size = 0;
@@ -258,8 +361,14 @@ int main(int argc, char* argv[])
     }
     printf("PERSONAL JOURNAL\n================\n");
 
+    {
+        unsigned cols, rows;
+        if (os9_scrnsize(1, &cols, &rows) == 0 && cols >= 2 && cols < 256)
+            gCols = cols;
+    }
+
     printf("Passphrase: ");
-    if (get_line(pass, sizeof(pass)) <= 0)
+    if (get_line(pass, sizeof(pass), 0) <= 0)
     {
         printf("No passphrase, no journal.\n");
         return 1;

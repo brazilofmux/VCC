@@ -490,9 +490,10 @@ and the road there surfaced three findings worth keeping:
   rbdw + dwio_becker + x0/x1 there in place (idempotent, reversible);
   `tools/dw-serve` starts pyDriveWire and launches vcc-sdl with
   `VCC_DW=1`; `tests/drivewire.sh` proves the round trip on a
-  copy-on-write clone of the VHD. One sharp edge, same as real
-  hardware: touching /x0 or /x1 with no server connected freezes the
-  machine (the driver polls with interrupts masked).
+  copy-on-write clone of the VHD. dwio_becker polls $FF41 with
+  interrupts masked and no timeout; with no server the becker port
+  now reports "data ready" so the read completes with dummy zeros
+  and the transfer fails instead of freezing the guest.
 
 Smoke tests per AGENTS.md conventions: boot path, disk attach, cartridge
 load, keyboard input, debugger flow — plus OS-9 Level 2 boot and Basic09,

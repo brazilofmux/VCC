@@ -8,8 +8,10 @@
 #   tools/coco-run --os9 prog.b09     BASIC09 source: basic09 loads AND runs it
 #
 # Accepts C (CMOC), assembly (.asm/.s via lwasm --decb), and BASIC
-# (.bas, written as an ASCII file to LOAD). The build runs in the local
-# cmoc podman container; the result lands on a fresh DECB disk image.
+# (.bas, written as an ASCII file to LOAD). C in a directory with
+# companion .c files that have no main() (chacha.c, os9sys.c, ...)
+# is compiled together. The build runs in the local cmoc podman
+# container; the result lands on a fresh DECB disk image.
 # In --sdl mode your normal vcc.ini drives the machine and the new disk
 # mounts via the VCC_DISK1 env override, with the LOADM/LOAD command on
 # the clipboard ready for Cmd+V. In --headless mode a minimal config
@@ -46,6 +48,20 @@ WORK="${TMPDIR:-/tmp}/coco-run/$STEM"
 mkdir -p "$WORK"
 DSK="$WORK/$STEM.dsk"
 
+# Sibling .c files with no main() of their own. Test probes that
+# define main stay out of the link.
+companions() {
+    local f bn
+    for f in "$SRCDIR"/*.c; do
+        [ -f "$f" ] || continue
+        bn="$(basename "$f")"
+        [ "$bn" = "$BASE" ] && continue
+        grep -qE '^[[:space:]]*(int[[:space:]]+)?main[[:space:]]*\(' "$f" && continue
+        cp "$f" "$WORK/"
+        printf ' %s' "$bn"
+    done
+}
+
 if [ "$TARGET" = os9 ]; then
     # OS-9 side: compile a module, place it in CMDS on a freshly
     # formatted OS-9 floppy (35T SS, same geometry as the NitrOS-9
@@ -55,10 +71,11 @@ if [ "$TARGET" = os9 ]; then
         c)
             cp "$SRC" "$WORK/"
             ls "$SRCDIR"/*.h >/dev/null 2>&1 && cp "$SRCDIR"/*.h "$WORK/" || true
+            EXTRA="$(companions)"
             rm -f "$DSK"
             podman run --rm -v "$WORK":/work localhost/cmoc:freshen sh -c "
                 cd /work &&
-                cmoc --os9 -o $MOD '$BASE' &&
+                cmoc --os9 -o $MOD '$BASE'$EXTRA &&
                 os9 format -e -t35 -ss -dd -q '$(basename "$DSK")' &&
                 os9 makdir '$(basename "$DSK")',CMDS &&
                 os9 copy $MOD '$(basename "$DSK")',CMDS/$MOD &&
@@ -115,9 +132,10 @@ python3 -c "open('$DSK','wb').write(b'\xff' * 161280)"
 case "$EXT" in
     c)
         cp "$SRC" "$WORK/"
-        ls "$SRCDIR"/*.h >/dev/null 2>&1 && cp "$SRCDIR"/*.h "$WORK/"
+        ls "$SRCDIR"/*.h >/dev/null 2>&1 && cp "$SRCDIR"/*.h "$WORK/" || true
+        EXTRA="$(companions)"
         podman run --rm -v "$WORK":/work localhost/cmoc:freshen \
-            sh -c "cd /work && cmoc -o $NAME.BIN '$BASE' && writecocofile '$(basename "$DSK")' $NAME.BIN"
+            sh -c "cd /work && cmoc -o $NAME.BIN '$BASE'$EXTRA && writecocofile '$(basename "$DSK")' $NAME.BIN"
         LOADER="LOADM\"$NAME\"
 EXEC
 "
