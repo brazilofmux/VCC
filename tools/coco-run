@@ -73,7 +73,7 @@ if [ "$TARGET" = os9 ]; then
             ls "$SRCDIR"/*.h >/dev/null 2>&1 && cp "$SRCDIR"/*.h "$WORK/" || true
             EXTRA="$(companions)"
             rm -f "$DSK"
-            podman run --rm -v "$WORK":/work localhost/cmoc:freshen sh -c "
+            podman run --rm -v "$WORK":/work localhost/cmoc:latest sh -c "
                 cd /work &&
                 cmoc --os9 -o $MOD '$BASE'$EXTRA &&
                 os9 format -e -t35 -ss -dd -q '$(basename "$DSK")' &&
@@ -90,7 +90,7 @@ $MOD
             # basic09 pathlist invocation loads AND runs it.
             cp "$SRC" "$WORK/$MOD.b09"
             rm -f "$DSK"
-            podman run --rm -v "$WORK":/work localhost/cmoc:freshen sh -c "
+            podman run --rm -v "$WORK":/work localhost/cmoc:latest sh -c "
                 cd /work &&
                 os9 format -e -t35 -ss -dd -q '$(basename "$DSK")' &&
                 os9 copy -l $MOD.b09 '$(basename "$DSK")',$MOD.b09"
@@ -134,7 +134,7 @@ case "$EXT" in
         cp "$SRC" "$WORK/"
         ls "$SRCDIR"/*.h >/dev/null 2>&1 && cp "$SRCDIR"/*.h "$WORK/" || true
         EXTRA="$(companions)"
-        podman run --rm -v "$WORK":/work localhost/cmoc:freshen \
+        podman run --rm -v "$WORK":/work localhost/cmoc:latest \
             sh -c "cd /work && cmoc -o $NAME.BIN '$BASE'$EXTRA && writecocofile '$(basename "$DSK")' $NAME.BIN"
         LOADER="LOADM\"$NAME\"
 EXEC
@@ -143,7 +143,7 @@ EXEC
         ;;
     asm|s)
         cp "$SRC" "$WORK/"
-        podman run --rm -v "$WORK":/work localhost/cmoc:freshen \
+        podman run --rm -v "$WORK":/work localhost/cmoc:latest \
             sh -c "cd /work && lwasm --decb -o $NAME.BIN '$BASE' && writecocofile '$(basename "$DSK")' $NAME.BIN"
         LOADER="LOADM\"$NAME\"
 EXEC
@@ -152,7 +152,7 @@ EXEC
         ;;
     bas)
         cp "$SRC" "$WORK/$NAME.BAS"
-        podman run --rm -v "$WORK":/work localhost/cmoc:freshen \
+        podman run --rm -v "$WORK":/work localhost/cmoc:latest \
             sh -c "cd /work && writecocofile --newlines '$(basename "$DSK")' $NAME.BAS"
         LOADER="LOAD\"$NAME\"
 RUN

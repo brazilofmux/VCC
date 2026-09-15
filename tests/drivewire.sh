@@ -6,9 +6,9 @@
 # a file written on the Mac is read from /x1 inside NitrOS-9, and a
 # file written from OS-9 comes back out with ToolShed. Also proves
 # the baked VHD boots cleanly with no server running.
-# Needs: podman (localhost/cmoc:freshen), ~/roms/coco3.rom, a vcc.ini
+# Needs: podman (localhost/cmoc:latest), ~/roms/coco3.rom, a vcc.ini
 # that boots the emudsk NitrOS-9 (VHD + boot floppy), and
-# ~/g/pyDriveWire with its .venv. Uses port 65510 to stay clear of
+# ~/pyDriveWire with its .venv. Uses port 65510 to stay clear of
 # any real DriveWire server on 65504.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -18,7 +18,7 @@ rm -rf "$W"; mkdir -p "$W"
 ok()  { echo "  ok: $1"; }
 bad() { echo "  FAIL: $1"; exit 1; }
 
-PYDW="$HOME/g/pyDriveWire"
+PYDW="$HOME/pyDriveWire"
 [ -x "$PYDW/.venv/bin/python" ] || { echo "drivewire: skip (no pyDriveWire venv)"; exit 0; }
 
 # 1. Clone the VHD and bake DriveWire into the clone.
@@ -30,7 +30,7 @@ ok "dw-bake (bake + idempotence)"
 
 # 2. Two served disks; drive 1 pre-loaded from the Mac side.
 printf 'HELLO FROM THE MAC SIDE\n' > "$W/hello.txt"
-podman run --rm -v "$W":/work localhost/cmoc:freshen sh -c '
+podman run --rm -v "$W":/work localhost/cmoc:latest sh -c '
     cd /work &&
     os9 format -e -t35 -ss -dd -q dw0.dsk &&
     os9 format -e -t35 -ss -dd -q dw1.dsk &&
@@ -75,7 +75,7 @@ ok "Mac -> OS-9 (list /x1/hello.txt)"
 
 run write.txt $'echo FROM THE COCO >/x1/note.txt\n~~~~~~dir /x1\n~~~~~~~~~~'
 grep -q 'note.txt' "$W/write.txt" || bad "OS-9 note.txt not in /x1 dir"
-podman run --rm -v "$W":/work localhost/cmoc:freshen sh -c '
+podman run --rm -v "$W":/work localhost/cmoc:latest sh -c '
     cd /work && os9 copy -l dw1.dsk,note.txt note.out' >/dev/null
 grep -qi 'from the coco' "$W/note.out" || bad "OS-9 -> Mac write over DriveWire"
 ok "OS-9 -> Mac (note.txt round-trip)"

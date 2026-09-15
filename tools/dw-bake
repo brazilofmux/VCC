@@ -90,7 +90,7 @@ def main():
         subprocess.run(
             ["podman", "run", "--rm",
              "-v", f"{vhd_dir}:/vhd:ro", "-v", os.getcwd() + ":/out",
-             "localhost/cmoc:freshen", "sh", "-c", cmds],
+             "localhost/cmoc:latest", "sh", "-c", cmds],
             check=True)
         addition = b""
         for m in MODULES:

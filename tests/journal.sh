@@ -4,7 +4,7 @@
 # container, the create/seek/write syscall probe, then full journal
 # write / append / read / wrong-passphrase runs in headless NitrOS-9,
 # finishing with a plaintext sweep of the raw disk image.
-# Needs: podman (localhost/cmoc:freshen), ~/roms/coco3.rom, and a
+# Needs: podman (localhost/cmoc:latest), ~/roms/coco3.rom, and a
 # vcc.ini that boots NitrOS-9 (the journal disk rides in /d1).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -22,7 +22,7 @@ ok "chacha RFC vector"
 # 2. Build the modules and a fresh OS-9 disk in the cmoc container.
 cp apps/journal/journal.c apps/journal/chacha.c apps/journal/chacha.h \
    apps/journal/os9sys.c apps/journal/os9sys.h apps/journal/seektest.c "$W/"
-podman run --rm -v "$W":/work localhost/cmoc:freshen sh -c '
+podman run --rm -v "$W":/work localhost/cmoc:latest sh -c '
     cd /work &&
     cmoc --os9 -o seektest seektest.c os9sys.c &&
     cmoc --os9 -o journal journal.c chacha.c os9sys.c &&
@@ -37,7 +37,7 @@ ok "container build"
 
 # coco-run must pick up chacha.c / os9sys.c beside journal.c.
 tools/coco-run --os9 apps/journal/journal.c >/dev/null
-podman run --rm -v "${TMPDIR:-/tmp}/coco-run/journal":/work localhost/cmoc:freshen \
+podman run --rm -v "${TMPDIR:-/tmp}/coco-run/journal":/work localhost/cmoc:latest \
     sh -c 'os9 dir /work/journal.dsk,CMDS' | grep -q journal \
     || bad "coco-run sibling .c (CMDS/journal missing)"
 ok "coco-run sibling .c files"
@@ -88,7 +88,7 @@ ok "ciphertext only on disk"
 day=$(grep -oE 'Journal for [0-9]{4}/[0-9]{2}/[0-9]{2}' "$W/w.txt" | head -1 \
       | awk '{print $3}' | tr -d '/')
 [ -n "$day" ] || bad "could not parse journal date from screen"
-podman run --rm -v "$W":/work localhost/cmoc:freshen \
+podman run --rm -v "$W":/work localhost/cmoc:latest \
     sh -c "os9 copy /work/j.dsk,$day /work/day.bin" >/dev/null \
     || bad "os9 copy of day file (public-read attrs)"
 [ -s "$W/day.bin" ] || bad "copied day file was empty"

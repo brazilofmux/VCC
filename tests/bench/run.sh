@@ -22,7 +22,7 @@ if [ ! -f "$WORK/sieve.dsk" ] || [ sieve.c -nt "$WORK/sieve.dsk" ]; then
     # DSKINI writes): all-0xFF GAT = every granule free, all-0xFF
     # directory = no entries.
     python3 -c "open('$WORK/sieve.dsk','wb').write(b'\xff' * 161280)"
-    podman run --rm -v "$WORK":/work localhost/cmoc:freshen sh -c \
+    podman run --rm -v "$WORK":/work localhost/cmoc:latest sh -c \
         'cd /work && cmoc -o sieve.bin sieve.c && writecocofile sieve.dsk sieve.bin'
 fi
 

@@ -5,7 +5,7 @@
 #   tools/dw-serve                  serve ~/coco/dw/drive{0,1}.dsk, run vcc-sdl
 #   tools/dw-serve a.dsk b.dsk      serve these images as DW drives 0,1,...
 #
-# Needs ~/g/pyDriveWire with its .venv (python3 -m venv .venv;
+# Needs ~/pyDriveWire with its .venv (python3 -m venv .venv;
 # .venv/bin/pip install pyserial legacy-cgi), and a VHD baked with
 # tools/dw-bake so /x0 and /x1 exist at boot. The server is killed
 # when VCC exits. Inside OS-9, DW drive 0 is /x0 and drive 1 is /x1;
@@ -15,7 +15,7 @@
 # first if you actually want the disks.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-PYDW="$HOME/g/pyDriveWire"
+PYDW="$HOME/pyDriveWire"
 [ -x "$PYDW/.venv/bin/python" ] || {
     echo "dw-serve: $PYDW/.venv missing - clone n6il/pyDriveWire (develop" >&2
     echo "branch) and: python3 -m venv .venv; .venv/bin/pip install pyserial legacy-cgi" >&2
@@ -31,7 +31,7 @@ else
         if [ ! -f "$d" ]; then
             echo "dw-serve: creating $d (OS-9 formatted)"
             dir="$(dirname "$d")"
-            podman run --rm -v "$dir":/work localhost/cmoc:freshen \
+            podman run --rm -v "$dir":/work localhost/cmoc:latest \
                 sh -c "cd /work && os9 format -e -t35 -ss -dd -q '$(basename "$d")'"
         fi
     done
