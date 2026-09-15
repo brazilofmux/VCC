@@ -5,8 +5,9 @@
 #   tools/dw-serve                  serve ~/coco/dw/drive{0,1}.dsk, run vcc-sdl
 #   tools/dw-serve a.dsk b.dsk      serve these images as DW drives 0,1,...
 #
-# Needs ~/pyDriveWire with its .venv (python3 -m venv .venv;
-# .venv/bin/pip install pyserial legacy-cgi), and a VHD baked with
+# Needs ~/pyDriveWire - our fork of n6il/pyDriveWire, develop branch
+# (github.com/brazilofmux/pyDriveWire) - with its .venv (python3 -m venv
+# .venv; .venv/bin/pip install pyserial legacy-cgi), and a VHD baked with
 # tools/dw-bake so /x0 and /x1 exist at boot. The server is killed
 # when VCC exits. Inside OS-9, DW drive 0 is /x0 and drive 1 is /x1;
 # on the Mac the same images are readable with ToolShed ("os9 dir
@@ -17,8 +18,10 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PYDW="$HOME/pyDriveWire"
 [ -x "$PYDW/.venv/bin/python" ] || {
-    echo "dw-serve: $PYDW/.venv missing - clone n6il/pyDriveWire (develop" >&2
-    echo "branch) and: python3 -m venv .venv; .venv/bin/pip install pyserial legacy-cgi" >&2
+    echo "dw-serve: $PYDW/.venv missing. Set up with:" >&2
+    echo "  git clone -b develop git@github.com:brazilofmux/pyDriveWire.git ~/pyDriveWire" >&2
+    echo "  cd ~/pyDriveWire && python3 -m venv .venv && .venv/bin/pip install pyserial legacy-cgi" >&2
+    echo "(our fork of n6il/pyDriveWire; develop is the Python 3 branch)" >&2
     exit 2
 }
 

@@ -59,8 +59,9 @@ shell that behaves like a Mac app:
 - **Joysticks.** The mouse drives the analog stick through the real
   PIA comparator path, or plug in any SDL-recognized game controller.
 - **DriveWire, end to end.** The becker port runs on BSD sockets and
-  talks to [pyDriveWire](https://github.com/n6il/pyDriveWire) on the
-  Mac: files flow both directions between macOS and NitrOS-9.
+  talks to [pyDriveWire](https://github.com/brazilofmux/pyDriveWire)
+  (our fork of n6il's, `develop` branch) on the Mac: files flow both
+  directions between macOS and NitrOS-9.
   `tools/dw-serve` starts the server and the emulator in one command;
   `tools/dw-bake` bakes the DriveWire drivers into a NitrOS-9 boot
   so `/x0` and `/x1` exist at boot.
