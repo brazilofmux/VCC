@@ -344,7 +344,7 @@ byte-for-byte. Quick DECB idle A/B on this AWS instance: interpreter
 368x -> JIT 587x realtime, taken traces +8% — same shape as the Mac
 results, though these were short frameskip runs (boot + renderer in
 the denominator), not the tests/bench methodology behind the M5's
-3.0 GHz / 1.08 BIPS figure; a proper sieve benchmark here still wants
+4.9 GHz / ~0.9 BIPS figure; a proper sieve benchmark here still wants
 the cmoc container.
 
 Two latent core bugs the Windows verification flushed out (both
@@ -451,7 +451,12 @@ a better verifier for flag semantics than any boot.
 Day's total (interleaved A/B): compiled-C sieve 1801x -> ~5330x
 (2.96x), NitrOS-9 boot 4819x -> ~11,400x (2.4x), effective clock on
 the short bench ~2.6 -> ~3.2 GHz; steady-state sieve runs at ~4.8 GHz
-equivalent. Post-arc profile is dominated by anonymous JIT frames -
+equivalent. (Measured properly on 2026-09-18 with VCC_INSN_STATS: the
+sieve executes 1.072e9 instructions in 5.92e9 cycles, CPI 5.52, so
+the best-day 4.9 GHz clock is ~0.89 BIPS - not the 1.08 an assumed
+4.5 CPI had suggested. The NitrOS-9 boot is CPI 137: idle-dominated,
+~130 MIPS, so its 10,000x multiplier is not an instruction-rate
+claim.) Post-arc profile is dominated by anonymous JIT frames -
 the named residue is the batched line edges, UpdateScreen at
 frameskip, and the watch-bitmap slow path. Kill switches:
 VCC_NO_FASTMEM, VCC_NO_BURST, VCC_NO_INLINE, plus per-family gates

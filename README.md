@@ -1,11 +1,11 @@
-# VCC on Apple Silicon — a 2.9 GHz Color Computer 3
+# VCC on Apple Silicon — a 4.9 GHz Color Computer 3
 
 This fork ports VCC, the Tandy Color Computer 3 emulator, to **native
 arm64 macOS** — and then keeps going. The original CoCo 3 shipped in
 1986 with a 0.89 MHz processor (1.78 MHz if you poked the right
-register). This one boots Disk Extended BASIC at **over 3000× real
-time**: an effective clock around **3.0 GHz**, executing roughly
-**1.08 billion 6309 instructions per second** on an Apple M-series
+register). This one runs compiled C at an effective clock of
+**4.9 GHz** — roughly **0.9 billion 6309 instructions per second** —
+and boots NitrOS-9 at **10,000× real time**, on an Apple M-series
 machine.
 
 The Windows build is untouched and still lives here (see
@@ -17,8 +17,22 @@ test harness, and an arm64 block-cache JIT for the 6809/6309.
 
 | | |
 |---|---|
-| Real CoCo 3 (1986) | 0.89 MHz, ~0.4 MIPS — at one point US export rules fussed over 1 MIPS |
-| This fork on an M-series Mac | ~3.0 GHz effective, ~1.08 BIPS, 3000–4900× real time by workload |
+| Real CoCo 3 (1986) | 0.89 MHz, ~0.16 MIPS — at one point US export rules fussed over 1 MIPS |
+| This fork on an M-series Mac | ~4.9 GHz effective, ~0.9 BIPS on compiled C; ~10,000× real time booting NitrOS-9 |
+
+These are measured, not estimated: `VCC_INSN_STATS` counts every
+instruction the interpreter executes for a fixed run (the count is
+the same whichever tier runs it), and the JIT's wall time for the
+same run gives the rate. The compute-bound benchmark
+(`tests/bench/sieve.c`, a prime sieve compiled with CMOC) executes
+1.07 billion instructions in 5.92 billion cycles — **5.5 cycles per
+instruction**, CMOC's indexed 16-bit code being what it is — in
+1.2–1.4 s of wall time depending on the laptop's thermal mood (5,485×
+real time on the best day, ~4,800× on an ordinary one). The NitrOS-9
+boot multiplier is a different animal: the OS spends most of that
+run asleep in SYNC waiting for interrupts, at 137 cycles per
+instruction, so the 10,000× says how fast the machine idles, not how
+fast it computes.
 
 For calibration: this machine's sibling projects — bare-CPU dynamic
 binary translators with none of a whole computer attached — hit
@@ -26,8 +40,8 @@ binary translators with none of a whole computer attached — hit
 twists the problem into a different shape: every other instruction
 may touch the GIME, the PIAs, the disk controller, or banked memory,
 and each of those touches is a conversation with hardware that has
-opinions. 1.08 BIPS with the whole machine attached is the interesting
-number.
+opinions. Nearly a billion instructions a second with the whole
+machine attached is the interesting number.
 
 How it's done, in one breath: hot code is compiled to arm64 in a
 block cache; blocks chain to each other directly and keep the
@@ -142,6 +156,7 @@ Useful environment knobs (tooling overrides, never required):
 | `VCC_NO_JIT`, `VCC_NO_LINK`, `VCC_NO_TAKEN` | disable JIT tiers for A/B measurement |
 | `VCC_VERIFY_PURE` | lockstep JIT-vs-interpreter verification |
 | `VCC_JIT_STATS` | print block-cache statistics at exit |
+| `VCC_INSN_STATS` | count executed instructions (interpreter tiers) — the basis of the BIPS figure |
 
 ---
 

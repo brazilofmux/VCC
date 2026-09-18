@@ -295,6 +295,17 @@ static uint32_t gJitArenaFlushes = 0;
 // between thunk-fitting blocks, known-but-over-budget blocks (replayed
 // interpreted), and unknown PCs - plus the cycle sizes involved, to
 // show how often the slice budget gates the JIT tier.
+// VCC_INSN_STATS: exact executed-instruction count, for measuring the
+// instruction rate. Only the interpreter paths pass through here, so
+// count under VCC_NO_JIT - the count for a given frame total is the
+// same whichever tier runs it, and the JIT's wall time for the same
+// frames gives instructions per second.
+static bool     gInsnStats = false;
+static uint64_t gInsnCount = 0;
+static void InsnStatsReport()
+{
+	fprintf(stderr, "[INSN] executed=%llu\n", (unsigned long long)gInsnCount);
+}
 static uint64_t gDispFit = 0, gDispOver = 0, gDispUnknown = 0;
 static uint64_t gDispOverCycles = 0, gDispOverRemaining = 0;
 static bool     gBudgetStats = false;
@@ -866,6 +877,13 @@ void Jsr_X(const DecodedInst*);
 
 void HD6309Init()
 {
+	static bool insn_probe_armed = false;
+	if (!insn_probe_armed && getenv("VCC_INSN_STATS"))
+	{
+		gInsnStats = true;
+		atexit(InsnStatsReport);
+		insn_probe_armed = true;
+	}
 	static bool budget_probe_armed = false;
 	if (!budget_probe_armed && getenv("VCC_BUDGET_STATS"))
 	{
@@ -7981,6 +7999,7 @@ static inline bool DebuggerActive()
 static long gPcLogBudget = -1;
 static inline void LogPcDiag(unsigned short pc)
 {
+	if (gInsnStats) ++gInsnCount;
 	if (gPcLogBudget != 0)
 	{
 		if (gPcLogBudget < 0)
