@@ -4,8 +4,8 @@ This fork ports VCC, the Tandy Color Computer 3 emulator, to **native
 arm64 macOS** — and then keeps going. The original CoCo 3 shipped in
 1986 with a 0.89 MHz processor (1.78 MHz if you poked the right
 register). This one boots Disk Extended BASIC at **over 3000× real
-time**: an effective clock around **2.9 GHz**, executing roughly
-**640 million 6309 instructions per second** on an Apple M-series
+time**: an effective clock around **3.0 GHz**, executing roughly
+**1.08 billion 6309 instructions per second** on an Apple M-series
 machine.
 
 The Windows build is untouched and still lives here (see
@@ -18,7 +18,7 @@ test harness, and an arm64 block-cache JIT for the 6809/6309.
 | | |
 |---|---|
 | Real CoCo 3 (1986) | 0.89 MHz, ~0.4 MIPS — at one point US export rules fussed over 1 MIPS |
-| This fork on an M-series Mac | ~2.9 GHz effective, ~640 MIPS, 3000–4900× real time by workload |
+| This fork on an M-series Mac | ~3.0 GHz effective, ~1.08 BIPS, 3000–4900× real time by workload |
 
 For calibration: this machine's sibling projects — bare-CPU dynamic
 binary translators with none of a whole computer attached — hit
@@ -26,7 +26,7 @@ binary translators with none of a whole computer attached — hit
 twists the problem into a different shape: every other instruction
 may touch the GIME, the PIAs, the disk controller, or banked memory,
 and each of those touches is a conversation with hardware that has
-opinions. 640 MIPS with the whole machine attached is the interesting
+opinions. 1.08 BIPS with the whole machine attached is the interesting
 number.
 
 How it's done, in one breath: hot code is compiled to arm64 in a

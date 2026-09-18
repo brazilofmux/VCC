@@ -344,7 +344,7 @@ byte-for-byte. Quick DECB idle A/B on this AWS instance: interpreter
 368x -> JIT 587x realtime, taken traces +8% — same shape as the Mac
 results, though these were short frameskip runs (boot + renderer in
 the denominator), not the tests/bench methodology behind the M5's
-2.9 GHz / 640 MIPS figure; a proper sieve benchmark here still wants
+3.0 GHz / 1.08 BIPS figure; a proper sieve benchmark here still wants
 the cmoc container.
 
 Two latent core bugs the Windows verification flushed out (both
