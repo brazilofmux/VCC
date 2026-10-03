@@ -127,6 +127,7 @@ static bool CartInserted = false, CartAutoStart = true;
 static unsigned char AddLF=0;
 static HANDLE hPrintFile=INVALID_HANDLE_VALUE;
 void CaptureBit(unsigned char);
+bool GetTapePlaybackFastLoad();
 static HANDLE hout=nullptr;
 void WritePrintMon(char *);
 LRESULT CALLBACK PrintMon(HWND, UINT , WPARAM , LPARAM );
@@ -162,9 +163,6 @@ unsigned char pia0_read(unsigned char port)
 			{
 				rega[1]=(rega[1] & 63);
 				CPUDeAssertInterupt(IS_PIA0_HSYNC, INT_IRQ);
-				// FIXME VCC interrupts still basically broken,
-				// following VSYNC kludge fixes some things
-				CPUDeAssertInterupt(IS_PIA0_VSYNC, INT_IRQ);
 				return (vccKeyboardGetScan(rega[2]|~rega_dd[2])); //Read
 			}
 			else
@@ -216,7 +214,7 @@ unsigned char pia1_read(unsigned char port)
 			{
 				regb[1]=(regb[1] & 63); //Cass In
 				CPUDeAssertInterupt(IS_PIA1_CD, INT_FIRQ);
-				if (TapeFastLoad)
+				if (GetTapePlaybackFastLoad())
 					Flag = (regb[port] & 0xFE) | CassInBitStream();
 				else
 					Flag = regb[port];//& regb_dd[port];
@@ -260,11 +258,21 @@ void pia0_write(unsigned char data,unsigned char port)
 
 	case 1:  // cpu write FF01
 		rega[port]= (data & 0x3F);
+
+		if (data & 0x01) {}
+		else if ((data & 0x28) == 0x08) {}
+		else CPUDeAssertInterupt(IS_PIA0_HSYNC, INT_IRQ);
+
 		return;
 	break;
 
 	case 3:  // cpu write FF03
 		rega[port]= (data & 0x3F);
+
+		if (data & 0x01) {}
+		else if ((data & 0x28) == 0x08) {}
+		else CPUDeAssertInterupt(IS_PIA0_VSYNC, INT_IRQ);
+
 		return;
 	break;
 	}
@@ -307,7 +315,7 @@ void pia1_write(unsigned char data,unsigned char port)
 		if (ddb)
 		{
 			regb[port]=(data & regb_dd[port]);
-			SetGimeVdgMode2( (regb[2] & 248) >>3);
+			gGimeGpu.SetGimeVdgMode2( (regb[2] & 248) >>3);
 			Ssample=(regb[port] & 2)<<6;
 		}
 		else

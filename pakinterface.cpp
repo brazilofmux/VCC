@@ -31,7 +31,7 @@
 #include <vcc/bus/cartridge_messages.h>
 #include <vcc/bus/dll_deleter.h>
 #include <vcc/util/limits.h>
-#include <vcc/util/winapi.h>
+//#include <vcc/util/winapi.h>
 #include <vcc/util/logger.h>
 #include <vcc/util/FileOps.h>
 #include <vcc/util/DialogOps.h>
@@ -371,7 +371,7 @@ static cartridge_loader_status load_any_cartridge(const char *filename, const ch
 		std::move(boot_slot_adapter),
 		SlotId, 
 		iniPath,
-		EmuState.WindowHandle,
+		EmuState.hMsgProxy,
 		callbacks);
 
 	if (loadedCartridge.load_result != cartridge_loader_status::success)

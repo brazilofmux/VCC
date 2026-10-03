@@ -737,6 +737,10 @@ void HD6309Reset()
 	cc[I]=1;
 	cc[F]=1;
 	SyncWaiting=0;
+	ClearInterrupts();
+	// After ClearInterrupts, never before: it drops every line and resets
+	// the latch, and ChainBreak (which also checks latch settling) must be
+	// derived from the cleared state or a chain can run on a stale break.
 	RecomputeChainBreak();
 	PC_REG=MemRead16(VRESET);	//PC gets its reset vector
 	SetMapType(0);	//shouldn't be here

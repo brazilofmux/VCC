@@ -21,11 +21,13 @@ This file is part of VCC (Virtual Color Computer).
 
 void GimeWrite(unsigned char,unsigned char);
 unsigned char GimeRead(unsigned char);
+unsigned char SafeGimeRead(unsigned char port); // for debug only
 void GimeAssertKeyboardInterupt();
-unsigned char GimeGetKeyboardInteruptState();
+void GimeRegistersReset();
 void GimeAssertHorzInterupt();
 void GimeAssertVertInterupt();
 void GimeAssertTimerInterupt();
+bool GimeHsyncIrqArmed();
 void GimeAssertCartInterupt();
 unsigned char sam_read(unsigned char);
 void sam_write(unsigned char);

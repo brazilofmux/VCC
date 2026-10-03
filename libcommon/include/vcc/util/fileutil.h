@@ -23,6 +23,7 @@
 
 #include <string>
 #include <filesystem>
+#include <algorithm>
 #include <vcc/util/host_services.h>
 
 //=========================================================================
@@ -39,7 +40,6 @@ namespace VCC::Util {
 	std::string ModulePath(HMODULE module_handle);
 
 	// If path is in the application directory strip directory
-//	std::string strip_application_path(std::string path);
 	std::string StripModPath(std::string path);
 
 	// Fully qualify a file based on execution directory
@@ -137,6 +137,16 @@ namespace VCC::Util {
 				if (*p == '/') *p = '\\';
 	}
 
+	// Overrides for std::string and wstring
+	inline void RevDirSlashes(std::string& dir)
+	{
+		std::replace(dir.begin(), dir.end(), '/', '\\');
+	}
+	inline void RevDirSlashes(std::wstring& dir)
+	{
+		std::replace(dir.begin(), dir.end(), L'/', L'\\');
+	}
+
 	// Return copy of path with backslashes converterd
 	inline std::string FixDirSlashes(const std::string& dir)
 	{
@@ -174,66 +184,16 @@ namespace VCC::Util {
 		return out;
 	}
 
-	//------------------------------------------------------------------------
-	// TODO: In line functions that should go elsewhere
-	//------------------------------------------------------------------------
-
-	// Return string with case conversion
-	inline std::string to_lower(std::string s) {
-    	std::transform(s.begin(), s.end(), s.begin(),
-        	[](unsigned char c) {
-            	return static_cast<char>(std::tolower(c));
-        	});
-    	return s;
-	}	
-
-	inline std::string to_upper(std::string s) {
-		std::transform(s.begin(), s.end(), s.begin(),
-			[](unsigned char c) {
-            return static_cast<char>(std::toupper(c));
-        });
-		return s;
-	}
-
-	inline void make_lower(std::string& s) {
-    	std::transform(s.begin(), s.end(), s.begin(),
-        	[](unsigned char c) {
-            	return static_cast<char>(std::tolower(c));
-        	});
-	}
-
-	inline void make_lower(char* s) {
-		if (!s) return;
-		for (char* p = s; *p; ++p)
-			*p = static_cast<char>(std::tolower(static_cast<unsigned char>(*p)));
-	}
-
-	inline void make_upper(std::string& s) {
-    	std::transform(s.begin(), s.end(), s.begin(),
-        	[](unsigned char c) {
-            	return static_cast<char>(std::toupper(c));
-        	});
-	}
-
-	inline void make_upper(char* s) {
-		if (!s) return;
-		for (char* p = s; *p; ++p)
-			*p = static_cast<char>(std::toupper(static_cast<unsigned char>(*p)));
-	}
-
-	inline bool is_null_or_empty(const char* s) {
-		return s == nullptr || *s == '\0';
-	}
-
-	inline bool is_null_or_empty(const std::string& s) {
-		return s.empty();
-	}
-
-	inline void copy_to_char(const std::string& src, char* dst, size_t dst_size)
+	// Return slash normalized user directory
+	inline std::string GetUserDir()
 	{
-		if (dst_size == 0) return;
-		const size_t n = std::min(src.size(), dst_size - 1);
-		memcpy(dst, src.data(), n);
-		dst[n] = '\0';
+    	const char* p = getenv("USERPROFILE");
+    	return p ? FixDirSlashes(std::string(p)) : std::string();
+	}
+
+	// Return slash normaized executable directory
+	inline std::string GetExecutableDir()
+	{
+		return GetDirectoryPart(ModulePath(nullptr));
 	}
 }

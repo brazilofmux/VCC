@@ -162,7 +162,11 @@ void HardResetMachine()
 	mc6883_reset();
 	CPUInit();
 	CPUReset();
-	GimeReset();
+	// Upstream split the old GimeReset into renderer, register, and
+	// timing state; Vcc.cpp's DoHardReset calls all three, so we do too.
+	gGimeGpu.GimeReset();
+	GimeRegistersReset();
+	MiscReset();
 	UpdateBusPointer();
 	EmuState.TurboSpeedFlag = 1;
 	ResetBus();

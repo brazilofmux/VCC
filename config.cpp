@@ -56,6 +56,7 @@
 #include <vcc/util/logger.h>
 #include <vcc/util/settings.h>
 #include <vcc/util/fileutil.h>
+#include <vcc/util/textutil.h>
 
 #include "config.h"
 
@@ -75,6 +76,7 @@ void SetBootModulePath(const std::string);
 
 void WriteCPUSettings();
 void WriteAudioSettings();
+void WriteTapeSettings();
 void WriteWindowSize();
 void WriteVideoSettings();
 void WriteKeyboardSettings();
@@ -125,6 +127,7 @@ struct STRConfig
 	unsigned char	UseExtCocoRom = 0;
 	char        	ExtRomFile[MAX_PATH] = { 0 };
 	unsigned char   EnableOverclock = 0;
+	unsigned char	TapeFastLoad = 1;
 };
 
 static STRConfig CurrentConfig;
@@ -204,6 +207,10 @@ void InitialLoadConfig(SystemState *LCState)
 		Util::FixDirSlashes(szPath);
 		appData = std::string(szPath) + "/VCC";
 	}
+
+    // Create the directory if it does not exist
+    CreateDirectoryA(appData.c_str(), nullptr);
+
 	Util::copy_to_char(appData,gcAppDataPath,MAX_PATH);
 
 	// Establish settings storage (ini file) path
@@ -224,6 +231,24 @@ void InitialLoadConfig(SystemState *LCState)
 	char AppName[MAX_LOADSTRING]="";
 	LoadString(nullptr, IDS_APP_TITLE,AppName, MAX_LOADSTRING);
 	Setting().write("Version","Release",AppName);
+
+	// If missing use reasonable values for common default paths
+	std::string exedir = VCC::Util::GetExecutableDir();
+	std::string usrdir = VCC::Util::GetUserDir();
+	//std::string appdir = VCC::Util::GetDirectoryPart(gcIniFilePath);
+
+	if ( Setting().read("DefaultPaths", "DLLPath", "").empty() ) {
+		Setting().write("DefaultPaths", "DLLPath", exedir);
+	}
+	if ( Setting().read("DefaultPaths", "RomPath", "").empty() ) {
+		Setting().write("DefaultPaths", "RomPath", usrdir);
+	}
+	if ( Setting().read("DefaultPaths", "CassPath", "").empty() ) {
+		Setting().write("DefaultPaths", "CassPath", usrdir);
+	}
+	if ( Setting().read("DefaultPaths", "FloppyPath", "").empty() ) {
+		Setting().write("DefaultPaths", "FloppyPath", usrdir);
+	}
 
 	// Initial load settings
 	ReadIniFile();
@@ -366,20 +391,26 @@ unsigned char ReadIniFile()
 	CurrentConfig.ShowMousePointer = Setting().read("Misc","ShowMousePointer",1);
 	CurrentConfig.UseExtCocoRom    = Setting().read("Misc","UseExtCocoRom",0);
 	CurrentConfig.EnableOverclock  = Setting().read("Misc","Overclock",1);
+	CurrentConfig.TapeFastLoad = Setting().read("Misc", "TapeFastLoad", 1);
 	Setting().read("Misc","ExternalBasicImage","",CurrentConfig.ExtRomFile,MAX_PATH);
 
 	CurrentConfig.RamSize = Setting().read("Memory","RamSize",1);
 
+	// Set up keymap
+	Setting().read("Misc","CustomKeyMapFile","",KeyMapFilePath,MAX_PATH);
 	CurrentConfig.KeyMap  = Setting().read("Misc","KeyMapIndex",0);
 	if (CurrentConfig.KeyMap>3)
 		CurrentConfig.KeyMap=0;	//Default to DECB Mapping
 
-	Setting().read("Misc","CustomKeyMapFile","",KeyMapFilePath,MAX_PATH);
-	if (*KeyMapFilePath == '\0') {
-		strcpy(KeyMapFilePath, gcAppDataPath);
-		strcat(KeyMapFilePath, "\\custom.keymap");
+	if (CurrentConfig.KeyMap == kKBLayoutCustom) {
+		if (*KeyMapFilePath == '\0') {
+			strcpy(KeyMapFilePath, gcAppDataPath);
+			strcat(KeyMapFilePath, "/custom.keymap");
+			Setting().write("Misc","CustomKeyMapFile",KeyMapFilePath);
+		}
+		LoadCustomKeyMap(KeyMapFilePath);
 	}
-	if (CurrentConfig.KeyMap == kKBLayoutCustom) LoadCustomKeyMap(KeyMapFilePath);
+
 	vccKeyboardBuildRuntimeTable((keyboardlayout_e)CurrentConfig.KeyMap);
 
 	// If bootpath is relative prepend the current module exe directory
@@ -408,6 +439,7 @@ unsigned char ReadIniFile()
 	Setting().read("DefaultPaths", "CassPath", "", CurrentConfig.CassPath, MAX_PATH);
 	Setting().read("DefaultPaths", "FloppyPath", "", CurrentConfig.FloppyPath, MAX_PATH);
 
+	// Enumerate sound cards
 	for (Index = 0; Index < NumberOfSoundCards; Index++)
 	{
 		if (!strcmp(SoundCards[Index].CardName, CurrentConfig.SoundCardName))
@@ -448,8 +480,11 @@ void WriteCPUSettings() {
 	Setting().write("Misc","ExternalBasicImage", CurrentConfig.ExtRomFile);
 }
 void WriteAudioSettings() {
-	Setting().write("Audio","SndCard",CurrentConfig.SoundCardName);
-	Setting().write("Audio","Rate",CurrentConfig.AudioRate);
+	Setting().write("Audio", "SndCard", CurrentConfig.SoundCardName);
+	Setting().write("Audio", "Rate", CurrentConfig.AudioRate);
+}
+void WriteTapeSettings() {
+	Setting().write("Misc", "TapeFastLoad", CurrentConfig.TapeFastLoad);
 }
 void WriteWindowSize() {
 	if (CurrentConfig.RememberSize) {
@@ -544,10 +579,10 @@ void SetKeyMapFilePath(const char *Path)
 void UpdateConfig ()
 {
 	// Video
-	SetPaletteType();
-	SetMonitorType(CurrentConfig.MonitorType);
+	gGimeGpu.SetPaletteType();
+	gGimeGpu.SetMonitorType(CurrentConfig.MonitorType);
 	SetAspect(CurrentConfig.Aspect);
-	SetScanLines(CurrentConfig.ScanLines);
+	gGimeGpu.SetScanLines(CurrentConfig.ScanLines);
 	SetFrameSkip(CurrentConfig.FrameSkip);
 	EmuState.MousePointer = CurrentConfig.ShowMousePointer;
 	// Cpu
@@ -563,6 +598,7 @@ void UpdateConfig ()
 		EmuState.Debugger.Enable_Break(false);
 	}
 	SetCartAutoStart(CurrentConfig.CartAutoStart);
+	TapeFastLoad = CurrentConfig.TapeFastLoad;
 
 	if (CurrentConfig.RebootNow)
 		DoReboot();
@@ -820,6 +856,7 @@ LRESULT CALLBACK TapeConfig(HWND hDlg, UINT message, WPARAM wParam, LPARAM /*lPa
 		SendDlgItemMessage(hDlg,IDC_MODE,EM_SETBKGNDCOLOR ,0,(LPARAM)RGB(0,0,0));
 		SendDlgItemMessage(hDlg,IDC_MODE,EM_SETCHARFORMAT ,SCF_ALL,(LPARAM)&CounterText);
 		SendDlgItemMessage(hDlg,IDC_FASTLOAD, BM_SETCHECK, TapeFastLoad, 0);
+		EnableWindow(GetDlgItem(hDlg, IDC_FASTLOAD), !IsTapeWav());
 		break;
 
 	case WM_COMMAND:
@@ -831,8 +868,8 @@ LRESULT CALLBACK TapeConfig(HWND hDlg, UINT message, WPARAM wParam, LPARAM /*lPa
 			break;
 		case IDOK:
 		case IDAPPLY:
-			UpdateConfig();
-			// FIXME Save changes (TapeFastLoad) to IniFile
+			CurrentConfig.TapeFastLoad = TapeFastLoad;
+			WriteTapeSettings();
 			if (LOWORD(wParam)==IDOK) {
 				hTapeDlg = nullptr;
 				DestroyWindow(hDlg);
@@ -863,6 +900,7 @@ LRESULT CALLBACK TapeConfig(HWND hDlg, UINT message, WPARAM wParam, LPARAM /*lPa
 			TapeFastLoad = (unsigned char)SendDlgItemMessage(hDlg, IDC_FASTLOAD, BM_GETCHECK, 0, 0);
 			break;
 		}
+		EnableWindow(GetDlgItem(hDlg, IDC_FASTLOAD), !IsTapeWav());
 		break;	//End WM_COMMAND
 	}
 	return 0;
@@ -1237,6 +1275,14 @@ int SetCurrentKeyMap(int keymap) {
     // Force any changes to take immediate effect
     if (keymap != CurrentConfig.KeyMap) {
         vccKeyboardBuildRuntimeTable((keyboardlayout_e)keymap);
+        if (keymap == kKBLayoutCustom) {
+			if (*KeyMapFilePath == '\0') {
+				strcpy(KeyMapFilePath, gcAppDataPath);
+				strcat(KeyMapFilePath, "/custom.keymap");
+				Setting().write("Misc","CustomKeyMapFile",KeyMapFilePath);
+			}
+			LoadCustomKeyMap(KeyMapFilePath);
+		}
     }
     CurrentConfig.KeyMap = keymap;
     return keymap;
@@ -1277,14 +1323,8 @@ BOOL SelectKeymapFile(HWND hDlg)
 			LoadCustomKeyMap(dlg.upath());
 		// Else create new file from current selection
 		} else {
-			char txt[MAX_PATH+32];
-			strcpy (txt,"Create ");
-			strcat (txt,dlg.upath());
-			strcat (txt,"?");
-			if (MessageBox(hDlg,txt,"Warning",MB_YESNO)==IDYES) {
-				CloneStandardKeymap(CurrentConfig.KeyMap);
-				SaveCustomKeyMap(dlg.upath());
-			}
+			CloneStandardKeymap(CurrentConfig.KeyMap);
+			SaveCustomKeyMap(dlg.upath());
 		}
 		dlg.getupath(KeyMapFilePath,MAX_PATH);
 		SetKeyMapFilePath(KeyMapFilePath); // Save filename in Vcc.config
@@ -1715,7 +1755,7 @@ int SelectFile(char *FileName)
 			MessageBox(EmuState.WindowHandle,"Can't open file.","Error",0);
 		}
 	}
-	dlg.getpath(FileName);
+	dlg.getpath(FileName, MAX_PATH);
 	return 1;
 }
 

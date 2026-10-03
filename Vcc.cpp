@@ -25,7 +25,11 @@
 
 // FIXME: This should be defined on the command line
 #define DIRECTINPUT_VERSION 0x0800
+#ifdef _LEGACY_VCC
 #define _WIN32_WINNT 0x0500
+#else
+#define _WIN32_WINNT 0x0601 // Windows 7
+#endif
 #ifndef ABOVE_NORMAL_PRIORITY_CLASS
 //#define ABOVE_NORMAL_PRIORITY_CLASS  32768
 #endif
@@ -35,9 +39,15 @@
 #define TH_REQWAIT	1
 #define TH_WAITING	2
 
+// To eliminate ShellExecute for displaying Wiki
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.System.h>
+#pragma comment(lib, "runtimeobject.lib")
+
 #include "BuildConfig.h"
 #include <objbase.h>
 #include <windowsx.h>
+#include <WinUser.h>
 #include <process.h>
 #include <commdlg.h>
 #include <stdio.h>
@@ -133,6 +143,7 @@ static	HANDLE hEMUQuit;
 static char g_szAppName[MAX_LOADSTRING] = "";
 bool BinaryRunning;
 static unsigned char FlagEmuStop=TH_RUNNING;
+const GUID* PowerGUID;
 
 bool IsShiftKeyDown();
 
@@ -140,7 +151,30 @@ using VCC::Bus::gVccCartMenu;
 
 static bool gHasFocus {};
 
-//static CRITICAL_SECTION  FrameRender;
+#ifndef _LEGACY_VCC
+extern "C" NTSTATUS NTAPI RtlGetVersion(POSVERSIONINFOW);
+#pragma comment(lib, "ntdll")
+
+bool IsWin8_OrLater()
+{
+	OSVERSIONINFOW osvi = { sizeof(osvi) };
+	RtlGetVersion(&osvi);
+	return (osvi.dwMajorVersion > 6) ||
+		(osvi.dwMajorVersion == 6 && osvi.dwMinorVersion >= 2);
+}
+#endif
+
+void RegisterDisplayNotification(HWND hWnd)
+{
+#ifndef _LEGACY_VCC
+	if (IsWin8_OrLater())
+		PowerGUID = &GUID_CONSOLE_DISPLAY_STATE;   // Win 8+
+	else
+		PowerGUID = &GUID_MONITOR_POWER_ON;        // Win 7 fallback
+
+	RegisterPowerSettingNotification(hWnd, PowerGUID, DEVICE_NOTIFY_WINDOW_HANDLE);
+#endif
+}
 
 //--------------------------------------------------------------------------//
 //  Main entry
@@ -185,6 +219,7 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance,
 		exit(0);
 	}
 
+	RegisterDisplayNotification(EmuState.WindowHandle);
 	InitSound();
 	LoadModule();
 	SetClockSpeed(1);	//Default clock speed .89 MHZ	
@@ -296,10 +331,31 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 	switch (message)
 	{
-		// Hard reset VC
+#ifndef _LEGACY_VCC
+		case WM_POWERBROADCAST:
+			if (wParam == PBT_POWERSETTINGCHANGE) 
+			{
+				auto p = reinterpret_cast<POWERBROADCAST_SETTING*>(lParam);
+				if (p->PowerSetting == *PowerGUID) 
+				{
+					DWORD state = *reinterpret_cast<LPDWORD>(p->Data);
+					// 0 = off, 1 = on, 2 = dimmed
+					if (state == 1) OnMonitorRestored();
+				}
+			}
+			break;
+#endif
+
+		// Hard reset VCC
 		case WM_VCC_CPU_RESET:
 			if (EmuState.EmulationRunning)
 				EmuState.ResetPending=2;
+			break;
+
+		// Soft reset VCC
+		case WM_VCC_SOFT_RESET:
+			if (EmuState.EmulationRunning)
+				EmuState.ResetPending=1;
 			break;
 
 		// Rebuild dynamic menus
@@ -334,9 +390,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			switch (wmId)
 			{	
 				case IDM_USER_WIKI:
-					ShellExecute(nullptr, "open",
-								 "https://github.com/VCCE/VCC/wiki/UserGuide",
-								 nullptr, nullptr, SW_SHOWNORMAL);
+					winrt::Windows::System::Launcher::LaunchUriAsync(
+						winrt::Windows::Foundation::Uri(
+							L"https://github.com/VCCE/VCC/wiki/UserGuide"));
 					break;
 				case IDM_HELP_ABOUT:
 					DialogBox(EmuState.WindowInstance, (LPCTSTR)IDD_ABOUTBOX,
@@ -380,7 +436,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 				case ID_FILE_RUN:
 					EmuState.EmulationRunning=TRUE;
-					InvalidateBoarder();
+					gGimeGpu.InvalidateBoarder();
 					break;
 
 				case ID_FILE_RESET_SFT:
@@ -412,7 +468,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 					break;
 
 				case ID_FLIP_ARTIFACTS:
-					FlipArtifacts();
+					gGimeGpu.FlipArtifacts();
 					break;
 
 				case ID_SWAP_JOYSTICKS:
@@ -570,9 +626,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 				case DIK_F6:
 					if (IsShiftKeyDown())
-						FlipArtifacts();
+						gGimeGpu.FlipArtifacts();
 					else
-						SetMonitorType(!SetMonitorType(QUERY));
+						gGimeGpu.SetMonitorType(!gGimeGpu.SetMonitorType(QUERY));
 				break;
 
 				case DIK_F7:
@@ -620,7 +676,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 					if (FlagEmuStop == TH_RUNNING) {
 						if (IsShiftKeyDown()) {
 							SetInfoBand(!SetInfoBand(QUERY));
-							InvalidateBoarder();
+							gGimeGpu.InvalidateBoarder();
 						} else {
 							FlagEmuStop = TH_REQWAIT;
 							EmuState.FullScreen =!EmuState.FullScreen;
@@ -861,7 +917,9 @@ void DoHardReset(SystemState* const HRState)
 	mc6883_reset();	//Captures interal rom pointer for CPU Interupt Vectors
 	CPUInit();
 	CPUReset();		// Zero all CPU Registers and sets the PC to VRESET
-	GimeReset();
+	gGimeGpu.GimeReset();
+	GimeRegistersReset();
+	MiscReset();
 	UpdateBusPointer();
 	EmuState.TurboSpeedFlag=1;
 	ResetBus();
@@ -874,7 +932,8 @@ void SoftReset()
 {
 	mc6883_reset();
 	PiaReset();
-	GimeReset();
+	gGimeGpu.GimeReset();
+	MiscReset();
 	MmuReset();
 	LoadRom();
 	// CPUReset must run AFTER MmuReset/LoadRom so that:
@@ -1066,9 +1125,12 @@ unsigned __stdcall EmuLoop(HANDLE hEvent)
 		}
 
 		StartRender();
+
 		for (uint8_t Frames = 1; Frames <= EmuState.FrameSkip; Frames++)
 		{
-			FrameCounter++;
+			if (!EmuState.Debugger.IsHalted())
+				FrameCounter++;
+
 			if (EmuState.ResetPending != 0) {
 				switch (EmuState.ResetPending)
 				{
@@ -1172,7 +1234,7 @@ void FullScreenToggle()
 		MessageBox(nullptr,"Can't rebuild primary Window","Error",0);
 		exit(0);
 	}
-	InvalidateBoarder();
+	gGimeGpu.InvalidateBoarder();
 
 	EmuState.ConfigDialog=nullptr;
 	PauseAudio(false);

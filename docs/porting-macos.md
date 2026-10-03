@@ -462,6 +462,49 @@ frameskip, and the watch-bitmap slow path. Kill switches:
 VCC_NO_FASTMEM, VCC_NO_BURST, VCC_NO_INLINE, plus per-family gates
 (VCC_NO_FAM_*) kept for bisection.
 
+## Merging upstream VCCE/VCC (2026-10)
+
+First merge from upstream since the March 30 fork point: their 46
+commits against our 124, as a merge commit on `merge-upstream` (no
+rebase - our published history stays intact). Textually small (21
+conflict hunks, 13 files); semantically, three things needed care:
+
+- **GIME timer.** Upstream redesigned it inside the old per-scanline
+  StateSwitch loop: the MSB write ($FF94) restarts, the LSB write
+  ($FF95) only changes the period for the next reload, value 0 stops
+  firing while the countdown keeps running, and an expired countdown
+  fires at once when a nonzero value returns. We replaced that loop
+  with the event heap long ago, so the semantics were re-expressed as
+  heap operations rather than merged as text. Heap deadlines count from
+  the start of the running slice, so a mid-slice register write now
+  adds the time already spent in it (plus inherited overshoot) and cuts
+  the slice - upstream has the same offset bug up to one scanline;
+  bursts would have magnified it to most of a frame.
+  tests/gimetimer.sh probes all four rules with a polling machine-code
+  program. It also shows our pre-merge main got three of them wrong
+  (LSB writes restarted, the timer fired while zero, re-enable didn't
+  fire) - the class of fix (Robocop music) that motivated the merge.
+- **Interrupt plumbing.** Upstream deleted the HorzInteruptEnabled
+  flag: HSYNC now always asserts the GIME horizontal interrupt and the
+  $FF92/$FF93 enable bits decide whether it latches. The burst
+  predicate reads those bits instead (GimeHsyncIrqArmed). Upstream's
+  per-line assert cost ~4% on the sieve because it is inlined into
+  every scanline edge; it is guarded at the call site, which is exact
+  because every writer keeps LastGimeIrq/Firq equal to their routed
+  state. ClearInterrupts() on reset runs before RecomputeChainBreak().
+- **Reset order.** Upstream's SoftReset calls CPUReset() before
+  MmuReset; ours stays after (block-cache prepopulation). Their split
+  of GimeReset into renderer/registers/misc is mirrored in
+  shell/machine.cpp.
+
+Verified: lockstep clean (DECB, NitrOS-9); IRQ deliveries 874 (DECB)
+and 29,914 (NitrOS-9) with identical screens across all six tiers;
+smoke/becker/journal/drivewire/gimetimer pass; sieve at parity,
+NitrOS-9 boot within noise (~2%). The timer probe also measured a
+pre-existing property worth knowing: bursts and per-line slicing can
+disagree by up to 3 polls (48 cycles of kBudgetSlack) on *which* poll
+sees a fire, never on elapsed time.
+
 ## The DriveWire file-flow arc (pyDriveWire, 2026-08)
 
 Goal: reach files on the Mac from inside NitrOS-9 over the becker

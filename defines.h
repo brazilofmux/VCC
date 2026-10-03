@@ -27,7 +27,7 @@ This file is part of VCC (Virtual Color Computer).
 #include <assert.h>
 
 //Speed throttling
-constexpr auto FRAMEINTERVAL = 120u;	//Number of frames to sum the framecounter over
+constexpr auto FRAMEINTERVAL = 60u;	    //Number of frames to sum the framecounter over
 constexpr auto TARGETFRAMERATE = 60u;	//Number of throttled Frames per second to render
 constexpr auto SAMPLESPERFRAME = 262u;
 
@@ -172,7 +172,7 @@ namespace VCC
     struct ISystemState
     {
         enum { OK };
-		virtual ~ISystemState() = default;
+        virtual ~ISystemState() = default;
 
         virtual int GetWindowHandle(void** handle) = 0;
         virtual int GetRect(int rectOption, Rect* rect) = 0;
@@ -184,6 +184,7 @@ struct SystemState
 {
     HWND			WindowHandle = nullptr;
     HWND			ConfigDialog = nullptr;
+    HWND			hMsgProxy = nullptr;
 
     HINSTANCE		WindowInstance = nullptr;
     unsigned char	*RamBuffer = nullptr;

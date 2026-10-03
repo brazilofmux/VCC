@@ -124,12 +124,12 @@ std::string ScreenToUtf8()
 {
 	std::string out;
 
-	const int bpr = GetBytesPerRow();
+	const int bpr = gGimeGpu.GetBytesPerRow();
 	if (bpr == 40 || bpr == 80)
 	{
 		// GIME hardware text: (character, attribute) byte pairs with
 		// near-ASCII character codes. Same walk as the headless dump.
-		const unsigned int start = GetStartOfVidram();
+		const unsigned int start = gGimeGpu.GetStartOfVidram();
 		for (int row = 0; row < 24; ++row)
 		{
 			std::string line;

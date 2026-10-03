@@ -45,6 +45,11 @@ unsigned char GetMotorState()
 	return 0;
 }
 
+bool GetTapePlaybackFastLoad()
+{
+	return false;
+}
+
 unsigned int GetTapeRate()
 {
 	return 0;
@@ -81,7 +86,7 @@ POINT GetForcedAspectBorderPadding()
 
 // ---- throttle.cpp ----
 
-float CalculateFPS()
+float CalculateFPS(bool)
 {
 	return 0.0f;
 }

@@ -31,23 +31,20 @@ struct DisplayDetails
 
 
 void SetClockSpeed(unsigned int Cycles);
-void SetLinesperScreen(unsigned char Lines);
 DisplayDetails GetDisplayDetails(const int clientWidth, const int clientHeight);
-void SetHorzInteruptState(unsigned char);
-void SetVertInteruptState(unsigned char);
 void SetSndOutMode(unsigned char);
 float RenderFrame (SystemState *);
 
-void SetTimerInteruptState(unsigned char);
 void SetTimerClockRate (unsigned char);	
-void SetInteruptTimer(unsigned int);
+void RestartInterruptTimer(unsigned int);
+void SetMasterTickCounter(unsigned int);
 void MiscReset();
 void PasteBASICWithNew();
 void PasteBASIC();
 void PasteText();
 void QueueText(const char *);
 void CopyText();
-void FlipArtifacts();
 unsigned int SetAudioRate(unsigned int);
+unsigned int GetAudioRate();
 
 #endif

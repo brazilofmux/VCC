@@ -33,6 +33,7 @@
 #include <vcc/util/logger.h>
 #include <vcc/util/fileutil.h>
 #include <vcc/util/host_services.h>
+#include <vcc/util/textutil.h>
 
 namespace VCC::Util
 {
@@ -106,33 +107,19 @@ namespace VCC::Util
 
 	//---------------------------------------------------------------
 	// Fully qualify a file based on current execution directory
+	// Undoes the effect of StripModPath() unless path absolute
 	//---------------------------------------------------------------
 	std::string QualifyModPath(const std::string& path)
 	{
 		if (path.empty()) return {};
 
+		// convert to string and normalize slashes
 		std::string mod = path;
 		FixDirSlashes(mod);
+
+		// Quit if path is absolute 
 		if (mod.find('/') != std::string::npos) return mod;
 
-		std::string exe = Util::ModulePath(NULL);
-		std::string dir = Util::GetDirectoryPart(exe);
-		return dir + '/' + mod;
+		return GetExecutableDir() + '/' + mod;
 	}
-
-	//---------------------------------------------------------------
-	// Fully qualify a file based on current execution directory
-	//---------------------------------------------------------------
-//	std::string QualifyPath(const std::string& path)
-//	{
-//		if (path.empty()) return {};
-//
-//		std::string mod = path;
-//		FixDirSlashes(mod);
-//		if (mod.find('/') != std::string::npos) return mod;
-//
-//		std::string exe = Util::ModulePath(NULL);
-//		std::string dir = Util::GetDirectoryPart(exe);
-//		return dir + '/' + mod;
-//	}
 }

@@ -109,6 +109,24 @@ namespace VCC::Debugger
 #ifdef _WIN32
 namespace VCC::Debugger::UI
 {
+	void BackBufferInfo::CleanupDC(HWND hWnd)
+	{
+		if (DeviceContext)
+		{
+			ReleaseDC(hWnd, DeviceContext);
+			DeleteDC(DeviceContext);
+			DeviceContext = nullptr;
+		}
+	}
+
+	void BackBufferInfo::CleanupBitmap()
+	{
+		if (Bitmap)
+		{
+			DeleteObject(Bitmap);
+			Bitmap = nullptr;
+		}
+	}
 
 	BackBufferInfo AttachBackBuffer(HWND hWnd, int widthAdjust, int heightAdjust)
 	{

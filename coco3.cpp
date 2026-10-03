@@ -77,15 +77,11 @@ constexpr auto RENDERS_PER_BLINK_TOGGLE = 16u;
 	static unsigned int StateSwitch=0;
 	unsigned int SoundRate=0;
 //*****************************************************
-
-static unsigned char HorzInteruptEnabled=0,VertInteruptEnabled=0;
-static unsigned char TopBoarder=0,BottomBoarder=0,TopOffScreen=0,BottomOffScreen=0;
-static unsigned char LinesperScreen;
-static unsigned char TimerInteruptEnabled=0;
 static int MasterTimer=0; 
 static unsigned int TimerClockRate=0;
 static int TimerCycleCount=0;
-static double MasterTickCounter=0,UnxlatedTickCounter=0,OldMaster=0;
+static double MasterTickCounter = 0;
+static unsigned int UnxlatedTickCounter = 0;
 static double NanosThisLine=0;
 static unsigned char BlinkPhase=1;
 static unsigned int AudioBuffer[16384];
@@ -117,9 +113,33 @@ static EventHeap eventHeap;
 static int evtTimerInterrupt = -1;
 static int evtAudioSample = -1;
 
+// GIME timer state beyond the event itself (see SetMasterTickCounter).
+static bool gTimerOverdue = true;
+// True only while CPUExec runs inside CPUCycle, i.e. while the CPU's live
+// cycle count is meaningful relative to the current slice.
+static bool gInCpuSlice = false;
+// The drift folded into the running slice's budget: after a JIT overshoot
+// it is negative, meaning the CPU started this slice that many cycles
+// ahead of event-heap time.
+static double gSliceDriftIn = 0;
+static void ScheduleTimerFromNow(double nanos);
+
 static void OnTimerInterrupt()
 {
+	if (!IntEnable)
+	{
+		// The countdown ran out while the timer value is zero. Upstream's
+		// countdown just goes negative and waits; remember that, and turn
+		// this firing into a one-shot (FireExpired disables a zero-rearm
+		// event after the handler - SetEnabled here would re-sort the heap
+		// mid-iteration).
+		gTimerOverdue = true;
+		eventHeap.SetRearmDelta(evtTimerInterrupt, 0);
+		return;
+	}
 	GimeAssertTimerInterupt();
+	// Reload: FireExpired adds the rearm delta, which SetMasterTickCounter
+	// keeps equal to the current period.
 }
 
 static void OnAudioSample()
@@ -127,9 +147,9 @@ static void OnAudioSample()
 	AudioEvent();
 }
 void SetMasterTickCounter();
-void (*DrawTopBoarder[4]) (SystemState *)={DrawTopBoarder8,DrawTopBoarder16,DrawTopBoarder24,DrawTopBoarder32};
-void (*DrawBottomBoarder[4]) (SystemState *)={DrawBottomBoarder8,DrawBottomBoarder16,DrawBottomBoarder24,DrawBottomBoarder32};
-void (*UpdateScreen[4]) (SystemState *)={UpdateScreen8,UpdateScreen16,UpdateScreen24,UpdateScreen32};
+void (GimeGpu::*DrawTopBoarder[4])(SystemState *)const ={ &GimeGpu::DrawTopBoarder8,&GimeGpu::DrawTopBoarder16,&GimeGpu::DrawTopBoarder24,&GimeGpu::DrawTopBoarder32 };
+void (GimeGpu::*DrawBottomBoarder[4])(SystemState *)const ={ &GimeGpu::DrawBottomBoarder8,&GimeGpu::DrawBottomBoarder16,&GimeGpu::DrawBottomBoarder24,&GimeGpu::DrawBottomBoarder32 };
+void (GimeGpu::*UpdateScreen[4])(SystemState *) ={ &GimeGpu::UpdateScreen8,&GimeGpu::UpdateScreen16,&GimeGpu::UpdateScreen24,&GimeGpu::UpdateScreen32 };
 std::string GetClipboardText();
 void HLINE();
 void VSYNC(unsigned char level);
@@ -210,11 +230,18 @@ static void OnBurstLine()
 		eventHeap.SetEnabled(evtBurstLine, false);
 }
 
+// Event-heap nanoseconds elapsed in the running CPU slice: live cycles
+// plus whatever overshoot the slice inherited (see gSliceDriftIn).
+static double SliceLiveNanos()
+{
+	return ((double)CPULiveCycles() - gSliceDriftIn) / CyclesPerNano;
+}
+
 // Nanoseconds of guest time elapsed inside the current burst, including
 // the live position within the CPU slice now executing.
 static double BurstLiveNanos()
 {
-	return gBurst.nanosDone + (double)CPULiveCycles() / CyclesPerNano;
+	return gBurst.nanosDone + SliceLiveNanos();
 }
 
 void CoCoLineObserve()
@@ -251,11 +278,25 @@ void CoCoLineObserveAndCut()
 	CPUCutSlice();
 }
 
+// Arm the GIME timer to fire `nanos` from now. Heap deadlines count from
+// the start of the running CPU slice, so a mid-slice register write adds
+// the time already spent in it (without that, a restart inside a long
+// burst lands early by up to most of a frame), then cuts the slice so a
+// deadline that falls inside it is honored on time instead of at its end.
+static void ScheduleTimerFromNow(double nanos)
+{
+	const double elapsed = gInCpuSlice ? SliceLiveNanos() : 0.0;
+	eventHeap.SetDeadline(evtTimerInterrupt, elapsed + nanos);
+	eventHeap.SetEnabled(evtTimerInterrupt, true);
+	if (gInCpuSlice)
+		CPUCutSlice();
+}
+
 static bool CanBurstLines()
 {
 	// VCC_NO_BURST: kill switch for A/B measurement and refuge.
 	static const bool no_burst = getenv("VCC_NO_BURST") != nullptr;
-	return !no_burst && !HorzInteruptEnabled && !PiaHsyncIrqArmed() &&
+	return !no_burst && !GimeHsyncIrqArmed() && !PiaHsyncIrqArmed() &&
 	       !PakTickDemandActive();
 }
 
@@ -314,7 +355,7 @@ void UpdateAudio()
 #endif // USE_DEBUG_AUDIOTAPE
 
 	// keep audio system full by tiny expansion of sound
-	if (AudioFreeBlockCount > 1 && (AudioIndex & 63) == 1)
+	if (AudioFreeBlockCount > 1 && (AudioIndex & 63) == 1 && AudioIndex < 16384-2)
 	{
 		unsigned int last = AudioBuffer[AudioIndex - 1];
 		AudioBuffer[AudioIndex++] = last;
@@ -381,14 +422,14 @@ float RenderFrame (SystemState *RFState)
 	if (log_mode)
 	{
 		static int last_tb = -1, last_bb = -1, last_lps = -1, last_bc = -1;
-		const int bc = GetBoarderChange();
-		if (TopBoarder != last_tb || BottomBoarder != last_bb ||
-		    LinesperScreen != last_lps || bc != last_bc)
+		const int bc = gGimeGpu.BoarderChange;
+		if (gGimeGpu.TopBoarder != last_tb || gGimeGpu.BottomBoarder != last_bb ||
+		    gGimeGpu.LinesperScreen != last_lps || bc != last_bc)
 		{
 			printf("MODE f=%u top=%d lps=%d bottom=%d bc=%d\n",
-			       FrameCounter, TopBoarder, LinesperScreen, BottomBoarder, bc);
-			last_tb = TopBoarder; last_bb = BottomBoarder;
-			last_lps = LinesperScreen; last_bc = bc;
+			       FrameCounter, gGimeGpu.TopBoarder, gGimeGpu.LinesperScreen, gGimeGpu.BottomBoarder, bc);
+			last_tb = gGimeGpu.TopBoarder; last_bb = gGimeGpu.BottomBoarder;
+			last_lps = gGimeGpu.LinesperScreen; last_bc = bc;
 		}
 	}
 
@@ -399,8 +440,8 @@ float RenderFrame (SystemState *RFState)
 //********************************Start of frame Render*****************************************************
 
 	// Blink state toggle
-	if (BlinkPhase++ > RENDERS_PER_BLINK_TOGGLE) {
-		TogBlinkState();
+	if (BlinkPhase++ > RENDERS_PER_BLINK_TOGGLE && !EmuState.Debugger.IsHalted()) {
+		gGimeGpu.TogBlinkState();
 		BlinkPhase = 0;
 	}
 
@@ -417,7 +458,7 @@ float RenderFrame (SystemState *RFState)
 	RunBlankLines(RFState, 3);
 
 	// Top Border actually begins here, but is offscreen
-	RunBlankLines(RFState, TopOffScreen);
+	RunBlankLines(RFState, gGimeGpu.TopOffScreen);
 
 	if (!(FrameCounter % RFState->FrameSkip))
 	{
@@ -425,48 +466,55 @@ float RenderFrame (SystemState *RFState)
 			return 0;
 	}
 
+	// Lines with no draw calls this frame: frameskip, or the debugger has
+	// the machine halted (upstream freezes the video while paused). Both
+	// still run every line's timing - bursts are only a faster way to.
+	const bool skipDraw = (FrameCounter % RFState->FrameSkip) != 0 ||
+	                      EmuState.Debugger.IsHalted();
+
 	// Visible Top Border begins here. (Remove 4 lines for centering)
 	RFState->Debugger.TraceCaptureScreenEvent(VCC::TraceEvent::ScreenTopBorder, 0);
-	if (FrameCounter % RFState->FrameSkip)
-		RunBlankLines(RFState, TopBoarder);
+	if (skipDraw)
+		RunBlankLines(RFState, gGimeGpu.TopBoarder);
 	else
-	for (RFState->LineCounter = 0; RFState->LineCounter < TopBoarder; RFState->LineCounter++)
+	for (RFState->LineCounter = 0; RFState->LineCounter < gGimeGpu.TopBoarder; RFState->LineCounter++)
 	{
 		HLINE();
-		DrawTopBoarder[RFState->BitDepth](RFState);
+		(gGimeGpu.*DrawTopBoarder[RFState->BitDepth])(RFState);
 	}
 
 	// Main Screen begins here: LPF = 192, 200 (actually 199), 225
 	RFState->Debugger.TraceCaptureScreenEvent(VCC::TraceEvent::ScreenRender, 0);
-	if (FrameCounter % RFState->FrameSkip)
-		RunBlankLines(RFState, LinesperScreen);
+	if (skipDraw)
+		RunBlankLines(RFState, gGimeGpu.LinesperScreen);
 	else
-	for (RFState->LineCounter = 0; RFState->LineCounter < LinesperScreen; RFState->LineCounter++)		
+	for (RFState->LineCounter = 0; RFState->LineCounter < gGimeGpu.LinesperScreen; RFState->LineCounter++)		
 	{
 		HLINE();
-		UpdateScreen[RFState->BitDepth](RFState);
+		(gGimeGpu.*UpdateScreen[RFState->BitDepth])(RFState);
 	}
 
 	// Bottom Border begins here.
 	RFState->Debugger.TraceCaptureScreenEvent(VCC::TraceEvent::ScreenBottomBorder, 0);
-	if (FrameCounter % RFState->FrameSkip)
-		RunBlankLines(RFState, BottomBoarder);
+	if (skipDraw)
+		RunBlankLines(RFState, gGimeGpu.BottomBoarder);
 	else
-	for (RFState->LineCounter=0;RFState->LineCounter < BottomBoarder;RFState->LineCounter++)
+	for (RFState->LineCounter=0;RFState->LineCounter < gGimeGpu.BottomBoarder;RFState->LineCounter++)
 	{
 		HLINE();
-		DrawBottomBoarder[RFState->BitDepth](RFState);
+		(gGimeGpu.*DrawBottomBoarder[RFState->BitDepth])(RFState);
 	}
 
 	if (!(FrameCounter % RFState->FrameSkip))
 	{
-		DrawBottomBoarder[RFState->BitDepth](RFState);
+		if (!EmuState.Debugger.IsHalted())
+			(gGimeGpu.*DrawBottomBoarder[RFState->BitDepth])(RFState);
 		UnlockScreen(RFState);
-		SetBoarderChange();
+		gGimeGpu.SetBoarderChange();
 	}
 
 	// Bottom Border continues but is offscreen
-	RunBlankLines(RFState, BottomOffScreen);
+	RunBlankLines(RFState, gGimeGpu.BottomOffScreen);
 
 	switch (SoundOutputMode)
 	{
@@ -482,7 +530,19 @@ float RenderFrame (SystemState *RFState)
 	// Only affect frame rate if a debug window is open.
 	RFState->Debugger.Update();
 
-	return(CalculateFPS());
+	static bool wasHalted = false;
+	if (EmuState.Debugger.IsHalted())
+	{
+		wasHalted = true;
+		return 0;
+	}
+	else if (wasHalted)
+	{
+		return CalculateFPS(true);
+		wasHalted = false;
+	}
+
+	return CalculateFPS(false);
 }
 
 void VSYNC(unsigned char level)
@@ -491,8 +551,7 @@ void VSYNC(unsigned char level)
 	{
 		EmuState.Debugger.TraceCaptureScreenEvent(VCC::TraceEvent::ScreenVSYNCLow, 0);
 		irq_fs(0);
-		if (VertInteruptEnabled)
-			GimeAssertVertInterupt();
+		GimeAssertVertInterupt();
 	}
 	else
 	{
@@ -506,7 +565,11 @@ void HSYNC(unsigned char level)
 	if (level == 0)
 	{
 		EmuState.Debugger.TraceCaptureScreenEvent(VCC::TraceEvent::ScreenHSYNCLow, 0);
-		if (HorzInteruptEnabled)
+		// With the HSYNC enable bits clear in $FF92/$FF93 the assert is an
+		// exact no-op (nothing latches, and LastGimeIrq/Firq always equal
+		// their routed state, so no CPU line moves) - skip it: this runs
+		// for every scanline, and the call was ~40% of the line-edge cost.
+		if (GimeHsyncIrqArmed())
 			GimeAssertHorzInterupt();
 		irq_hs(0);
 	}
@@ -524,34 +587,11 @@ void SetClockSpeed(unsigned int Cycles)
 	return;
 }
 
-void SetHorzInteruptState(unsigned char State)
-{
-	HorzInteruptEnabled= !!State;
-	return;
-}
-
-void SetVertInteruptState(unsigned char State)
-{
-	VertInteruptEnabled= !!State;
-	return;
-}
-
-void SetLinesperScreen (unsigned char Lines)
-{
-	Lines = (Lines & 3);
-	LinesperScreen=Lpf[Lines];
-	TopBoarder=VcenterTable[Lines];
-	BottomBoarder = 239 - (TopBoarder + LinesperScreen);
-	TopOffScreen = TopOffScreenTable[Lines];
-	BottomOffScreen = BottomOffScreenTable[Lines];
-	return;
-}
-
 
 DisplayDetails GetDisplayDetails(const int clientWidth, const int clientHeight)
 {
-	const float pixelsPerLine = GetDisplayedPixelsPerLine();
-	const float horizontalBorderSize = GetHorizontalBorderSize();
+	const float pixelsPerLine = gGimeGpu.GetDisplayedPixelsPerLine();
+	const float horizontalBorderSize = gGimeGpu.GetHorizontalBorderSize();
 	const float activeLines = 192.0f;	//	FIXME: Needs a symbolic
 
 	DisplayDetails details;
@@ -564,16 +604,16 @@ DisplayDetails GetDisplayDetails(const int clientWidth, const int clientHeight)
 
 	// calculate the content size including the borders in surface coords
 	float contentWidth = pixelsPerLine + horizontalBorderSize * 2;
-	float contentHeight = activeLines + TopBoarder + BottomBoarder;
+	float contentHeight = activeLines + gGimeGpu.TopBoarder + gGimeGpu.BottomBoarder;
 
 	// now get scale difference between both previous equivalent boxes
 	float horizontalScale = deviceScreenWidth / contentWidth;
 	float verticalScale = deviceScreenHeight / contentHeight;
 
 	// fill in details by scalling the coco screen into device coords
-	details.contentRows = static_cast<int>(LinesperScreen * verticalScale);
-	details.topBorderRows = static_cast<int>(TopBoarder * verticalScale) + extraBorderPadding.y;
-	details.bottomBorderRows = static_cast<int>(BottomBoarder * verticalScale) + extraBorderPadding.y;
+	details.contentRows = static_cast<int>(gGimeGpu.LinesperScreen * verticalScale);
+	details.topBorderRows = static_cast<int>(gGimeGpu.TopBoarder * verticalScale) + extraBorderPadding.y;
+	details.bottomBorderRows = static_cast<int>(gGimeGpu.BottomBoarder * verticalScale) + extraBorderPadding.y;
 
 	details.contentColumns = static_cast<int>(pixelsPerLine * horizontalScale);
 	details.leftBorderColumns = static_cast<int>(horizontalBorderSize * horizontalScale) + extraBorderPadding.x;
@@ -584,6 +624,9 @@ DisplayDetails GetDisplayDetails(const int clientWidth, const int clientHeight)
 
 _inline void HLINE()
 {
+	if (EmuState.Debugger.IsHalted())
+		return; 
+
 	UpdateAudio();
 
 	// When neither hsync interrupt source is armed, nothing software-
@@ -592,7 +635,7 @@ _inline void HLINE()
 	// This halves the CPUExec entry/exit cost, which dominates at 57
 	// emulated cycles per call. The PIA HS status flag still flips and
 	// PakTimer still ticks, in the same order as the split path.
-	if (!HorzInteruptEnabled && !PiaHsyncIrqArmed())
+	if (!GimeHsyncIrqArmed() && !PiaHsyncIrqArmed())
 	{
 		CPUCycle(NanosPerLine);
 		HSYNC(0);
@@ -666,7 +709,10 @@ _inline void CPUCycle(double NanosToRun)
 		{
 			const double whole = floor(CyclesThisLine);
 			if (cycle_stats) { ++stat_execs; stat_cycles += (uint64_t)whole; }
+			gSliceDriftIn = CycleDrift;
+			gInCpuSlice = true;
 			CycleDrift = CPUExec((int)whole) + (CyclesThisLine - whole);
+			gInCpuSlice = false;
 			// A slice cut (CoCoLineObserveAndCut) returns unexecuted
 			// whole cycles as positive drift. Hand them back as nanos
 			// so this loop re-slices them - against the per-line event
@@ -706,56 +752,81 @@ _inline void CPUCycle(double NanosToRun)
 	EmuState.Debugger.TraceEmulatorCycle(VCC::TraceEvent::EmulatorCycle, 20, 0, 0, 0, emulationCycles, emulationDrift);
 }
 
-void SetTimerInteruptState(unsigned char State)
+//
+// Restart with new timer value.
+// 
+// Note: zero is done by caller.
+//
+void RestartInterruptTimer(unsigned int timer)
 {
-	TimerInteruptEnabled=State;
-	return;
+	// A restart replaces any expired countdown; clear the flag first so
+	// the period update below doesn't also schedule an immediate fire.
+	if (timer & 0xFFF)
+		gTimerOverdue = false;
+	SetMasterTickCounter(timer);
+
+	if (IntEnable)
+		ScheduleTimerFromNow(MasterTickCounter);
 }
 
-void SetInteruptTimer(unsigned int Timer)
-{
-	UnxlatedTickCounter=(Timer & 0xFFF);
-	SetMasterTickCounter();
-	IntEnable = 1;  // Gime always sets timer flag when timer expires.  EJJ 25oct24
-	return;
+//
+// Setup new timer clock rate, if changed.
+// 
+// 0 = 63.695uS  (1/60*262)  1 scanline time
+// 1 = 279.265nS (1/ColorBurst) 
+//
+void SetTimerClockRate(unsigned char rate)	
+{											
+	auto clockRate = rate ? 1 : 0;
+	// only update clock rate if changed
+	if (TimerClockRate == clockRate) return;
+
+	// clock rate changed
+	TimerClockRate = clockRate;
+	RestartInterruptTimer(UnxlatedTickCounter);
 }
 
-void SetTimerClockRate (unsigned char Tmp)	//1= 279.265nS (1/ColorBurst) 
-{											//0= 63.695uS  (1/60*262)  1 scanline time
-	TimerClockRate=!!Tmp;
-	SetMasterTickCounter();
-	return;
-}
-
-void SetMasterTickCounter()
+//
+// Setup the master time to timer interrupt based on current rate.
+//
+// timerOffset: depends on Gime version:
+//   1 = Gime'87
+//   2 = Gime'86
+//
+void SetMasterTickCounter(unsigned int timer)
 {
+	UnxlatedTickCounter = timer & 0xFFF;
+
+	// if non-zero, update nanos to interrupt, otherwise if zero clear event.
+	IntEnable = UnxlatedTickCounter > 0 ? 1 : 0;
+
 	// Rate = { 63613.2315, 279.265 };
 	double Rate[2]={NANOSECOND/(TARGETFRAMERATE*LINESPERSCREEN),NANOSECOND/COLORBURST};
 	// Master count contains at least one tick. EJJ 10mar25
-	MasterTickCounter = (UnxlatedTickCounter+1) * Rate[TimerClockRate];
-	if (MasterTickCounter != OldMaster)
-	{
-		OldMaster=MasterTickCounter;
-		NanosToInterrupt=MasterTickCounter;
+	const unsigned int timerOffset = 1; // 1 = Gime'87, 2 = Gime'86
+	MasterTickCounter = Rate[TimerClockRate] * (UnxlatedTickCounter + timerOffset);
 
-		// Sync event heap: update timer period and reset countdown
-		eventHeap.SetRearmDelta(evtTimerInterrupt, MasterTickCounter);
-		eventHeap.SetDeadline(evtTimerInterrupt, MasterTickCounter);
-		eventHeap.SetEnabled(evtTimerInterrupt, true);
+	// Event-heap form of upstream's countdown: the next reload uses the
+	// period current at fire time (OnTimerInterrupt reads it), and a
+	// countdown that ran out while the timer was zero fires as soon as a
+	// nonzero value arrives - even via the non-restarting LSB write.
+	eventHeap.SetRearmDelta(evtTimerInterrupt, MasterTickCounter);
+	if (IntEnable && gTimerOverdue)
+	{
+		gTimerOverdue = false;
+		ScheduleTimerFromNow(0);
 	}
-	return;
 }
 
 void MiscReset()
 {
-	HorzInteruptEnabled=0;
-	VertInteruptEnabled=0;
-	TimerInteruptEnabled=0;
 	MasterTimer=0;
+	// Upstream never resets the countdown, so after a reset it reads as
+	// already expired: the first nonzero timer value fires immediately.
+	gTimerOverdue = true;
 	TimerClockRate=0;
 	MasterTickCounter=0;
 	UnxlatedTickCounter=0;
-	OldMaster=0;
 //*************************
 	SoundInterupt=0;//PICOSECOND/44100;
 	NanosToSoundSample=SoundInterupt;
@@ -802,18 +873,61 @@ unsigned int SetAudioRate (unsigned int Rate)
 	return 0;
 }
 
+unsigned int GetAudioRate()
+{
+	return SoundRate;
+}
+
+void OutputAudio(unsigned int dac, unsigned int cas)
+{
+	// fade ramp state
+	static unsigned int fadeTo = 0;
+	static unsigned int fade = 0;
+
+	// extract left channel
+	auto getLeft = [](auto sample) { return (unsigned long)(sample & 0xFFFF); };
+	// extract right channel
+	auto getRight = [](auto sample) { return (unsigned long)((sample >> 16) & 0xFFFF); };
+	// convert 8 bit to 16 bit stereo (like dac)
+	auto monoToStereo = [](uint8_t sample) { return ((uint32_t)sample << 23) | ((uint32_t)sample << 7); };
+
+	// mix two channels dependant on mux (2 x 16bit)
+	auto casChannel = monoToStereo(cas);
+	auto dacChannel = dac;
+
+	// fade time of 16ms, note: this is slow enough to eliminate switching pop but
+	// it must be quick too because some games have a nasty habit of toggling the 
+	// mux on and off, such as Tuts Tomb, in order to generate clicks (footsteps).
+	const int FADE_TIME = SoundRate / 64;
+
+	// update ramp, always moving towards correct channel  
+	fade = fade < fadeTo ? fade + 1 : fade > fadeTo ? fade - 1 : fade;
+
+	// if mux changed, start transition
+	fadeTo = FADE_TIME * (GetMuxState() == PIA_MUX_CASSETTE ? 1 : 0);
+
+	// mix audio level between device channels
+	auto left = (getLeft(casChannel) * fade + getLeft(dacChannel) * (FADE_TIME - fade)) / FADE_TIME;
+	auto right = (getRight(casChannel) * fade + getRight(dacChannel) * (FADE_TIME - fade)) / FADE_TIME;
+	auto sample = (unsigned int)(left + (right << 16));
+
+	while (NanosToAudioSample > 0)
+	{
+		AudioBuffer[AudioIndex++] = sample;
+		NanosToAudioSample -= NANOSECOND / AUDIO_RATE;
+	}
+	NanosToAudioSample += SoundInterupt;
+}
+
 void AudioOut()
 {
-
-	AudioBuffer[AudioIndex++]=GetDACSample();
-	return;
+	AudioBuffer[AudioIndex++] = GetDACSample();
 }
 
 void CassOut()
 {
 	if (LastMotorState && CassIndex < sizeof(CassBuffer)/sizeof(*CassBuffer))
 		CassBuffer[CassIndex++]=GetCasSample();
-	return;
 }
 
 //
@@ -856,7 +970,7 @@ void CassIn()
 	// convert 8 bit to 16 bit stereo (like dac)
 	auto monoToStereo = [](uint8_t sample) { return ((uint32_t)sample << 23) | ((uint32_t)sample << 7); };
 
-	if (TapeFastLoad)
+	if (GetTapePlaybackFastLoad())
 	{
 		AudioBuffer[AudioIndex++] = GetMuxState() == PIA_MUX_CASSETTE ? monoToStereo(CAS_SILENCE) : GetDACSample();
 	}
@@ -866,32 +980,7 @@ void CassIn()
 		auto casSample =  CassInByteStream();
 		SetCassetteSample(casSample);
 
-		// mix two channels dependant on mux (2 x 16bit)
-		auto casChannel = monoToStereo(casSample);
-		auto dacChannel = GetDACSample();
-
-		// fade time of 125ms, note: this is slow enough to eliminate switching pop but
-		// it must be quick too because some games have a nasty habit of toggling the 
-		// mux on and off, such as Tuts Tomb.
-		const int FADE_TIME = SoundRate / 8;
-
-		// update ramp, always moving towards correct channel  
-		fade = fade < fadeTo ? fade + 1 : fade > fadeTo ? fade - 1 : fade;
-
-		// if mux changed, start transition
-		fadeTo = FADE_TIME * (GetMuxState() == PIA_MUX_CASSETTE ? 1 : 0);
-
-		// mix audio level between device channels
-		auto left = (getLeft(casChannel) * fade + getLeft(dacChannel) * (FADE_TIME - fade)) / FADE_TIME;
-		auto right = (getRight(casChannel) * fade + getRight(dacChannel) * (FADE_TIME - fade)) / FADE_TIME;
-		auto sample = (unsigned int)(left + (right << 16));
-
-		while (NanosToAudioSample > 0)
-		{
-			AudioBuffer[AudioIndex++] = sample;
-			NanosToAudioSample -= NANOSECOND / AUDIO_RATE;
-		}
-		NanosToAudioSample += SoundInterupt;
+		OutputAudio(GetDACSample(), casSample);
 	}
 }
 
@@ -932,7 +1021,7 @@ void PasteText() {
 	using namespace std;
 	std::string tmp;
 	string cliptxt, clipparse, lines, debugout;
-	int GraphicsMode = GetGraphicsMode();
+	int GraphicsMode = gGimeGpu.GetGraphicsMode();
 	if (GraphicsMode != 0) {
 		int tmp = MessageBox(nullptr, "Warning: You are not in text mode. Continue Pasting?", "Clipboard", MB_YESNO);
 		if (tmp != 6) { return; }
@@ -1153,9 +1242,9 @@ void CopyText() {
 	int lines;
 	int offset;
 	int lastchar;
-	int BytesPerRow = GetBytesPerRow();
-	int GraphicsMode = GetGraphicsMode();
-	unsigned int screenstart = GetStartOfVidram();
+	int BytesPerRow = gGimeGpu.GetBytesPerRow();
+	int GraphicsMode = gGimeGpu.GetGraphicsMode();
+	unsigned int screenstart = gGimeGpu.GetStartOfVidram();
 	if (GraphicsMode != 0) { 
 		MessageBox(nullptr, "ERROR: Graphics screen can not be copied.\nCopy can ONLY use a hardware text screen.", "Clipboard", 0); 
 		return;

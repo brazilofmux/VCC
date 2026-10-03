@@ -64,12 +64,12 @@ target_include_directories(vcc-libcommon PUBLIC
 )
 
 # Windows: the _WIN32 paths in the cartridge modules reference the real
-# dialog and winapi helpers, so they join the portable set here (they
-# are inert until a config menu opens them).
+# dialog and Win32 resource helpers (coreutil replaced winapi upstream),
+# so they join the portable set here (inert until a config menu opens).
 if(WIN32)
   target_sources(vcc-libcommon PRIVATE
     libcommon/src/util/DialogOps.cpp
-    libcommon/src/util/winapi.cpp
+    libcommon/src/util/coreutil.cpp
   )
 endif()
 

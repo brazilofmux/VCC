@@ -50,44 +50,48 @@ void EndRender(unsigned char Skip)
 	return;
 }
 
-void CheckSound()
+
+void FrameWait()
 {
+	//If we have more that 10Ms till the end of the frame
+	QueryPerformanceCounter(&CurrentTime);
+	while ((TargetTime.QuadPart - CurrentTime.QuadPart) > (OneMs.QuadPart * 10))
+	{
+		Sleep(5);	//Give about 5Ms back to the system
+		QueryPerformanceCounter(&CurrentTime);	//And check again
+	}
+
+	//If we have more that 2Ms till the end of the frame
+	QueryPerformanceCounter(&CurrentTime);
+	while ( (TargetTime.QuadPart-CurrentTime.QuadPart)> (OneMs.QuadPart*2))
+	{
+		Sleep(1);	//Give about 1Ms back to the system
+		QueryPerformanceCounter(&CurrentTime);	//And check again
+	}
+
 	// Lean on the sound card a bit for timing
 	if (GetSoundStatus())
 	{
 		PurgeAuxBuffer();
 		if (FrameSkip == 1)
 		{
-			// Dont let the buffer get lest that half full
+			// Dont let the buffer get less that half full
+			// Returning early increases the framerate slightly in
+			// order to write more sound data.
 			if (GetFreeBlockCount() > AUDIOBUFFERS / 2)
 				return;
 
 			// Dont let it fill up either
-			int count = 100; // loop limit
+			// Slow framerate to allow sound buffer to empty.
+			int count = 4; // loop limit
 			while (GetFreeBlockCount() < 1 && count > 0)
 			{
-Sleep(1);
+				Sleep(1);
 				--count;
 			}
 		}
 	}
-}
-
-void FrameWait()
-{
-	//If we have more that 2Ms till the end of the frame
-	QueryPerformanceCounter(&CurrentTime);
-	while ( (TargetTime.QuadPart-CurrentTime.QuadPart)> (OneMs.QuadPart*2))	
-	{
-		Sleep(1);	//Give about 1Ms back to the system
-		QueryPerformanceCounter(&CurrentTime);	//And check again
-	}
-
-	// Bug#281
-	// moved to its own function so that final poll until frame end is always performed,
-	// otherwise this sound check would exit early.
-	CheckSound();
-
+	
 	//Poll Untill frame end.
 	while ( CurrentTime.QuadPart< TargetTime.QuadPart)	
 		QueryPerformanceCounter(&CurrentTime);
@@ -96,14 +100,22 @@ void FrameWait()
 }
 
 //Done at end of render;
-float CalculateFPS() 
+float CalculateFPS(bool wasHalted) 
 {
 	const int frameUpdateRate = FRAMEINTERVAL;
 	static unsigned int frameCount=0;
 	static float fps=0;
 	static _LARGE_INTEGER lastNow;
 
-	if (++frameCount != frameUpdateRate)
+	if (wasHalted)
+	{
+		frameCount = 0;
+		QueryPerformanceCounter(&Now);
+		lastNow = Now;
+		return fps;
+	}
+
+	if (++frameCount < frameUpdateRate)
 		return fps;
 
 	lastNow = Now;
@@ -112,7 +124,7 @@ float CalculateFPS()
 	// interval between FrameInterval frames in milliseconds as long long
 	auto intervalMS = (Now.QuadPart - lastNow.QuadPart) / OneMs.QuadPart;
 	auto intervalSeconds = (float)intervalMS / 1000.0f;
-	fps = (float)frameUpdateRate / intervalSeconds;
+	fps = (float)frameCount / intervalSeconds;
 
 	frameCount = 0;
 	return fps;

@@ -30,11 +30,18 @@ This file is part of VCC (Virtual Color Computer).
 #include <vcc/util/FileOps.h>
 #include <vcc/util/DialogOps.h>
 #include <vcc/util/logger.h>
+#include "config.h"
 
 static HINSTANCE g_hinstDLG;
 
 namespace VCC::Debugger::UI
 {
+	const std::string cWindowSizeX("WindowSizeX");
+	const std::string cWindowSizeY("WindowSizeY");
+	const std::string cWindowPosX("WindowPosX");
+	const std::string cWindowPosY("WindowPosY");
+	const std::string cSection("ExecutionTrace");
+
 	HWND ExecutionTraceWindow = nullptr;
 	HWND hWndExecutionTrace;
 	HWND hWndVScrollBar;
@@ -50,14 +57,14 @@ namespace VCC::Debugger::UI
 
 	enum class TraceStatus
 	{
-		Empty,
+		Stopped,
 		Enabled,
 		Collecting,
 		LoadPage,
 		Loaded
 	};
 
-	TraceStatus status = TraceStatus::Empty;
+	TraceStatus status = TraceStatus::Stopped;
 	long traceOffset = 0;
 	long tracePage = 50;
 	long traceCursor = 0;
@@ -191,13 +198,32 @@ namespace VCC::Debugger::UI
 		DeleteObject(pen);
 	}
 
+	void UpdateTraceStatus(TraceStatus s)
+	{
+		const char* statusLabel[] =
+		{
+			"Stopped",
+			"Enabled",
+			"Collecting",
+			"LoadPage",
+			"Loaded"
+		};
+
+		char buf[100];
+		sprintf(buf, "%s", statusLabel[(int)s]);
+		auto samples = EmuState.Debugger.GetTraceSamples();
+		if (samples > 0)
+			sprintf(buf + strlen(buf), " (%d)", samples);
+
+		status = s;
+		HWND hCtl = GetDlgItem(hWndExecutionTrace, IDC_TRACE_STATUS);
+		SetWindowText(hCtl, buf);
+	}
+
 //-------------------------------------------------------------------------------
 	void DrawSamplingInProgress(HDC hdc)
 	{
-		status = TraceStatus::Collecting;
-
-		HWND hCtl = GetDlgItem(hWndExecutionTrace, IDC_TRACE_STATUS);
-		SetWindowText(hCtl, "Trace is running");
+		UpdateTraceStatus(TraceStatus::Collecting);
 
 		RECT rect;
 		GetClientRect(hWndTrace, &rect);
@@ -218,20 +244,18 @@ namespace VCC::Debugger::UI
 //-------------------------------------------------------------------------------
 	void DrawNoSamplesCollected(HDC hdc)
 	{
-		status = TraceStatus::Empty;
-
-		HWND hCtl = GetDlgItem(hWndExecutionTrace, IDC_TRACE_STATUS);
-		SetWindowText(hCtl, "Trace is stopped");
-
 		RECT rect;
 		GetClientRect(hWndTrace, &rect);
 
 		HFONT hFont = CreateFont(24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_OUTLINE_PRECIS,
-			CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, TEXT("Consolas"));
+		CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, TEXT("Consolas"));
 		SelectObject(hdc, hFont);
 
-		std::string s = "Press Enable to start collection";
-		DrawText(hdc, s.c_str(), s.size(), &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		const char* s = "Press Enable to start collection";
+		if (status == TraceStatus::Enabled && EmuState.Debugger.GetTraceSamples() == 0)
+			s = "Trace enabled, waiting collection";
+
+		DrawText(hdc, s, strlen(s), &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
 		DeleteObject(hFont);
 	}
@@ -249,11 +273,7 @@ namespace VCC::Debugger::UI
 		}
 
 		// Indicate what we collected.
-		std::stringstream ss;
-		ss << samples << " collected";
-
-		HWND hCtl = GetDlgItem(hWndExecutionTrace, IDC_TRACE_STATUS);
-		SetWindowText(hCtl, ss.str().c_str());
+		UpdateTraceStatus(TraceStatus::Stopped);
 
 		// Adjust Vertical Scrollbar based on samples collected.
 		SCROLLINFO si;
@@ -266,7 +286,7 @@ namespace VCC::Debugger::UI
 		// Draw the collection.
 		RECT rect = *clientRect;
 
-		HFONT hFont = CreateFont(12, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_OUTLINE_PRECIS,
+		HFONT hFont = CreateFont(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_OUTLINE_PRECIS,
 			CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, TEXT("Consolas"));
 		SelectObject(hdc, hFont);
 
@@ -279,13 +299,14 @@ namespace VCC::Debugger::UI
 		// Load page?
 		if (currentTrace.size() == 0 || status == TraceStatus::LoadPage)
 		{
-			status = TraceStatus::Loaded;
+			UpdateTraceStatus(TraceStatus::Loaded);
 		}
 
 		// Draw our header line.
 		SetTextColor(hdc, RGB(138, 27, 255));
-		std::vector<std::string> headers = { "Sample", "Cycles", "Address", "Memory", "Instruction", "CPU Cycles", "State Changes", "CC", "D", "X", "Y", "U", "S", "DP" };
-		std::vector<int> columns = { 60, 60, 60, 90, 120, 80, 160, 60, 40, 30, 30, 30, 30, 30 };
+		std::vector<const char *> headers = { "Sample", "Cycles", "Address", "Memory", "Instruction", "CPU Cycles", "State Changes", "CC", "D", "X", "Y", "U", "S", "DP" };
+		std::vector<int> columns = { 60, 60, 60, 90, 90, 80, 100, 80, 40, 40, 40, 40, 40, 40 };
+		std::vector<int> priority = { 1, 1, 1, 1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1 };
 
 		bool Is6309 = EmuState.CpuType == 1;
 
@@ -293,19 +314,40 @@ namespace VCC::Debugger::UI
 		if (Is6309)
 		{
 			headers.emplace(headers.begin() + 9, "W");
-			columns.emplace(columns.begin() + 9, 30);
+			columns.emplace(columns.begin() + 9, 40);
+			priority.emplace(priority.begin() + 9, 1);
 
 			headers.emplace_back("MD");
-			columns.emplace_back(30);
+			columns.emplace_back(40);
+			priority.emplace_back(1);
 		}
 
-		int x = 10;
+		// size between columns
+		const int columnGutter = 2;
+		const int rowHeight = 15;
+
+		// size of a column
+		auto columnSize = [&](int col)
+		{
+			return columnGutter + columns[col] * priority[col];
+		};
+
+		long total = 0;
+		for (size_t i = 0; i < columns.size(); ++i)
+			total += columnSize(i);
+
+		auto border = 4;
+		auto widthScale = (float)horizontalWidth / total;
+
+		float px = (float)border;
 		int col = 0;
-		for (const auto& h : headers)
+		for (auto h : headers)
 		{
 			RECT rc;
-			int w = columns[col++];
-			SetRect(&rc, rect.left + x, rect.top, rect.left + x + w, rect.top + 20);
+			float w = widthScale * columnSize(col);
+			col++;
+			int x = (int)px;
+			SetRect(&rc, rect.left + x + columnGutter/2, rect.top, rect.left + x + (int)w - columnGutter/2, rect.top + 20);
 
 			// Draw the border.
 			MoveToEx(hdc, rc.left, rc.top, nullptr);
@@ -314,8 +356,8 @@ namespace VCC::Debugger::UI
 			LineTo(hdc, rc.left, rc.bottom - 1);
 			LineTo(hdc, rc.left, rc.top);
 
-			DrawText(hdc, h.c_str(), h.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-			x += w + 5;
+			DrawText(hdc, h, strlen(h), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			px += w;
 		}
 
 		// Trace Mark Highlight Colors
@@ -369,140 +411,121 @@ namespace VCC::Debugger::UI
 			std::string s;
 
 			RECT rc;
-			int x = 10;
+			px = (float)border;
+			col = 0;
 
 			long n = i + traceOffset;
 
+			auto setColumn = [&](int col)
+			{
+				float w = widthScale * columnSize(col);
+				int x = (int)px;
+				SetRect(&rc, rect.left + x + columnGutter/2, y, rect.left + x + (int)w - columnGutter/2, y + rowHeight);
+				px += w;
+			};
+
+			if (n >= (long)currentTrace.size()) continue;
+
 			if (n == traceCursor)
 			{
-				SetRect(&rc, rect.left, y, rect.right, y + 14);
+				SetRect(&rc, rect.left, y, rect.right, y + rowHeight);
 				FillRect(hdc, &rc, hBrushCursor);
 			}
 
 			if (currentTrace[n].cycleTime == traceMark1)
 			{
-				SetRect(&rc, rect.left, y, rect.right, y + 14);
+				SetRect(&rc, rect.left, y, rect.right, y + rowHeight);
 				FillRect(hdc, &rc, hBrushMark1);
 			}
 
 			if (currentTrace[n].cycleTime == traceMark2)
 			{
-				SetRect(&rc, rect.left, y, rect.right, y + 14);
+				SetRect(&rc, rect.left, y, rect.right, y + rowHeight);
 				FillRect(hdc, &rc, hBrushMark2);
 			}
 
 			int w = columns[0];
-			SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+			setColumn(col++);
 			s = ToDecimalString(n + 1, 10, false);
 			DrawText(hdc, s.c_str(), s.size(), &rc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
 			if (currentTrace[n].event == TraceEvent::Instruction)
 			{
-				col = 1;
-				x += w + 5;
-				w = columns[col++];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = ToDecimalString(currentTrace[n].cycleTime, 10, false);
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
-				x += w + 5;
-				w = columns[col++];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = ToHexString(currentTrace[n].pc, 4);
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-				x += w + 5;
-				w = columns[col++];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = ToByteString(currentTrace[n].bytes);
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-				x += w + 5;
-				w = columns[col++];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = currentTrace[n].instruction + " " + currentTrace[n].operand;
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-				x += w + 5;
-				w = columns[col++];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = ToDecimalString(currentTrace[n].execCycles, 2, false);
 				s += " / ";
 				s += ToDecimalString(currentTrace[n].decodeCycles, 2, false);
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-				x += w + 5;
-				w = columns[col++];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = ToStateChangeString(currentTrace[n]);
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-				x += w + 5;
-				w = columns[col++];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = ToCCString(currentTrace[n].startState.CC);
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-				x += w + 5;
-				w = columns[col++];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = ToHexString((currentTrace[n].startState.A << 8) + currentTrace[n].startState.B, 4);
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
 				if (Is6309)
 				{
-					x += w + 5;
-					w = columns[col++];
-					SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+					setColumn(col++);
 					s = ToHexString((currentTrace[n].startState.E << 8) + currentTrace[n].startState.F, 4);
 					DrawText(hdc, s.c_str(), s.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 				}
 
-				x += w + 5;
-				w = columns[col++];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = ToHexString(currentTrace[n].startState.X, 4);
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-				x += w + 5;
-				w = columns[col++];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = ToHexString(currentTrace[n].startState.Y, 4);
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-				x += w + 5;
-				w = columns[col++];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = ToHexString(currentTrace[n].startState.U, 4);
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-				x += w + 5;
-				w = columns[col++];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = ToHexString(currentTrace[n].startState.S, 4);
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-				x += w + 5;
-				w = columns[col++];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = ToHexString(currentTrace[n].startState.DP, 2);
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
 				if (Is6309)
 				{
-					x += w + 5;
-					w = columns[col++];
-					SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+					setColumn(col++);
 					s = ToHexString(currentTrace[n].startState.MD, 2);
 					DrawText(hdc, s.c_str(), s.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 				}
-				y += 15;
+				y += rowHeight;
 			}
 			else if (currentTrace[n].event == TraceEvent::EmulatorCycle)
 			{
-				x += w + 10;
+				px += 10;
 				w = 1200;
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				int x = (int)px;
+				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + rowHeight);
 				std::stringstream ss;
 				ss << "Emulation :: ";
 				switch (currentTrace[n].emulationState)
@@ -546,63 +569,45 @@ namespace VCC::Debugger::UI
 				ss << "  drift " << currentTrace[n].emulator[4];
 				ss << "  total " << currentTrace[n].emulator[5];
 				DrawText(hdc, ss.str().c_str(), ss.str().size(), &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-				y += 15;
+				y += rowHeight;
 			}
 			else if (currentTrace[n].event > TraceEvent::ScreenStart && currentTrace[n].event < TraceEvent::ScreenEnd)
 			{
-				x += w + 5;
-				w = columns[1];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = ToDecimalString(currentTrace[n].cycleTime, 10, false);
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
-				x += w + 5;
-				w = columns[2];
-				x += w + 5;
-				w = columns[3];
-				x += w + 5;
-
-				w = columns[4];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
+				setColumn(col++);
+				setColumn(col++);
 				s = currentTrace[n].instruction;
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-				x += w + 5;
-				w = columns[5];
-				SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
+				setColumn(col++);
 				s = ToDecimalString(currentTrace[n].execCycles, 2, false);
 				s += " / ";
 				s += ToDecimalString(currentTrace[n].decodeCycles, 2, false);
 				DrawText(hdc, s.c_str(), s.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-				y += 15;
+				y += rowHeight;
 			}
 			else if (currentTrace[n].event > TraceEvent::IRQStart && currentTrace[n].event < TraceEvent::IRQEnd)
 			{
-			x += w + 5;
-			w = columns[1];
-			SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
-			s = ToDecimalString(currentTrace[n].cycleTime, 10, false);
-			DrawText(hdc, s.c_str(), s.size(), &rc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+				setColumn(col++);
+				s = ToDecimalString(currentTrace[n].cycleTime, 10, false);
+				DrawText(hdc, s.c_str(), s.size(), &rc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
-			x += w + 5;
-			w = columns[2];
-			x += w + 5;
-			w = columns[3];
-			x += w + 5;
+				setColumn(col++);
+				setColumn(col++);
+				setColumn(col++);
+				s = currentTrace[n].instruction;
+				DrawText(hdc, s.c_str(), s.size(), &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-			w = columns[4];
-			SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
-			s = currentTrace[n].instruction;
-			DrawText(hdc, s.c_str(), s.size(), &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-			x += w + 5;
-			w = columns[5];
-			SetRect(&rc, rect.left + x, y, rect.left + x + w, y + 15);
-			s = ToDecimalString(currentTrace[n].execCycles, 2, false);
-			s += " / ";
-			s += ToDecimalString(currentTrace[n].decodeCycles, 2, false);
-			DrawText(hdc, s.c_str(), s.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-			y += 15;
+				setColumn(col++);
+				s = ToDecimalString(currentTrace[n].execCycles, 2, false);
+				s += " / ";
+				s += ToDecimalString(currentTrace[n].decodeCycles, 2, false);
+				DrawText(hdc, s.c_str(), s.size(), &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+				y += rowHeight;
 			}
 		}
 
@@ -646,6 +651,10 @@ namespace VCC::Debugger::UI
 		RECT Rect;
 		GetClientRect(hWndExecutionTrace, &Rect);
 
+		DeleteDC(BackBuffer_.DeviceContext);
+		horizontalWidth = std::max(900l, (long)Rect.right - ScrollBarWidth - 10);
+		BackBuffer_ = AttachBackBuffer(hWndExecutionTrace, horizontalWidth, 0);
+
 		// Hide horizontal scrollbar if not needed.
 		showHScrollBar = Rect.right - ScrollBarWidth < horizontalWidth;
 		ShowWindow(hWndHScrollBar, showHScrollBar ? SW_SHOW : SW_HIDE);
@@ -675,7 +684,7 @@ namespace VCC::Debugger::UI
 
 		if (status == TraceStatus::Loaded)
 		{
-			status = TraceStatus::LoadPage;
+			UpdateTraceStatus(TraceStatus::LoadPage);
 		}
 
 		InvalidateRect(hWndTrace, &BackBuffer_.Rect, FALSE);
@@ -691,16 +700,8 @@ namespace VCC::Debugger::UI
 		{
 			RECT Rect;
 			GetClientRect(hwnd, &Rect);
-			BackBuffer_ = AttachBackBuffer(hwnd, horizontalWidth - Rect.right, 0);
-			break;
-		}
-
-		case WM_SIZE:
-		{
-			RECT Rect;
-			GetClientRect(hwnd, &Rect);
-			DeleteDC(BackBuffer_.DeviceContext);
-			BackBuffer_ = AttachBackBuffer(hwnd, horizontalWidth - Rect.right, 0);
+			horizontalWidth = std::max(900l, (long)Rect.right - ScrollBarWidth);
+			BackBuffer_ = AttachBackBuffer(hwnd, horizontalWidth, 0);
 			break;
 		}
 
@@ -766,13 +767,18 @@ namespace VCC::Debugger::UI
 		EmuState.Debugger.SetTraceMaxSamples(maxSamples);
 		ExportStop = maxSamples;
 
+		auto total = maxSamples;
+		auto visible = tracePage;
+		auto pos = 0;
+
 		SCROLLINFO si;
 		si.cbSize = sizeof(si);
-		si.fMask = SIF_ALL;
+		si.fMask = SIF_RANGE | SIF_POS | SIF_PAGE;
 		si.nMin = 0;
-		si.nMax = maxSamples;
-		si.nPage = tracePage;
-		si.nPos = 0;
+		si.nPage = visible;
+		si.nMax = total > visible ? total - 1 : 0;
+		si.nPos = pos;
+
 		SetScrollInfo(hWndVScrollBar, SB_CTL, &si, TRUE);
 	}
 
@@ -917,17 +923,14 @@ namespace VCC::Debugger::UI
 		UpdateTriggers(IDC_LIST_START_TRACE);
 		UpdateTriggers(IDC_LIST_STOP_TRACE);
 		EmuState.Debugger.SetTraceEnable();
-		HWND hCtl = GetDlgItem(hWndExecutionTrace, IDC_TRACE_STATUS);
-		SetWindowText(hCtl, "Trace is running");
-		status = TraceStatus::Enabled;
+		UpdateTraceStatus(TraceStatus::Enabled);
 	}
 
 //-------------------------------------------------------------------------------
 	void StopTrace()
 	{
 		EmuState.Debugger.SetTraceDisable();
-		HWND hCtl = GetDlgItem(hWndExecutionTrace, IDC_TRACE_STATUS);
-		SetWindowText(hCtl, "Trace is stopped");
+		UpdateTraceStatus(TraceStatus::Stopped);
 	}
 
 //-------------------------------------------------------------------------------
@@ -935,8 +938,7 @@ namespace VCC::Debugger::UI
 	{
 		traceOffset = 0;
 		EmuState.Debugger.ResetTrace();
-		HWND hCtl = GetDlgItem(hWndExecutionTrace, IDC_TRACE_STATUS);
-		SetWindowText(hCtl, "Trace is disabled");
+		UpdateTraceStatus(TraceStatus::Stopped);
 	}
 
 //-------------------------------------------------------------------------------
@@ -1281,6 +1283,79 @@ namespace VCC::Debugger::UI
 		return FALSE;
 	}
 
+	void SaveSettings(HWND hDlg)
+	{
+		constexpr int cHeaderHeight = 20;			// header with labels
+
+		RECT CurWindow;
+		::GetWindowRect(hDlg, &CurWindow);
+		RECT CurScreen;
+		::GetClientRect(hDlg, &CurScreen);
+		int clientWidth = (int)CurScreen.right;
+		int clientHeight = (int)CurScreen.bottom;
+
+		{
+			VCC::Rect rect;
+			// remember positioning:
+			rect.x = CurWindow.left;
+			rect.y = CurWindow.top;
+
+			// remember size:
+			rect.w = clientWidth; // Used for saving new window size to the ini file.
+			rect.h = clientHeight - cHeaderHeight;
+
+			auto& s = Setting();
+			auto write = [&](const std::string& key, int value)
+			{
+				s.write(cSection, key, value);
+			};
+			write(cWindowSizeX, rect.w);
+			write(cWindowSizeY, rect.h);
+			write(cWindowPosX, rect.x);
+			write(cWindowPosY, rect.y);
+		}
+	}
+
+	void LoadSettings(HWND hDlg)
+	{
+		if (hDlg != nullptr)
+		{
+			Rect rect;
+
+			rect.x = CW_USEDEFAULT;
+			rect.y = CW_USEDEFAULT;
+			rect.w = 465;
+			rect.h = 485;
+
+			if (!GetAsyncKeyState(VK_SHIFT))
+			{
+				auto& s = Setting();
+				auto read = [&](const std::string& key, int& value)
+				{
+					value = s.read(cSection, key, value);
+				};
+
+				read(cWindowSizeX, rect.w);
+				read(cWindowSizeY, rect.h);
+				read(cWindowPosX, rect.x);
+				read(cWindowPosY, rect.y);
+			}
+
+			RECT ra = { 0,0,0,0 };  // left,top,right,bottom
+			::AdjustWindowRect(&ra, WS_OVERLAPPEDWINDOW, TRUE);
+			int windowBorderWidth = ra.right - ra.left;
+			int windowBorderHeight = ra.bottom - ra.top;
+			::GetWindowRect(hDlg, &ra);
+
+			int width = rect.w + windowBorderWidth;
+			int height = rect.h + windowBorderHeight + 0; /*GetRenderWindowStatusBarHeight();*/
+			int flags = SWP_NOOWNERZORDER | SWP_NOZORDER;
+			int x = rect.IsDefaultX() ? ra.left : rect.x;
+			int y = rect.IsDefaultY() ? ra.top : rect.y;
+			SetWindowPos(hDlg, nullptr, x, y, width, height, flags);
+		}
+	}
+
 //-------------------------------------------------------------------------------
 // Trace window processing
 //-------------------------------------------------------------------------------
@@ -1297,7 +1372,8 @@ namespace VCC::Debugger::UI
 
 			SetupControls(hDlg);
 
-			SetTimer(hDlg, IDT_PROC_TIMER, 64, nullptr);
+			SetTimer(hDlg, IDT_PROC_TIMER, 100, nullptr);
+			LoadSettings(hDlg);
 
 			break;
 		}
@@ -1443,10 +1519,31 @@ namespace VCC::Debugger::UI
 		case WM_TIMER:
 			switch (wParam)
 			{
-			case IDT_PROC_TIMER:
-				InvalidateRect(hWndTrace, &BackBuffer_.Rect, FALSE);
-				return 0;
+				case IDT_PROC_TIMER:
+				{
+					// only refresh display if something actually changed!
+					static TraceStatus oldStatus = TraceStatus::Stopped;
+					static long oldSamples = 0;
+					auto samples = EmuState.Debugger.GetTraceSamples();
+					if (oldStatus != status || oldSamples != samples)
+					{
+						oldStatus = status;
+						oldSamples = samples;
+						InvalidateRect(hWndTrace, &BackBuffer_.Rect, FALSE);
+					}
+					return 0;
+				}
 			}
+			break;
+
+		case WM_CLOSE:
+			DestroyWindow(hDlg);
+			break;
+
+		case WM_NCDESTROY:
+			SaveSettings(hDlg);
+			KillTimer(hDlg, IDT_PROC_TIMER);
+			ExecutionTraceWindow = nullptr;
 			break;
 
 		case WM_COMMAND:
@@ -1488,10 +1585,6 @@ namespace VCC::Debugger::UI
 				SetTraceConfiguration();
 				break;
 			case IDCLOSE:
-			case WM_DESTROY:
-				KillTimer(hDlg, IDT_PROC_TIMER);
-				DestroyWindow(hDlg);
-				ExecutionTraceWindow = nullptr;
 				break;
 			}
 

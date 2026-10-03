@@ -59,12 +59,12 @@ static char VdgChar(unsigned char c)
 
 static void DumpTextScreen()
 {
-	const int bpr = GetBytesPerRow();
+	const int bpr = gGimeGpu.GetBytesPerRow();
 	if (bpr == 40 || bpr == 80)
 	{
 		// GIME hardware text: 2 bytes per cell (character, attribute),
 		// near-ASCII character codes. Same walk as coco3.cpp CopyText.
-		const unsigned int start = GetStartOfVidram();
+		const unsigned int start = gGimeGpu.GetStartOfVidram();
 		std::printf("GIME %d-column text screen (vidram 0x%06X):\n", bpr, start);
 		for (int row = 0; row < 24; ++row)
 		{

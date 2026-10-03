@@ -32,29 +32,137 @@ static unsigned char MPU_Rate=0;
 static unsigned char *rom;
 static unsigned char GimeRegisters[256];
 static unsigned short VerticalOffsetRegister=0;
-static unsigned char EnhancedFIRQFlag=0,EnhancedIRQFlag=0;
-static int InteruptTimer=0;
 void SetInit0(unsigned char);
 void SetInit1(unsigned char);
-void SetGimeIRQStearing();
-void SetGimeFIRQStearing();
 void SetTimerMSB();
 void SetTimerLSB();
 unsigned char GetInit0();
-static unsigned char IRQStearing[8]={0,0,0,0,0,0,0,0};
-static unsigned char FIRQStearing[8]={0,0,0,0,0,0,0,0};
-static unsigned char LastIrq = 0, LastFirq = 0;
 
-static unsigned char KeyboardInteruptEnabled = 0;
+//
+// Gime interrupt bits
+//
+constexpr auto GIME_INTR_TIMER = 1u << 5;
+constexpr auto GIME_INTR_HSYNC = 1u << 4;
+constexpr auto GIME_INTR_VSYNC = 1u << 3;
+constexpr auto GIME_INTR_RS232 = 1u << 2;
+constexpr auto GIME_INTR_KEYB = 1u << 1;
+constexpr auto GIME_INTR_CART = 1u << 0;
 
-unsigned char GimeGetKeyboardInteruptState()
+//
+// Gime interrupt status
+//
+static auto GimeFirqState = 0u;
+static auto GimeIrqState = 0u;
+static auto LastGimeFirq = 0u;
+static auto LastGimeIrq = 0u;
+
+//
+// Gime irq/firq enabled to cpu?
+//
+bool GimeIrqToCpuEnabled() { return GimeRegisters[0x90] & 0x20; }
+bool GimeFirqToCpuEnabled() { return GimeRegisters[0x90] & 0x10; }
+
+// Can an HSYNC edge change GIME interrupt state? HSYNC asserts the GIME
+// horizontal interrupt unconditionally, and the enable bits in $FF92/$FF93
+// decide whether it latches - readable by polling $FF92/$FF93 even with
+// CPU routing ($FF90) off. Scanline bursts must not run while it can.
+bool GimeHsyncIrqArmed()
 {
-	return KeyboardInteruptEnabled;
+	return ((GimeRegisters[0x92] | GimeRegisters[0x93]) & GIME_INTR_HSYNC) != 0;
 }
 
-void GimeSetKeyboardInteruptState(unsigned char State)
+//
+// Returns the current timer counter 
+//
+unsigned short GimeTimerCounter()
 {
-	KeyboardInteruptEnabled = !!State;
+	return ((GimeRegisters[0x94] << 8) + GimeRegisters[0x95]) & 0xFFF;
+}
+
+//
+// Set interrupt GIME_INTR* flag
+//
+void GimeSetInterrupt(unsigned int flag)
+{
+	// merge to internal state when enabled
+	GimeIrqState |= (flag & GimeRegisters[0x92]) & 0x3F;
+	GimeFirqState |= (flag & GimeRegisters[0x93]) & 0x3F;
+
+	// update state for enabled interrupt to cpu
+	auto prevIrq = LastGimeIrq;
+	auto prevFirq = LastGimeFirq;
+	LastGimeIrq = GimeIrqToCpuEnabled() ? GimeIrqState : 0;
+	LastGimeFirq = GimeFirqToCpuEnabled() ? GimeFirqState : 0;
+
+	// on state changed update irq line to cpu
+	if (prevIrq != LastGimeIrq)
+	{
+		if (LastGimeIrq)
+			CPUAssertInterupt(IS_GIME, INT_IRQ);
+		else
+			CPUDeAssertInterupt(IS_GIME, INT_IRQ);
+	}
+
+	// on state changed update firq line to cpu
+	if (prevFirq != LastGimeFirq)
+	{
+		if (LastGimeFirq)
+			CPUAssertInterupt(IS_GIME, INT_FIRQ);
+		else
+			CPUDeAssertInterupt(IS_GIME, INT_FIRQ);
+	}
+}
+
+//
+// Clear gime irq GIME_INTR* flag, returns previous state.
+//
+unsigned char GimeClearIrq(unsigned int nflag)
+{
+	auto prevIrqState = GimeIrqState;
+	auto prevIrq = LastGimeIrq;
+	GimeIrqState &= nflag;
+	LastGimeIrq &= nflag;
+
+	// if was previously set, clear line
+	if (prevIrq && !LastGimeIrq)
+		CPUDeAssertInterupt(IS_GIME, INT_IRQ);
+
+	return (unsigned char)prevIrqState;
+}
+
+//
+// Clear gime firq GIME_INTR* flag, returns previous state.
+//
+unsigned char GimeClearFirq(unsigned int nflag)
+{
+	auto prevFirqState = GimeFirqState;
+	auto prevFirq = LastGimeFirq;
+	GimeFirqState &= nflag;
+	LastGimeFirq &= nflag;
+
+	// if was previously set, clear line
+	if (prevFirq && !LastGimeFirq)
+		CPUDeAssertInterupt(IS_GIME, INT_FIRQ);
+
+	return (unsigned char)prevFirqState;
+}
+
+//
+// Reset gime registers to defaults
+//
+void GimeRegistersReset()
+{
+	memset(GimeRegisters, 0, sizeof(GimeRegisters));
+
+	GimeFirqState = 0u;
+	GimeIrqState = 0u;
+	LastGimeFirq = 0u;
+	LastGimeIrq = 0u;
+
+	VDG_Mode = 0;
+	Dis_Offset = 0;
+	MPU_Rate = 0;
+	VerticalOffsetRegister = 0;
 }
 
 // Scanline-burst observer (coco3.cpp).
@@ -71,12 +179,22 @@ void GimeWrite(unsigned char port,unsigned char data)
 	if (port >= 0x90 && port <= 0x97)
 		CoCoLineObserveAndCut();
 
-	GimeRegisters[port]=data;
+	auto changed = GimeRegisters[port] ^ data;
+
+	// when timer is 0 and its enabled, it interrupts almost immediately
+	auto ifZeroTimerInterrupt = [changed,data]()
+	{
+		if ((data & changed & GIME_INTR_TIMER) && GimeTimerCounter() == 0)
+			GimeAssertTimerInterupt();
+	};
+
+	GimeRegisters[port] = data;
 
 	switch (port)
 	{
 	case 0x90:
 		SetInit0(data);
+		GimeSetInterrupt(GimeIrqState | GimeFirqState);
 		break;
 
 	case 0x91:
@@ -84,11 +202,13 @@ void GimeWrite(unsigned char port,unsigned char data)
 		break;
 
 	case 0x92:
-		SetGimeIRQStearing();
+		GimeClearIrq(data);
+		ifZeroTimerInterrupt();
 		break;
 
 	case 0x93:
-		SetGimeFIRQStearing();
+		GimeClearFirq(data);
+		ifZeroTimerInterrupt();
 		break;
 
 	case 0x94:
@@ -106,15 +226,15 @@ void GimeWrite(unsigned char port,unsigned char data)
 		break;
 
 	case 0x98:
-		SetGimeVmode(data);
+		gGimeGpu.SetGimeVmode(data);
 		break;
 
 	case 0x99:
-		SetGimeVres(data);
+		gGimeGpu.SetGimeVres(data);
 		break;
 
 	case 0x9A:
-		SetGimeBoarderColor(data);
+		gGimeGpu.SetGimeBoarderColor(data);
 		break;
 
 	case 0x9B:
@@ -122,15 +242,16 @@ void GimeWrite(unsigned char port,unsigned char data)
 		break;
 
 	case 0x9C:
+		gGimeGpu.SetVerticalScroll(GimeRegisters[0x9C]);
 		break;
 
 	case 0x9D:
 	case 0x9E:
-		SetVerticalOffsetRegister ((GimeRegisters[0x9D]<<8) | GimeRegisters[0x9E]);
+		gGimeGpu.SetVerticalOffsetRegister((GimeRegisters[0x9D]<<8) | GimeRegisters[0x9E]);
 		break;
 
 	case 0x9F:
-		SetGimeHorzOffset(data);
+		gGimeGpu.SetGimeHorzOffset(data);
 		break;
 
 	case 0xA0:
@@ -168,55 +289,80 @@ void GimeWrite(unsigned char port,unsigned char data)
 	case 0xBD:
 	case 0xBE:
 	case 0xBF:
-		SetGimePallet(port-0xB0,data & 63);
+		gGimeGpu.SetGimePalette(port-0xB0,data & 63);
 		break;
 	}
 	return;
 }
 
+//
+// return gime registers (normally unreadable) for the debugger/memory window
+// and without changing any state.
+//
+unsigned char SafeGimeRead(unsigned char port)
+{
+	// TODO: return last irq state
+	if (port == 0x92) return GimeRegisters[port];
+	if (port == 0x93) return GimeRegisters[port];
+	return GimeRegisters[port];
+}
+
 unsigned char GimeRead(unsigned char port)
 {
+	auto lastBus = []()
+	{
+		VCC::CPUState MC6809GetState();
+		auto cpuState = MC6809GetState();
+		return cpuState.PC < 0xFF00 ? MemRead8(cpuState.PC) : 0;
+	};
+
 	// iobus sets port range 0x90 to 0xBF
 	auto data = 0;
 	switch (port)
 	{
-	case 0x92:
-		data=LastIrq;
-		LastIrq=0;
-		CPUDeAssertInterupt(IS_GIME, INT_IRQ);
-		return data;
-	case 0x93:
-		data=LastFirq;
-		LastFirq=0;
-		CPUDeAssertInterupt(IS_GIME, INT_FIRQ);
-		return data;
-	default:
-		if (port >= 0xA0) {
+		case 0x92:
+			// note, clear all irq flags & interrupt line should be cleared if was
+			// set otherwise extra interrupts will occur. this is noticable in robocop
+			// the sound will repeat/stutter.
+			// note, return internal flags to program, see rtaylor's timer dsk.
+			return GimeClearIrq(0);
+		case 0x93:
+			// note, as above.
+			return GimeClearFirq(0);
+		default:
 			data = GimeRegisters[port];
-		    if (port >= 0xB0) data &= 0x3F;
-			return data;
-	    } else {
-			return 0x1B;
-		}
+			// mmu registers, 
+			if (port >= 0xA0 && port <= 0xAF)
+			{
+				// - if 128k or 512k upper bits are not driven by gime
+				if (EmuState.RamSize <= 1)
+					return (lastBus() & 0xC0) | (data & 0x3F);
+
+				// - else if 2048/8192k read all bits
+				return data;
+			}
+
+			// palette registers, read lower bits
+			if (port >= 0xB0 && port <= 0xBF)
+				return (lastBus() & 0xC0) | (data & 0x3F);
+
+			// other gime registers are unreadable
+			return lastBus();
 	}
 }
 
 void SetInit0(unsigned char data)
 {
-	SetCompatMode ( !!(data & 128));
+	gGimeGpu.SetCompatMode(!!(data & 128));
 	Set_MmuEnabled (!!(data & 64)); //MMUEN
-	SetRomMap ( data & 3);			//MC0-MC1
-	SetVectors( data & 8);			//MC3
-	EnhancedFIRQFlag=(data & 16)>>4;
-	EnhancedIRQFlag=(data & 32)>>5;
-	return;
+	SetRomMap(data & 3);			//MC0-MC1
+	SetVectors(data & 8);			//MC3
 }
 
 void SetInit1(unsigned char data)
 {
 	Set_MmuTask(data & 1);			//TR
-	SetTimerClockRate (data & 32);	//TINS
-	return;
+	SetTimerClockRate(data & 32);	//TINS
 }
 
 unsigned char GetInit0()
@@ -225,153 +371,41 @@ unsigned char GetInit0()
 	return data;
 }
 
-void SetGimeIRQStearing() //92
-{
-	// FIXME: GimeIRQStearing for CART (bit 0)
-
-	if ( (GimeRegisters[0x92] & 2) | (GimeRegisters[0x93] & 2) )
-		GimeSetKeyboardInteruptState(1);
-	else
-		GimeSetKeyboardInteruptState(0);
-
-	if ( (GimeRegisters[0x92] & 8) | (GimeRegisters[0x93] & 8) )
-		SetVertInteruptState(1); 
-	else
-		SetVertInteruptState(0);
-
-	if ( (GimeRegisters[0x92] & 16) | (GimeRegisters[0x93] & 16) )
-		SetHorzInteruptState(1);
-	else
-		SetHorzInteruptState(0);
-
-	if ( (GimeRegisters[0x92] & 32) | (GimeRegisters[0x93] & 32) )
-		SetTimerInteruptState(1);
-	else
-		SetTimerInteruptState(0);
-	return;
-}
-
-void SetGimeFIRQStearing() //93
-{
-	// FIXME: GimeFIRQStearing for CART (bit 0)
-
-	if ( (GimeRegisters[0x92] & 2) | (GimeRegisters[0x93] & 2) )
-		GimeSetKeyboardInteruptState(1);
-	else
-		GimeSetKeyboardInteruptState(0);
-
-	if ( (GimeRegisters[0x92] & 8) | (GimeRegisters[0x93] & 8) )
-		SetVertInteruptState(1);
-	else
-		SetVertInteruptState(0);
-
-	if ( (GimeRegisters[0x92] & 16) | (GimeRegisters[0x93] & 16) )
-		SetHorzInteruptState(1);
-	else
-		SetHorzInteruptState(0);
-	// Moon Patrol Demo Using Timer for FIRQ Side Scroll 
-	if ( (GimeRegisters[0x92] & 32) | (GimeRegisters[0x93] & 32) )
-		SetTimerInteruptState(1);
-	else
-		SetTimerInteruptState(0);
-
-	return;
-}
-
 void SetTimerMSB() //94
 {
-	unsigned short Temp;
-	Temp=((GimeRegisters[0x94] <<8)+ GimeRegisters[0x95]) & 4095;
-	SetInteruptTimer(Temp);
-	return;	
+	RestartInterruptTimer(GimeTimerCounter());
 }
 
 void SetTimerLSB() //95
 {
-	unsigned short Temp;
-	Temp=((GimeRegisters[0x94] <<8)+ GimeRegisters[0x95]) & 4095;
-	SetInteruptTimer(Temp);
-	return;
+	// does not restart timer but just update the cached time
+	SetMasterTickCounter(GimeTimerCounter());
 }
 
 void GimeAssertKeyboardInterupt() 
 {
-	if ((GimeRegisters[0x93] & 2) && EnhancedFIRQFlag == 1)
-	{
-		CPUAssertInterupt(IS_GIME, INT_FIRQ);
-		LastFirq = LastFirq | 2;
-	}
-	else if ((GimeRegisters[0x92] & 2) && EnhancedIRQFlag == 1)
-	{
-		CPUAssertInterupt(IS_GIME, INT_IRQ);
-		LastIrq = LastIrq | 2;
-	}
+	GimeSetInterrupt(GIME_INTR_KEYB);
 }
 
 void GimeAssertVertInterupt()
 {
-	if ((GimeRegisters[0x93] & 8) && EnhancedFIRQFlag == 1)
-	{
-		CPUAssertInterupt(IS_GIME, INT_FIRQ); //FIRQ
-		LastFirq = LastFirq | 8;
-	}
-	else if ((GimeRegisters[0x92] & 8) && EnhancedIRQFlag == 1)
-	{
-		CPUAssertInterupt(IS_GIME, INT_IRQ); //IRQ moon patrol demo using this
-		LastIrq = LastIrq | 8;
-	}
+	GimeSetInterrupt(GIME_INTR_VSYNC);
 }
 
 void GimeAssertHorzInterupt()
 {
-	if ((GimeRegisters[0x93] & 16) && EnhancedFIRQFlag == 1)
-	{
-		CPUAssertInterupt(IS_GIME, INT_FIRQ);
-		LastFirq = LastFirq | 16;
-	}
-	else if ((GimeRegisters[0x92] & 16) && EnhancedIRQFlag == 1)
-	{
-		CPUAssertInterupt(IS_GIME, INT_IRQ);
-		LastIrq = LastIrq | 16;
-	}
+	GimeSetInterrupt(GIME_INTR_HSYNC);
 }
 
-// Timer [F]IRQ bit gets set even if interrupt is not enabled.
-// TODO: What about other gime interrupts? Are they simular?
 void GimeAssertTimerInterupt()
 {
-	if (GimeRegisters[0x93] & 32) 
-	{
-		LastFirq = LastFirq | 32;
-		if (EnhancedFIRQFlag == 1) 
-			CPUAssertInterupt(IS_GIME, INT_FIRQ);
-	}
-	else if (GimeRegisters[0x92] & 32) 
-	{
-		LastIrq = LastIrq | 32;
-		if (EnhancedIRQFlag == 1) 
-			CPUAssertInterupt(IS_GIME, INT_IRQ);
-	}
-	return;
+	GimeSetInterrupt(GIME_INTR_TIMER);
 }
 
-// CART
 void GimeAssertCartInterupt()
 {
-	if (GimeRegisters[0x93] & 1)
-	{
-		LastFirq = LastFirq | 1;
-		if (EnhancedFIRQFlag == 1)
-			CPUAssertInterupt(IS_GIME, INT_FIRQ);
-	}
-	else if (GimeRegisters[0x92] & 1)
-	{
-		LastIrq = LastIrq | 1;
-		if (EnhancedIRQFlag == 1)
-			CPUAssertInterupt(IS_GIME, INT_IRQ);
-	}
+	GimeSetInterrupt(GIME_INTR_CART);
 }
-
 unsigned char sam_read(unsigned char port) //SAM don't talk much :)
 {
 	
@@ -393,7 +427,7 @@ void sam_write(unsigned char port)
 		Dis_Offset= Dis_Offset & (0xFF-mask); //Shut the bit off
 		if (port & 1)
 			Dis_Offset= Dis_Offset | mask;
-		SetGimeVdgOffset(Dis_Offset);
+		gGimeGpu.SetGimeVdgOffset(Dis_Offset);
 	}
 
 	if ((port >=0xC0) & (port <=0xC5))	//VDG Mode
@@ -404,7 +438,7 @@ void sam_write(unsigned char port)
 		VDG_Mode = VDG_Mode & (0xFF-mask);
 		if (port & 1)
 			VDG_Mode = VDG_Mode | mask;
-		SetGimeVdgMode(VDG_Mode);
+		gGimeGpu.SetGimeVdgMode(VDG_Mode);
 	}
 
 	if ( (port==0xDE) | (port ==0xDF))

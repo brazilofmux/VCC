@@ -7,6 +7,9 @@
     <ClCompile Include="src\bus\cartridge_loader.cpp">
       <Filter>bus</Filter>
     </ClCompile>
+    <ClCompile Include="src\bus\proxy_msgwin.cpp">
+      <Filter>bus</Filter>
+    </ClCompile>
     <ClCompile Include="src\devices\cloud9.cpp">
       <Filter>devices</Filter>
     </ClCompile>
@@ -19,7 +22,7 @@
     <ClCompile Include="src\bus\cartridge_menu.cpp" />
     <ClCompile Include="src\util\settings.cpp" />
     <ClCompile Include="src\util\filesystem.cpp" />
-    <ClCompile Include="src\util\winapi.cpp" />
+    <ClCompile Include="src\util\coreutil.cpp" />
     <ClCompile Include="src\util\DialogOps.cpp" />
     <ClCompile Include="src\util\Fileops.cpp" />
     <ClCompile Include="src\util\logger.cpp" />
@@ -39,6 +42,9 @@
       <Filter>bus</Filter>
     </ClInclude>
     <ClInclude Include="include\vcc\bus\cartridge_loader.h">
+      <Filter>bus</Filter>
+    </ClInclude>
+    <ClInclude Include="include\vcc\bus\proxy_msgwin.h">
       <Filter>bus</Filter>
     </ClInclude>
     <ClInclude Include="include\vcc\devices\cloud9.h">
@@ -69,7 +75,8 @@
     <ClInclude Include="include\vcc\util\settings.h" />
     <ClInclude Include="include\vcc\util\critical_section.h" />
     <ClInclude Include="include\vcc\util\filesystem.h" />
-    <ClInclude Include="include\vcc\util\winapi.h" />
+    <ClInclude Include="include\vcc\util\coreutil.h" />
+    <ClInclude Include="include\vcc\util\textutil.h" />
     <ClInclude Include="include\vcc\util\RomDatabase.h" />
     <ClInclude Include="include\vcc\util\RomBlockStore.h" />
     <ClInclude Include="include\vcc\util\RomAnalyzer.h" />
