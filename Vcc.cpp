@@ -40,6 +40,9 @@
 #define TH_WAITING	2
 
 // To eliminate ShellExecute for displaying Wiki
+// C++/WinRT falls back to <experimental/coroutine> under C++17, which the
+// v145 toolset rejects unless the deprecation is silenced.
+#define _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.System.h>
 #pragma comment(lib, "runtimeobject.lib")
