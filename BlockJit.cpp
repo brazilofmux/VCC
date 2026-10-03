@@ -1028,7 +1028,7 @@ NativeEntry EmitBlock(const CachedBlock& slot)
     // live_writes[i] is the subset of the op's default cc[] writes
     // that a future reader will observe before some later op
     // overwrites them. The forward pass emits only those writes.
-    uint8_t live_writes[12];  // MAX_BLOCK_INSNS
+    uint8_t live_writes[BlockCache::MAX_BLOCK_INSNS];
     uint32_t cc_requested = 0;
     uint32_t cc_elided    = 0;
     AnalyzeFlagLiveness(slot, live_writes, &cc_requested, &cc_elided);
