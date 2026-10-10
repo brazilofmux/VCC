@@ -18,7 +18,7 @@ This file is part of VCC (Virtual Color Computer).
 */
 
 #include <vcc/bus/cpak_cartridge_definitions.h>
-#include <vcc/util/Settings.h>
+#include <vcc/util/settings.h>
 
 extern slot_id_type gSlotId;
 extern PakAssertInteruptHostCallback AssertInt;

@@ -20,6 +20,7 @@
 
 #include <vcc/util/host_services.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <string.h>
 #include <vcc/util/FileOps.h>

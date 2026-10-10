@@ -100,6 +100,33 @@ cmake --build build -j
 Targets: `vcc-sdl` (windowed), `vcc-app` (builds `VCC.app`),
 `vcc-headless` (no window, for scripting and tests).
 
+## Building on Linux
+
+Debian/Ubuntu names; any distribution with CMake 3.16+, a C++17
+compiler and SDL2's development package will do:
+
+```sh
+sudo apt-get install cmake g++ make libsdl2-dev
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
+
+That produces `build/vcc-headless` and, when SDL2 was found,
+`build/vcc-sdl` (the same windowed shell as macOS: SDL2 is the one UI
+library the fork uses on every platform), plus the cartridge modules
+as `.so` files beside them. Without `libsdl2-dev` the SDL shell is
+skipped and the headless one still builds. The JIT backend is chosen
+by the machine: the x86-64 emitter on Intel/AMD, the arm64 emitter on
+aarch64. Verified 2026-10-09 on x86-64 Ubuntu 24.04 (GCC 13) and arm64
+Debian 13 (GCC 14), both from a clean checkout. For the ROM and the
+config, see the macOS notes above: `~/.config/vcc/vcc.ini`, or the ROM
+path on the command line:
+
+```sh
+./build/vcc-headless ~/roms/coco3.rom 400 'PRINT 6*7
+~~'
+```
+
 ## Building the portable shells on Windows (x64)
 
 The same CMake build produces 64-bit `vcc-headless` and `vcc-sdl`

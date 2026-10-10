@@ -171,6 +171,13 @@ add_library(vcc-shell STATIC
   shell/text_codec.cpp
 )
 target_link_libraries(vcc-shell PUBLIC vcc-core)
+# The core calls shell services the portable shell supplies (GetMotorState,
+# CalculateFPS, LockScreen, ApplyHaltpoints, the cassette hooks: shell/
+# common_stubs.cpp).  GNU ld resolves a static library's members only for
+# references seen so far on the line, so the shell must follow the core as
+# well as precede it; the cycle makes CMake repeat them (macOS's and MSVC's
+# linkers never minded).
+target_link_libraries(vcc-core INTERFACE vcc-shell)
 
 # libutf (optional; https://github.com/brazilofmux/utf): perceptual
 # UTF-8 -> ASCII approximation for clipboard paste. Without it, paste

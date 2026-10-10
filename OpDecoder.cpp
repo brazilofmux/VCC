@@ -16,6 +16,7 @@
 //	
 //		OpDecoder Interface - Part of the Debugger package for VCC
 //		Author: Mike Rojas
+#include <cmath>
 #include "OpDecoder.h"
 #include "tcc1014mmu.h"
 #include "DebuggerUtils.h"

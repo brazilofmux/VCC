@@ -16,6 +16,7 @@
 //	
 //		Debugger Interface - Part of the Debugger package for VCC
 //		Author: Chet Simpson
+#include <algorithm>
 #include "Debugger.h"
 #include "DebuggerUtils.h"
 #include "MachineDefs.h"
