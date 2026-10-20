@@ -41,26 +41,26 @@ endif()
 # the Windows DLL build, statically duplicated into each cartridge
 # module — the register_rom_blocks callback design depends on that.
 add_library(vcc-libcommon STATIC
-  libcommon/src/bus/basic_cartridge.cpp
-  libcommon/src/bus/cartridge_loader.cpp
-  libcommon/src/bus/cartridge_menu.cpp
-  libcommon/src/bus/cpak_cartridge.cpp
-  libcommon/src/bus/rom_cartridge.cpp
-  libcommon/src/devices/cloud9.cpp
-  libcommon/src/util/FileOps.cpp
-  libcommon/src/util/filesystem.cpp
-  libcommon/src/util/RomAnalyzer.cpp
-  libcommon/src/util/RomBlockStore.cpp
-  libcommon/src/util/RomDatabase.cpp
-  libcommon/src/util/host_profile.cpp
-  libcommon/src/util/fileutil.cpp
-  libcommon/src/util/logger.cpp
-  libcommon/src/util/settings.cpp
+  libcommon/vcc/bus/basic_cartridge.cpp
+  libcommon/vcc/bus/cartridge_loader.cpp
+  libcommon/vcc/bus/cartridge_menu.cpp
+  libcommon/vcc/bus/cpak_cartridge.cpp
+  libcommon/vcc/bus/rom_cartridge.cpp
+  libcommon/vcc/devices/cloud9.cpp
+  libcommon/vcc/util/FileOps.cpp
+  libcommon/vcc/util/filesystem.cpp
+  libcommon/vcc/util/RomAnalyzer.cpp
+  libcommon/vcc/util/RomBlockStore.cpp
+  libcommon/vcc/util/RomDatabase.cpp
+  libcommon/vcc/util/host_profile.cpp
+  libcommon/vcc/util/fileutil.cpp
+  libcommon/vcc/util/logger.cpp
+  libcommon/vcc/util/settings.cpp
 )
 
 target_include_directories(vcc-libcommon PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
-  ${CMAKE_CURRENT_SOURCE_DIR}/libcommon/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/libcommon
 )
 
 # Windows: the _WIN32 paths in the cartridge modules reference the real
@@ -68,8 +68,8 @@ target_include_directories(vcc-libcommon PUBLIC
 # so they join the portable set here (inert until a config menu opens).
 if(WIN32)
   target_sources(vcc-libcommon PRIVATE
-    libcommon/src/util/DialogOps.cpp
-    libcommon/src/util/coreutil.cpp
+    libcommon/vcc/util/DialogOps.cpp
+    libcommon/vcc/util/coreutil.cpp
   )
 endif()
 
@@ -108,6 +108,7 @@ add_library(vcc-core STATIC
   joystickinput.cpp
   iobus.cpp
   pakinterface.cpp
+  pakrouter.cpp
 )
 
 target_link_libraries(vcc-core PUBLIC vcc-libcommon)
@@ -153,9 +154,8 @@ endif()
 
 vcc_cartridge_module(mpi
   mpi/mpi.cpp
-  mpi/multipak_cartridge.cpp
+  mpi/multipak_supervisor.cpp
   mpi/multipak_configuration.cpp
-  mpi/cartridge_slot.cpp
 )
 target_include_directories(mpi PRIVATE mpi)
 if(WIN32)

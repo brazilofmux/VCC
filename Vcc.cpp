@@ -207,8 +207,8 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance,
 	EmuState.Exiting = false;
 
 	// A reset will read settings from the config file.  Must call
-	// InitialLoadConfig and instantiate settings before a reset occurs. 
-	// Normally pakinterface will do a hard reset after loading a 
+	// InitialLoadConfig and instantiate settings before a reset occurs.
+	// Normally pakinterface will do a hard reset after loading a
 	// cart but in case there is no cart to load force a reset here.
 	InitialLoadConfig(&EmuState);
 	EmuState.ResetPending=2;
@@ -225,7 +225,7 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance,
 	RegisterDisplayNotification(EmuState.WindowHandle);
 	InitSound();
 	LoadModule();
-	SetClockSpeed(1);	//Default clock speed .89 MHZ	
+	SetClockSpeed(1);	//Default clock speed .89 MHZ
 	BinaryRunning = true;
 	EmuState.EmulationRunning=AutoStart;
 
@@ -302,7 +302,7 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance,
 			}
 		}
 	}
-	CloseHandle( hEvent ) ;	
+	CloseHandle( hEvent ) ;
 	CloseHandle( hEMUQuit ) ;
 	CloseHandle( hEMUThread ) ;
 	CloseScreen();
@@ -349,6 +349,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			break;
 #endif
 
+		// Fatal error notification
+		// TODO: enum error code in wparam to give user more info
+		case WM_VCC_FATAL: {
+			MessageBox(nullptr,
+				"A fatal error has occurred. VCC will close",
+				"VCC Fatal Error",
+				MB_ICONERROR | MB_OK);
+			// TODO: This is brutal perhaps a cleaner shutdown?
+			DWORD pid = GetCurrentProcessId();
+			HANDLE h = OpenProcess(PROCESS_TERMINATE,FALSE,pid);
+			TerminateProcess(h,0);
+		}
+
 		// Hard reset VCC
 		case WM_VCC_CPU_RESET:
 			if (EmuState.EmulationRunning)
@@ -367,6 +380,38 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			DrawCartMenu(hWnd);
 			break;
 
+		// Set startup slot from MPI
+		case WM_VCC_SET_ACTIVE_SLOT: {
+			uint32_t slot = static_cast<uint32_t>(wParam);
+			return SetActiveSlot(slot);
+		}
+
+		// Unload slot from MPI
+		case WM_VCC_UNLOAD_SLOT: {
+			uint32_t slot = static_cast<uint32_t>(wParam);
+			return UnloadSlot(slot);
+		}
+
+		// Load slot from MPI
+		case WM_VCC_LOAD_SLOT: {
+			uint32_t slot = static_cast<uint32_t>(wParam);
+			return LoadSlot(slot,reinterpret_cast<const CartLoadRequest*>(lParam));
+		}
+
+		// Request name of cartridge in slot (1-4)
+		case WM_VCC_GET_CART_NAME: {
+			uint32_t slot = static_cast<uint32_t>(wParam);
+			auto* req = reinterpret_cast<CartNameReply*>(lParam);
+			return GetSlotCartName(slot,req);
+		}
+
+		// Request description of cartridge in slot (1-4)
+		case WM_VCC_GET_CART_DESCRIPT: {
+			uint32_t slot = static_cast<uint32_t>(wParam);
+			auto* req = reinterpret_cast<CartDescReply*>(lParam);
+			return GetSlotCartDescript(slot,req);
+		}
+
 		case WM_SYSCOMMAND:
 			// Disable windows seeing Left ALT. (ALT-TAB can not be disabled)
 			if(wParam==SC_KEYMENU) {
@@ -380,18 +425,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			wmId    = LOWORD(wParam);
 			wmEvent = HIWORD(wParam);
 
-			// Parse the menu selections:
-			
-			// Check if ID is in cartridge menu range. Control ID's are
-			// biased by SlotNum, there are five slots each gets 50
-			if ( (wmId >= MID_CONTROL) & (wmId < MID_CONTROL + 250) )
-			{
-				CartMenuActivated(wmId-MID_CONTROL);
-				break;
+			// Activate plugin menu if wmID is in plugin menu range
+			if ( (wmId >= MID_CONTROL) && (wmId < MID_CONTROL + 250) ) {
+				auto MenuID = wmId - MID_CONTROL;
+				CartMenuActivated(MenuID);
+				return 0;
 			}
 
 			switch (wmId)
-			{	
+			{
 				case IDM_USER_WIKI:
 					winrt::Windows::System::Launcher::LaunchUriAsync(
 						winrt::Windows::Foundation::Uri(
@@ -445,6 +487,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				case ID_FILE_RESET_SFT:
 					if (EmuState.EmulationRunning)
 						EmuState.ResetPending=1;
+					break;
 
 				case ID_FILE_LOAD:
 					LoadIniFile();
@@ -478,7 +521,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 					SwapJoySticks();
 					break;
 
-
 				case ID_PAUSE_EMULATION:
 					EmuState.Debugger.ToggleRun();
 					break;
@@ -486,7 +528,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				case ID_MEMORY_DISPLAY:
 					VCC::Debugger::UI::OpenMemoryMapWindow(EmuState.WindowInstance, EmuState.WindowHandle);
 				    break;
-	
+
 				case ID_PROCESSOR_STATE:
 					VCC::Debugger::UI::OpenProcessorStateWindow(EmuState.WindowInstance, EmuState.WindowHandle);
 					break;
@@ -566,7 +608,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			DLOG_F("[win-kbd] up scan=0x%02X extended=%d running=%d\n",
 				OEMscan, Extended ? 1 : 0, EmuState.EmulationRunning ? 1 : 0);
 			vccKeyboardHandleKey(OEMscan,kEventKeyUp);
-			
+
 			return 0;
 			break;
 
@@ -674,7 +716,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 					}
 				}
 				break;
-				
+
 				case DIK_F11:
 					if (FlagEmuStop == TH_RUNNING) {
 						if (IsShiftKeyDown()) {
@@ -753,7 +795,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				if (!EmuState.FullScreen)
 				{
 					const DisplayDetails displayDetails(GetDisplayDetails(clientRect.right, clientRect.bottom));
-					
+
 					maxHorizontalPosition -= (displayDetails.leftBorderColumns + displayDetails.rightBorderColumns);
 					maxVerticalPosition -= (displayDetails.topBorderRows + displayDetails.bottomBorderRows);
 
@@ -875,7 +917,7 @@ void SetupClock()
 }
 
 void DoHardReset(SystemState* const HRState)
-{	
+{
 	HRState->RamBuffer=MmuInit(HRState->RamSize);	//Alocate RAM/ROM & copy ROM Images from source
 	HRState->WRamBuffer=(unsigned short *)HRState->RamBuffer;
 
@@ -1096,7 +1138,7 @@ void SaveConfig() {
 unsigned __stdcall EmuLoop(HANDLE hEvent)
 {
 	static float FPS;
-	static unsigned int FrameCounter=0;	
+	static unsigned int FrameCounter=0;
 	CalibrateThrottle();
 	Sleep(30);
 	SetEvent(hEvent) ;

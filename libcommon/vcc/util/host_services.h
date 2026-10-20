@@ -38,6 +38,8 @@ This file is part of VCC (Virtual Color Computer).
 #include <Windows.h>
 
 #else
+#include <chrono>
+#include <thread>
 
 #include <cstdint>
 #include <cstdio>
@@ -264,13 +266,26 @@ inline BOOL DeviceIoControl(HANDLE, DWORD, void*, DWORD, void*, DWORD,
     return FALSE;
 }
 
-// Window plumbing referenced by cartridge modules: no windows exist, so
-// handles are null and host notifications (menu rebuild, CPU reset
-// requests via WM_VCC_* messages) are quietly dropped. The SDL shell
-// replaces SendMessage with a real host-notification hook.
+// Window plumbing referenced by cartridge modules. No windows exist off
+// Windows; instead a non-null HWND points to a VccHostWindow, whose
+// dispatch function the host (shell/machine.cpp) provides, so WM_VCC_*
+// messages - including the MultiPak's slot load/unload/select requests,
+// without which no MPI slot cartridge ever loads - reach the host
+// synchronously, exactly like Win32 SendMessage to a same-thread window.
+// A null HWND drops the message, as before. The dispatch goes through a
+// function pointer in the host's object, so it works across the
+// host/module boundary (each module compiles its own copy of this shim).
+struct VccHostWindow
+{
+    LRESULT (*dispatch)(UINT msg, WPARAM wParam, LPARAM lParam);
+};
 inline HWND    GetActiveWindow()                   { return nullptr; }
 inline HWND    GetForegroundWindow()               { return nullptr; }
-inline LRESULT SendMessageA(HWND, UINT, WPARAM, LPARAM) { return 0; }
+inline LRESULT SendMessageA(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    auto* host = static_cast<VccHostWindow*>(hwnd);
+    return (host && host->dispatch) ? host->dispatch(msg, wParam, lParam) : 0;
+}
 #define SendMessage SendMessageA
 
 inline BOOL FlushFileBuffers(HANDLE h)
@@ -473,5 +488,27 @@ inline HGLOBAL GlobalAlloc(UINT, size_t n)         { return std::calloc(1, n ? n
 inline void*   GlobalLock(HGLOBAL h)               { return h; }
 inline BOOL    GlobalUnlock(HGLOBAL)               { return TRUE; }
 inline HANDLE  SetClipboardData(UINT, HGLOBAL h)   { std::free(h); return nullptr; }
+
+// MSVC's bounds-checked copy (the three-argument form): copies and
+// terminates, or yields an empty string when src doesn't fit.
+inline int strcpy_s(char* dst, size_t size, const char* src)
+{
+    if (dst == nullptr || size == 0)
+        return 22;   // EINVAL
+    const size_t n = std::strlen(src);
+    if (n >= size)
+    {
+        dst[0] = '\0';
+        return 34;   // ERANGE
+    }
+    std::memcpy(dst, src, n + 1);
+    return 0;
+}
+
+// Win32 Sleep: milliseconds.
+inline void Sleep(DWORD ms)
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
 
 #endif // _WIN32

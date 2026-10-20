@@ -16,45 +16,52 @@
 //	VCC (Virtual Color Computer). If not, see <http://www.gnu.org/licenses/>.
 ////////////////////////////////////////////////////////////////////////////////
 #pragma once
-#include <vcc/bus/cartridge.h>
+#include <vcc/bus/basic_cartridge.h>
+#include <vcc/bus/cartridge_callbacks.h>  //depreciated
+#include <vcc/bus/plugin_callbacks.h>
+#include <vector>
+#include <memory>
 
 namespace VCC::Core
 {
-
-	struct basic_cartridge : public ::VCC::Core::cartridge
+	class rom_cartridge : public basic_cartridge
 	{
 	public:
-
-		using name_type = std::string;
-		using catalog_id_type = std::string;
-
+		using callbacks_type = ::VCC::Core::cartridge_callbacks;
+		using buffer_type = std::vector<uint8_t>;
+		using size_type = std::size_t;
 
 	public:
+		using basic_cartridge::basic_cartridge;
 
-		using cartridge::cartridge;
-
+		rom_cartridge(
+			const cpak_callbacks& callbacks,
+			name_type name,
+			catalog_id_type catalog_id,
+			buffer_type buffer,
+			bool enable_bank_switching,
+			slot_id_type slotId
+		);
+		
 		name_type name() const override;
 		catalog_id_type catalog_id() const override;
 		description_type description() const override;
 
-		void start() override;
-		void stop() override;
-
 		void reset() override;
-		void process_horizontal_sync() override;
-		bool has_horizontal_sync() const override { return false; }
-		bool wants_horizontal_sync() const override { return false; }
 		void write_port(unsigned char port_id, unsigned char value) override;
-		unsigned char read_port(unsigned char port_id) override;
 		unsigned char read_memory_byte(unsigned short memory_address) override;
-		void status(char* text_buffer, size_t buffer_size) override;
-		unsigned short sample_audio() override;
-		void menu_item_clicked(unsigned char menu_item_id) override;
-		bool get_menu_item(menu_item_entry* item, size_t index) override;
 
 	protected:
+		void initialize_bus() override;
 
-		virtual void initialize_pak();
-		virtual void initialize_bus();
+	private:
+		const cpak_callbacks& callbacks_;
+		const name_type name_;
+		const catalog_id_type catalog_id_;
+		const buffer_type buffer_;
+		const bool enable_bank_switching_;
+		size_type bank_offset_;
+		const std::string filename_;
+		slot_id_type slotId_;
 	};
 }

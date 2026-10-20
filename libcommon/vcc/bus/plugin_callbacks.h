@@ -16,20 +16,17 @@
 //	VCC (Virtual Color Computer). If not, see <http://www.gnu.org/licenses/>.
 ////////////////////////////////////////////////////////////////////////////////
 
-	//=========================================================//
-	// This defines the binary interface used by all pak DLLs. //
-	//=========================================================//
+//=============================================================//
+// This defines the callbacks used by all cartridges (plugins) //
+//=============================================================//
 
 #pragma once
 #include <vcc/util/interrupts.h>
-#include <vcc/bus/cartridge_menuitem.h> // for MenuItemType
 #include <cstddef>   // for std::size_t
 #include <cstdint>
-#include <vcc/util/host_services.h>
 
 // Forward-declared so the binary interface header doesn't pull in the
-// full RomBlockStore header (cartridge DLLs that don't pre-analyze ROMs
-// shouldn't have to see it). Defined in <vcc/util/RomBlockStore.h>.
+// full RomBlockStore header. Defined in <vcc/util/RomBlockStore.h>.
 namespace VCC { struct PrebuiltBlock; }
 
 //----------------------------------------------------------------
@@ -39,8 +36,6 @@ using slot_id_type = std::size_t;
 
 extern "C"
 {
-	enum MenuItemType;
-
 	using PakWriteMemoryByteHostCallback = void (*)
 		(slot_id_type SlotId, unsigned char value, unsigned short address);
 	using PakReadMemoryByteHostCallback = unsigned char (*)
@@ -68,38 +63,15 @@ extern "C"
 		const VCC::PrebuiltBlock* blocks,
 		std::size_t count);
 
-	// Cartridge Callbacks
+	// Plugin (cartridge) callbacks
 	struct cpak_callbacks
 	{
 		const PakAssertInteruptHostCallback      assert_interrupt;
 		const PakAssertCartridgeLineHostCallback assert_cartridge_line;
 		const PakWriteMemoryByteHostCallback     write_memory_byte;
 		const PakReadMemoryByteHostCallback      read_memory_byte;
+		// Fork addition, appended so upstream's four fields keep their offsets.
 		const PakRegisterRomBlocksHostCallback   register_rom_blocks;
 	};
-
-	// Cartridge exports. At least PakInitilizeModuleFunction must be implimented
-	using PakInitializeModuleFunction = void (*)(
-		slot_id_type SlotId,                   // SlotId 
-		const char* const configuration_path,  // Path of ini file
-		HWND hVccWnd,                          // VCC Main window HWND
-		const cpak_callbacks* const context);  // Callback
-
-	using PakTerminateModuleFunction       = void (*)();
-	using PakGetNameModuleFunction         = const char* (*)();
-	using PakGetCatalogIdModuleFunction    = const char* (*)();
-	using PakGetDescriptionModuleFunction  = const char* (*)();
-	using PakResetModuleFunction           = void (*)();
-	using PakHeartBeatModuleFunction       = void (*)();
-	// Optional export ("PakHsyncDemand"): returns nonzero while the module
-	// currently needs its heartbeat called every scanline. Modules without
-	// it are ticked whenever they export PakProcessHorizontalSync at all.
-	using PakHsyncDemandModuleFunction     = unsigned char (*)();
-	using PakGetStatusModuleFunction       = void (*)(char* text_buffer, size_t buffer_size);
-	using PakWritePortModuleFunction       = void (*)(unsigned char port, unsigned char value);
-	using PakReadMemoryByteModuleFunction  = unsigned char (*)(unsigned short address);
-	using PakReadPortModuleFunction        = unsigned char (*)(unsigned char port);
-	using PakSampleAudioModuleFunction     = unsigned short (*)();
-	using PakMenuItemClickedModuleFunction = void (*)(unsigned char itemId);
-	using PakGetMenuItemFunction           = bool (*)(menu_item_entry* item, size_t index);
 }
+

@@ -18,30 +18,29 @@
 //	You should have received a copy of the GNU General Public License along with
 //	VCC (Virtual Color Computer). If not, see <http://www.gnu.org/licenses/>.
 ////////////////////////////////////////////////////////////////////////////////
+
 #include "mpi.h"
 #include "resource.h"
 #include <vcc/util/DialogOps.h>
 #include <vcc/util/limits.h>
 #include <vcc/util/logger.h>
-#include <vcc/bus/cartridge_menuitem.h> // for MenuItemType
+#include <vcc/bus/cartridge_menuitem.h>
+#include <vcc/bus/cartridge_messages.h>
 
 HINSTANCE gModuleInstance = nullptr;
 static std::string gConfigurationFilename;
 HWND gVccWnd;
 
 slot_id_type SlotId = 0;
-const std::shared_ptr<host_cartridge_callbacks>
-	gHostCallbacks(std::make_shared<host_cartridge_callbacks>(SlotId, gConfigurationFilename));
 
-// mpi configuration object
 multipak_configuration gMultiPakConfiguration("MPI");
-
-// mpi cartridge object
-multipak_cartridge gMultiPakInterface(gMultiPakConfiguration, gHostCallbacks);
+multipak_supervisor gMultiPakInterface(gMultiPakConfiguration);
 
 #ifdef _WIN32
 // the config dialog
+#ifdef _WIN32
 configuration_dialog gConfigurationDialog(gMultiPakConfiguration, gMultiPakInterface);
+#endif   // Win32 dialog; off Windows slots come from vcc.ini
 #endif
 
 // DLL exports
@@ -77,26 +76,31 @@ extern "C"
 
 	//Initialize MPI -	capture callback addresses and build menus.
 	__declspec(dllexport) void PakInitialize(
-		slot_id_type SlotId,                   // allways zero
+		slot_id_type SlotId,
 		const char* const configuration_path,
 		HWND hVccWnd,
 		const cpak_callbacks* const callbacks)
 	{
+		//Prevent MPI load in a multipak slot
+		//TODO: enum for VCC error codes
+		if (SlotId != 0) {
+			int32_t err = 1;
+			SendFatalError(hVccWnd, err);
+			return;
+		}
+
 		gMultiPakConfiguration.configuration_path(configuration_path);
 		gConfigurationFilename = configuration_path;
 		gVccWnd = hVccWnd;
-		gHostCallbacks->read_memory_byte_ = callbacks->read_memory_byte;
-		gHostCallbacks->write_memory_byte_ = callbacks->write_memory_byte;
-		gHostCallbacks->assert_interrupt_ = callbacks->assert_interrupt;
-		gHostCallbacks->assert_cartridge_line_ = callbacks->assert_cartridge_line;
-		gHostCallbacks->register_rom_blocks_ = callbacks->register_rom_blocks;
 		gMultiPakInterface.start();
 	}
 
 	__declspec(dllexport) void PakTerminate()
 	{
 #ifdef _WIN32
+#ifdef _WIN32
 		gConfigurationDialog.close();
+#endif
 #endif
 		gMultiPakInterface.stop();
 	}
@@ -112,53 +116,11 @@ extern "C"
 		return gMultiPakInterface.get_menu_item(item, index);
 	}
 
-	// Write to port
-	__declspec(dllexport) void PakWritePort(unsigned char port_id,unsigned char value)
-	{
-		gMultiPakInterface.write_port(port_id, value);
-		return;
-	}
-
-	// Read from port
-	__declspec(dllexport) unsigned char PakReadPort(unsigned char port_id)
-	{
-		return gMultiPakInterface.read_port(port_id);
-	}
-
 	// Reset module
 	__declspec(dllexport) unsigned char PakReset()
 	{
 		gMultiPakInterface.reset();
 		return 0;
-	}
-
-	__declspec(dllexport)  void PakProcessHorizontalSync()
-	{
-		gMultiPakInterface.process_horizontal_sync();
-	}
-
-	// Current tick demand: any capable slot that wants ticks right now
-	// (fd502's demand drops when its motor stops, so an idle system can
-	// skip the whole per-scanline fan-out).
-	__declspec(dllexport)  unsigned char PakHsyncDemand()
-	{
-		return gMultiPakInterface.wants_horizontal_sync() ? 1 : 0;
-	}
-
-	__declspec(dllexport)  unsigned char PakReadMemoryByte(unsigned short memory_address)
-	{
-		return gMultiPakInterface.read_memory_byte(memory_address);
-	}
-
-	// Return MPI status.
-	__declspec(dllexport) void PakGetStatus(char* text_buffer, size_t buffer_size)
-	{
-		gMultiPakInterface.status(text_buffer, buffer_size);
-	}
-
-	__declspec(dllexport) unsigned short PakSampleAudio()
-	{
-		return gMultiPakInterface.sample_audio();
 	}
 }
 
@@ -177,5 +139,4 @@ BOOL WINAPI DllMain(HINSTANCE module_instance, DWORD reason, LPVOID /*reserved*/
 	return TRUE;
 }
 #endif // _WIN32
-
 

@@ -462,6 +462,45 @@ frameskip, and the watch-bitmap slow path. Kill switches:
 VCC_NO_FASTMEM, VCC_NO_BURST, VCC_NO_INLINE, plus per-family gates
 (VCC_NO_FAM_*) kept for bisection.
 
+## Second upstream sync (2026-10-19): the cartridge router
+
+34 upstream commits, the bulk of them a refactor of the cartridge
+system: libcommon's include/ and src/ trees merged into one vcc/ tree,
+and the MultiPak no longer loads its slot cartridges. pakinterface now
+owns five slots (0 = boot, 1-4 = MPI) behind a PakRouter that
+dispatches ports, ticks and audio, and the MultiPak DLL asks the host
+to load/unload/select slots with WM_VCC_* window messages.
+
+Three things carried over by hand:
+
+- **Messages need a host off Windows.** Our SendMessage shim was a
+  deliberate no-op, so after the merge the MultiPak loaded with every
+  slot empty (Extended BASIC 2.0, no disk, no NitrOS-9) - a silent
+  failure, caught by booting the user's real configuration. A non-null
+  HWND off Windows now points to a VccHostWindow whose dispatch
+  function shell/machine.cpp provides, with the same cases as Vcc.cpp's
+  window procedure; EmuState.hMsgProxy is set to it before the boot
+  cartridge loads. Synchronous, like SendMessage to a same-thread
+  window. The old shim comment had anticipated exactly this hook.
+- **Tick demand moved to the router.** Our wants_horizontal_sync()
+  aggregation lived in the deleted multipak_cartridge; it is now
+  PakRouter::wants_horizontal_sync(), using the same slot rules as
+  horizontal_sync() so a skipped tick is exactly a no-op. Every
+  pakinterface function that changes slot contents or the active slot
+  re-derives demand on all exit paths via a scope guard (the pak lock
+  is recursive). Idle DECB: 0 ticks / 785,745 skips; NitrOS-9 boot
+  ticks 22,269 lines while the FDC is busy.
+- **The ROM-block callback** (cartridge DLLs pre-populating the JIT's
+  block cache) moved into upstream's new plugin_callbacks.h, appended
+  after their four fields so their layout is unchanged.
+
+Plus portability for upstream's new Win32 calls (strcpy_s, Sleep,
+GetVersionInfo, the MPI configuration dialog) and clang's rejection
+of an extra-qualified constructor in pakrouter.h. Verified: lockstep
+clean; IRQs 874 / 29,914 and the same screen hash as before the merge
+across all six tiers; smoke, gimetimer, becker, journal, drivewire
+pass; NitrOS-9 boot at parity, sieve ~1% lower.
+
 ## Merging upstream VCCE/VCC (2026-10)
 
 First merge from upstream since the March 30 fork point: their 46

@@ -16,19 +16,11 @@
 //	VCC (Virtual Color Computer). If not, see <http://www.gnu.org/licenses/>.
 ////////////////////////////////////////////////////////////////////////////////
 #pragma once
-#include <vcc/util/logger.h>
-#include <vcc/util/host_services.h>
-// How nuts is this?  Just friggen call FreeLibrary at the point that is decided
+#include <vcc/bus/basic_cartridge.h>
+
+// Basically not a cartridge but by another name
 namespace VCC::Core
 {
-	struct dll_deleter
-	{
-		void operator()(HMODULE instance) const
-		{
-			if (instance != nullptr)
-			{
-				BOOL result = FreeLibrary(instance);
-			}
-		};
-	};
+	class null_cartridge : public basic_cartridge
+	{};
 }

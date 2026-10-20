@@ -19,15 +19,12 @@
 #include <vcc/bus/cartridge.h>
 #include <vcc/bus/cartridge_callbacks.h>
 #include <vcc/bus/cpak_cartridge_definitions.h>
-#include <vcc/bus/dll_deleter.h>
 #include <string>
 #include <memory>
 #include <vcc/util/host_services.h>
 
-
 namespace VCC::Core
 {
-
 	enum class cartridge_file_type
 	{
 		not_opened,
@@ -46,33 +43,35 @@ namespace VCC::Core
 		not_expansion
 	};
 
+	struct dll_deleter {
+		void operator()(HMODULE h) const {
+			if (h) FreeLibrary(h);
+		}
+	};
+
 	struct cartridge_loader_result
 	{
-		using handle_type = std::unique_ptr<std::remove_pointer_t<HMODULE>, VCC::Core::dll_deleter>;
+		using dll_module_type =
+			std::unique_ptr<std::remove_pointer_t<HMODULE>,VCC::Core::dll_deleter>;
 		using cartridge_ptr_type = std::unique_ptr<VCC::Core::cartridge>;
 
-#pragma warning(push)
-#pragma warning(disable: 4251)
-		handle_type handle;
+		dll_module_type dll_module;
 		cartridge_ptr_type cartridge;
-#pragma warning(pop)
 		cartridge_loader_status load_result = cartridge_loader_status::not_loaded;
 	};
 
 	cartridge_file_type determine_cartridge_type(const std::string& filename);
 
 //-------------------------------------------------------------------------------
-//  Cartridge Loader. Determine type and call appropriate loader, rom or cpak
-//	cartridge_callbacks is the host to cartridge API used by the cartridge class.
-//	SlotID is the 0-4 slot id; 0 is the side slot and 1-4 are MPI slots.
+//  Cartridge Loaders. Determine type and call appropriate loader, rom or cpak
+//	SlotID is the 0-4 slot id; 0 is the boot slot, 1-4 are multipak slots.
 //	iniPath is the name of the ini file (typically vcc.ini)
 //	hVccWnd is the VCC main window handle, used for messaging
-//	cpak_callbacks is the cartridge to host API used by the cartridge DLL.
+//	cpak_callbacks defines the cartridge callbacks 
 //-------------------------------------------------------------------------------
 
 	cartridge_loader_result load_cartridge(
 		const std::string& filename,
-		std::unique_ptr<cartridge_callbacks> cartridge_callbacks,
 		slot_id_type SlotId,
 		const std::string& iniPath,
 		HWND hVccWnd,
@@ -80,18 +79,13 @@ namespace VCC::Core
 
 	cartridge_loader_result load_cpak_cartridge(
 		const std::string& filename,
-		std::unique_ptr<cartridge_callbacks> cartridge_callbacks,
 		slot_id_type SlotId,
 		const std::string& iniPath,
 		HWND hVccWnd,
 		const cpak_callbacks& cpak_callbacks);
 
-	cartridge_loader_result load_rom_cartridge(
-		const std::string& filename,
-		std::unique_ptr<cartridge_callbacks> cartridge_callbacks);
-
 	// Return load error string per cartridge load status
 	std::string cartridge_load_error_string(
-			const cartridge_loader_status error_status);
+		const cartridge_loader_status error_status);
 
 }

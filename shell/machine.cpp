@@ -30,6 +30,7 @@ This file is part of VCC (Virtual Color Computer).
 #include "hd6309.h"
 #include "mc6809.h"
 #include "pakinterface.h"
+#include <vcc/bus/cartridge_messages.h>
 #include "joystickinput.h"
 #include "Vcc.h"
 #include <vcc/util/settings.h>
@@ -174,8 +175,51 @@ void HardResetMachine()
 	SetClockSpeed(1);
 }
 
+// Host side of the WM_VCC_* message bridge (see VccHostWindow in
+// host_services.h): the same cases as Vcc.cpp's window procedure, so the
+// MultiPak loads, unloads and selects its slot cartridges through
+// pakinterface exactly as on Windows. Unknown messages return 0, which is
+// what the shim did for everything before.
+static LRESULT HostDispatch(UINT msg, WPARAM wParam, LPARAM lParam)
+{
+	switch (msg)
+	{
+	case WM_VCC_FATAL:
+		std::fprintf(stderr, "vcc-shell: fatal error reported by a cartridge (code %u)\n",
+		             (unsigned)wParam);
+		std::exit(1);
+	case WM_VCC_CPU_RESET:
+		if (EmuState.EmulationRunning)
+			EmuState.ResetPending = 2;
+		return 0;
+	case WM_VCC_SOFT_RESET:
+		if (EmuState.EmulationRunning)
+			EmuState.ResetPending = 1;
+		return 0;
+	case WM_VCC_SET_ACTIVE_SLOT:
+		return SetActiveSlot(static_cast<uint32_t>(wParam));
+	case WM_VCC_UNLOAD_SLOT:
+		return UnloadSlot(static_cast<uint32_t>(wParam));
+	case WM_VCC_LOAD_SLOT:
+		return LoadSlot(static_cast<uint32_t>(wParam),
+		                reinterpret_cast<const CartLoadRequest*>(lParam));
+	case WM_VCC_GET_CART_NAME:
+		return GetSlotCartName(static_cast<uint32_t>(wParam),
+		                       reinterpret_cast<CartNameReply*>(lParam));
+	case WM_VCC_GET_CART_DESCRIPT:
+		return GetSlotCartDescript(static_cast<uint32_t>(wParam),
+		                           reinterpret_cast<CartDescReply*>(lParam));
+	default:   // WM_VCC_UPD_MENU and the rest: no menus here
+		return 0;
+	}
+}
+static VccHostWindow gHostWindow { HostDispatch };
+
 bool BootMachine()
 {
+	// Before any cartridge loads: cartridges keep the handle they are
+	// initialized with, and the MultiPak sends its slot loads at start().
+	EmuState.hMsgProxy = &gHostWindow;
 	EmuState.RamSize = (unsigned char)Setting().read("Memory", "RamSize", 1);
 	EmuState.CpuType = (unsigned char)Setting().read("CPU", "CpuType", 1);
 	EmuState.FrameSkip = 1;

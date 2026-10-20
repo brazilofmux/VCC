@@ -51,10 +51,6 @@ static inline unsigned long GetTickCount()
 	return (unsigned long)std::chrono::duration_cast<std::chrono::milliseconds>(
 		std::chrono::steady_clock::now().time_since_epoch()).count();
 }
-static inline void Sleep(unsigned ms)
-{
-	std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-}
 #endif
 #include <stdio.h>
 #include <vcc/util/logger.h>
