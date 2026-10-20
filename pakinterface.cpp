@@ -135,11 +135,11 @@ struct cpak_callbacks slot_callbacks = {
 // PakTimer runs at 15.7kHz emulated - the lock+virtual fan-out just to
 // reach an idle FDC's early-return was ~22% of CPU-bound wall time, and
 // demand is also what lets scanline bursts run at all. Demand only turns
-// ON through paths that hold gPakMutex and refresh this flag afterwards
-// (port writes - including the $7F slot select - reset, cartridge
-// load/unload, active-slot changes, menu), so the unlocked fast-path load
-// can never miss a wake-up; OFF transitions are picked up by the refresh
-// after each real tick.
+// ON through paths that refresh this flag under gPakMutex (port writes -
+// including the $7F slot select - and reset) or force it on outright
+// (cartridge load/unload, active-slot changes, menu), so the unlocked
+// fast-path load can never miss a wake-up; OFF transitions are picked up
+// by the refresh after each real tick.
 static std::atomic<bool> gPakTickDemand{true};
 
 // Scanline-burst observers (coco3.cpp).
@@ -152,14 +152,17 @@ static void RefreshPakTickDemand()   // call with gPakMutex held
 	                     std::memory_order_relaxed);
 }
 
-// Re-derive demand when a function that changes slot contents or the
-// active slot returns, on every path out (the lock is recursive).
+// Force demand ON when a function that changes slot contents or the
+// active slot returns, on every path out; the next PakTimer tick
+// re-derives it under gPakMutex. These run on the UI thread, which must
+// not wait for gPakMutex: the emulation thread holds it across ResetBus,
+// where the MultiPak's reset SendMessages WM_VCC_SET_ACTIVE_SLOT to this
+// thread, so taking the lock here deadlocks the Win32 build at boot.
 struct PakDemandRefreshOnExit
 {
 	~PakDemandRefreshOnExit()
 	{
-		VCC::Util::section_locker lock(gPakMutex);
-		RefreshPakTickDemand();
+		gPakTickDemand.store(true, std::memory_order_relaxed);
 	}
 };
 
