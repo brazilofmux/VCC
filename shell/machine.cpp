@@ -213,13 +213,45 @@ static LRESULT HostDispatch(UINT msg, WPARAM wParam, LPARAM lParam)
 		return 0;
 	}
 }
+#ifdef _WIN32
+// On Windows the cartridges call the real SendMessage, so the bridge is a
+// message-only window. The shell is single-threaded, so SendMessage from a
+// cartridge reaches HostWndProc synchronously, like the VccHostWindow shim.
+static LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+	if (msg >= WM_VCC_FATAL && msg <= WM_VCC_GET_CART_DESCRIPT)
+		return HostDispatch(msg, wParam, lParam);
+	return DefWindowProcA(hwnd, msg, wParam, lParam);
+}
+
+static HWND HostWindow()
+{
+	static HWND hwnd = nullptr;
+	if (!hwnd)
+	{
+		WNDCLASSA wc {};
+		wc.lpfnWndProc = HostWndProc;
+		wc.hInstance = GetModuleHandleA(nullptr);
+		wc.lpszClassName = "VccShellHost";
+		RegisterClassA(&wc);
+		hwnd = CreateWindowExA(0, wc.lpszClassName, "", 0, 0, 0, 0, 0,
+		                       HWND_MESSAGE, nullptr, wc.hInstance, nullptr);
+	}
+	return hwnd;
+}
+#else
 static VccHostWindow gHostWindow { HostDispatch };
+#endif
 
 bool BootMachine()
 {
 	// Before any cartridge loads: cartridges keep the handle they are
 	// initialized with, and the MultiPak sends its slot loads at start().
+#ifdef _WIN32
+	EmuState.hMsgProxy = HostWindow();
+#else
 	EmuState.hMsgProxy = &gHostWindow;
+#endif
 	EmuState.RamSize = (unsigned char)Setting().read("Memory", "RamSize", 1);
 	EmuState.CpuType = (unsigned char)Setting().read("CPU", "CpuType", 1);
 	EmuState.FrameSkip = 1;
