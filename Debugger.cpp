@@ -25,6 +25,7 @@
 #include "tcc1014mmu.h"	//  FIXME: May want this decoupled from Debugger for Memory Write
 #include "audio.h"
 #include "Disassembler.h"
+#include <assert.h>
 
 namespace VCC::Debugger
 {
@@ -201,6 +202,27 @@ namespace VCC::Debugger
 			return;
 		}
 	}
+#if USE_NEWTIMING
+	void Debugger::TraceCaptureScreenEvent(TraceEvent evt, double cycles, unsigned int n)
+	{
+		if (!TraceRunning_ || !TraceScreen_)
+		{
+			return;
+		}
+
+		Decoder_->CaptureScreenEvent(evt, cycles, n);
+	}
+
+	void Debugger::TraceCaptureScreenEvent(TraceEvent evt, double cycles, unsigned int n, const char* s)
+	{
+		if (!TraceRunning_ || !TraceScreen_)
+		{
+			return;
+		}
+
+		Decoder_->CaptureScreenEvent(evt, cycles, n, s);
+	}
+#endif
 
 	void Debugger::TraceCaptureScreenEventSlow(TraceEvent evt, double cycles)
 	{
@@ -303,7 +325,7 @@ namespace VCC::Debugger
 	void Debugger::SetTraceMark(int mark, long sample)
 	{
 		VCC::Util::section_locker lock(Section_);
-
+		assert(sample >= 0);
 		TraceMarks_[mark] = sample;
 	}
 

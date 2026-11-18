@@ -17,8 +17,10 @@ This file is part of VCC (Virtual Color Computer).
 */
 
 #include <vcc/util/host_services.h>
+#include "BuildConfig.h"
 #include "defines.h"
 #include "tcc1014graphics.h"
+#include "tcc1014registers.h"
 #include "coco3.h"
 #include "cc2font.h"
 #include "cc3font.h"
@@ -27,8 +29,269 @@ This file is part of VCC (Virtual Color Computer).
 #include <vcc/util/logger.h>
 #include "math.h"
 #include <stdio.h>
+#include "Event.h"
 
-GimeGpu gGimeGpu;
+#if USE_NEWTIMING
+#include <CommCtrl.h>	// Windows common controls
+
+void (GimeGpu::* DrawTopBoarder[4])(SystemState*) = { &GimeGpu::DrawTopBoarder8,&GimeGpu::DrawTopBoarder16,&GimeGpu::DrawTopBoarder24,&GimeGpu::DrawTopBoarder32 };
+void (GimeGpu::* DrawBottomBoarder[4])(SystemState*) = { &GimeGpu::DrawBottomBoarder8,&GimeGpu::DrawBottomBoarder16,&GimeGpu::DrawBottomBoarder24,&GimeGpu::DrawBottomBoarder32 };
+void (GimeGpu::* UpdateScreen[4])(SystemState*) = { &GimeGpu::UpdateScreen8,&GimeGpu::UpdateScreen16,&GimeGpu::UpdateScreen24,&GimeGpu::UpdateScreen32 };
+
+GimeGpu::GimeGpu()
+{
+	mImmediate = true;
+	mClockVSyncFall = 0;
+	mClockHSync = 0;
+	mLineCount = 0;
+	mTimerCount = 0;
+	mTimer = 0;
+	mTimerSet = 0;
+	mFrameFinished = 0;
+	mLeftDraw = 0;
+	mRightEdge = 0;
+	mLeftEdge = 0;
+}
+
+GimeGpu::GimeGpu(SyncFunction hSync, SyncFunction vSync)
+{
+	mImmediate = false;
+	mHSync = hSync;
+	mVSync = vSync;
+	mClockVSyncFall = 0;
+	mClockHSync = 0;
+	mLineCount = 0;
+	mTimerCount = 0;
+	mTimer = 0;
+	mTimerSet = 0;
+	mFrameFinished = 0;
+	mLeftDraw = 0;
+	mRightEdge = 0;
+	mLeftEdge = 0;
+}
+
+void GimeGpu::SetTimer(unsigned int time)
+{
+	mTimer = time;
+}
+
+void GimeGpu::TimerRetrigger()
+{
+	// |...|...|...|...|...|...|...|...|...
+	// 0   1   2   3   4   5   6   7   8
+	// 0               1               2
+	extern unsigned int TimerClockRate;
+	using namespace VCC; // TODO move Gime to VCC
+
+	const unsigned int timerOffset = 2; // 1 = Gime'87, 2 = Gime'86
+	mTimerCount = mTimer > 0 ? mTimer + timerOffset : 0;
+
+	auto log = [](const char* f, auto ...v)
+	{
+		if (!EmuState.Debugger.IsTracingEnabled()) return;
+		char tmp[80];
+		sprintf(tmp, f, v...);
+		EmuState.Debugger.TraceCaptureScreenEvent(VCC::TraceEvent::ScreenReg, 0, 0, tmp);
+	};
+
+	log("Timer Start: %d", mTimerCount);
+
+	if (TimerClockRate)
+	{
+		if (mTimerCount > 0)
+			VCC::gEvents.ReQueue(mTimerCount * 4, [=]() { TimerInterrupt(CLK_TIMER_IRQ_ISSUE_DELAY); }, ET_TIMER);
+		else
+			VCC::gEvents.Erase(ET_TIMER);
+	}
+	else if (mTimerCount > 0)
+		mTimerSet = false;
+}
+
+void GimeGpu::TimerInterrupt(int delay)
+{
+	if (delay)
+		VCC::gEvents.Queue(delay, GimeAssertTimerInterupt);
+	else
+		GimeAssertTimerInterupt();
+	TimerRetrigger();
+}
+
+void GimeGpu::DecrementTimerAndSet()
+{
+	extern unsigned int TimerClockRate;
+	if (TimerClockRate) return;
+	if (mTimerSet) return;
+	if (mTimerCount > 0)
+	{
+		if (--mTimerCount == 0)
+		{
+			mTimerSet = true;
+		}
+	}
+}
+
+//
+// Actually do the timer restart
+//
+void GimeGpu::TimerRestart()
+{
+	TimerRetrigger();
+	DecrementTimerAndSet();
+}
+
+//
+// Public: Called when 0x94 written
+//
+void GimeGpu::ResetTimer()
+{
+	// after writing new timer value, restart but not immediately.
+	VCC::gEvents.Queue(CLK_TIMER_IRQ_RESET_DELAY, [=]() { TimerRestart(); });
+}
+
+
+void GimeGpu::DrawTopBorder() { (gGimeGpu.*DrawTopBoarder[EmuState.BitDepth])(&EmuState); }
+void GimeGpu::DrawActiveArea() { (gGimeGpu.*UpdateScreen[EmuState.BitDepth])(&EmuState); }
+void GimeGpu::DrawBottomBorder() { (gGimeGpu.*DrawBottomBoarder[EmuState.BitDepth])(&EmuState); }
+
+void GimeGpu::DrawRaster()
+{
+	size_t region[6]={7,TopOffScreen,TopBoarder,LinesperScreen,BottomBoarder,1000,};
+
+	int r = 0;
+	auto line = mLineCount;
+	while (line >= region[r]) line -= region[r++];
+	EmuState.LineCounter = (unsigned short)line;
+	if (r == 2) DrawTopBorder();
+	else if (r == 3) DrawActiveArea();
+	else if (r == 4) DrawBottomBorder();
+}
+
+void GimeGpu::VSYNC(int level)
+{
+	if (level == 0)
+	{
+		EmuState.Debugger.TraceCaptureScreenEvent(VCC::TraceEvent::ScreenVSYNCLow, 0, mLineCount);
+		mVSync(0);
+	}
+	else
+	{
+		EmuState.Debugger.TraceCaptureScreenEvent(VCC::TraceEvent::ScreenVSYNCHigh, 0, mLineCount);
+		mVSync(1);
+	}
+}
+
+void GimeGpu::HSYNC(int level)
+{
+	if (level == 0)
+	{
+		EmuState.Debugger.TraceCaptureScreenEvent(VCC::TraceEvent::ScreenHSYNCLow, 0, mLineCount);
+		mHSync(0);
+	}
+	else
+	{
+		EmuState.Debugger.TraceCaptureScreenEvent(VCC::TraceEvent::ScreenHSYNCHigh, 0, mLineCount);
+		mHSync(1);
+	}
+}
+
+void GimeGpu::VSyncFall() 
+{
+	using namespace VCC;
+
+	// do vsync fall and queue rise event 4 lines later
+	VSYNC(0); 
+	gEvents.Queue(CLK_LINE*4, [=]() { VSYNC(1); });
+}
+
+void GimeGpu::VBlank()
+{
+	if (mLineCount == VIDEO_LINES)
+	{
+		VSyncFall();
+		mLineCount = 0;
+		StartofVidram = NewStartofVidram;
+	}
+	// if reached end of visible area, do gime vsync interrupt
+	else if (mLineCount == 7 + TopOffScreen + TopBoarder + LinesperScreen)
+	{
+		GimeAssertVertInterupt();
+	}
+}
+
+void GimeGpu::HSyncQueueEvents(int offset)
+{
+	using namespace VCC;
+
+	auto now = gEvents.GetClocks();
+
+	// queue next hsync fall, rise and gime hsync interrupt
+	gEvents.Queue(CLK_LINE, [=]() { HSyncFall(); });
+	gEvents.Queue(CLK_HSYNC, [=]() { HSYNC(1); });
+	gEvents.Queue(mClockHSync, [=]() { GimeAssertHorzInterupt(); });
+	gEvents.Queue(mClockVSyncFall, [=]() { VBlank(); });
+}
+
+void GimeGpu::HSyncFall()
+{
+	auto log = [](const char* f, auto ...v)
+	{
+		if (!EmuState.Debugger.IsTracingEnabled()) return;
+		char tmp[80];
+		sprintf(tmp, f, v...);
+		EmuState.Debugger.TraceCaptureScreenEvent(VCC::TraceEvent::ScreenReg, 0, 0, tmp);
+	};
+
+	using namespace VCC;
+
+	// is timer set to trigger?
+	if (mTimerSet) TimerInterrupt(0);
+
+	// decrement timer just before end of line
+	extern unsigned int TimerClockRate;
+	if (!TimerClockRate)
+		gEvents.Queue(CLK_TIMER_DECR_DELAY, [=]() { DecrementTimerAndSet(); });
+
+	// horizontal sync fall event
+	HSYNC(0);
+
+	// end line, raster it, begin new line
+	EndCpuLine();
+	DrawRaster();
+	++mLineCount;
+
+	if (mLineCount != VIDEO_LINES)
+		BeginCpuLine();
+
+	// queue next horizontal sync event
+	HSyncQueueEvents();
+
+	// if reached the last line, pause to present screen
+	if (mLineCount == VIDEO_LINES)
+	{
+		// reset event base for next frame
+		gEvents.Rebase();
+		BeginCpuLine();
+		mFrameFinished = true;
+		log("=== Frame ===");
+	}
+}
+
+bool GimeGpu::FrameFinished()
+{
+	if (mFrameFinished)
+	{
+		mFrameFinished = false;
+		return true;
+	}
+	return false;
+}
+
+#else // USE_NEWTIMING
+
+GimeGpu::GimeGpu() {}
+
+#endif
+
 
 //extern STRConfig CurrentConfig;
 static unsigned char ColorValues[4]={0,85,170,255};
@@ -117,8 +380,12 @@ void GimeGpu::UpdateScreen8(SystemState *US8State)
 	long Xpitch = US8State->SurfacePitch;
 	Carry1=1;
 	Pcolor=0;
-	
-	if ( (HorzCenter!=0) && (BoarderChange>0) )
+
+#if USE_NEWTIMING
+	if ((HorzCenter != 0))
+#else
+	if ((HorzCenter != 0) && (BoarderChange > 0))
+#endif
 		for (unsigned short x=0;x<HorzCenter;x++)
 		{
 			US8State->PTRsurface8[x +(((US8State->LineCounter+VertCenter)*2)*US8State->SurfacePitch)]=BoarderColor8;
@@ -3215,7 +3482,12 @@ void GimeGpu::UpdateScreen16(SystemState *USState16)
 	char Pcolor=0;
 	char Carry1=1;
 
+#if USE_NEWTIMING
+	if ((HorzCenter != 0))
+#else
 	if ( (HorzCenter!=0) && (BoarderChange>0) )
+
+#endif
 		for (unsigned short x=0;x<HorzCenter;x++)
 		{
 			USState16->PTRsurface16[x +(((USState16->LineCounter+VertCenter)*2)*(USState16->SurfacePitch))]=BoarderColor16;
@@ -6339,23 +6611,35 @@ void GimeGpu::UpdateScreen32To(unsigned char *buffer, unsigned int *surface, int
 		OutputDebugString(tmpout.c_str());
 		last_gmode = curr_gmode;
 	}
-	if ( (HorzCenter!=0) && (BoarderChange>0) )
+
+#if USE_NEWTIMING
+	// draw left side border:
+	if ( (HorzCenter!=0) /* && (BoarderChange>0)*/)
+#else
+	if ((HorzCenter != 0) && (BoarderChange>0))
+#endif
 		for (unsigned short x=0;x<HorzCenter;x++)
 		{
+#if USE_NEWTIMING
+			ProcessCpuLine(x);
+#endif
 			auto idx = x + (((y + VertCenter) * 2) * Xpitch);
 			if (idx < 640 * 480) // wtf?
 			{
 				szSurface32[idx] = BoarderColor32;
 				if (!ScanLines)
-					szSurface32[x + (((y + VertCenter) * 2 + 1) * Xpitch)] = BoarderColor32;
+					szSurface32[idx + Xpitch] = BoarderColor32;
 			}
+#if USE_NEWTIMING
+#else
 			idx = x + (PixelsperLine * (Stretch + 1)) + HorzCenter + (((y + VertCenter) * 2) * Xpitch);
 			if (idx < 640 * 480) // wtf?
 			{
 				szSurface32[idx] = BoarderColor32;
 				if (!ScanLines)
-					szSurface32[x + (PixelsperLine * (Stretch + 1)) + HorzCenter + (((y + VertCenter) * 2 + 1) * Xpitch)] = BoarderColor32;
+					szSurface32[idx + Xpitch] = BoarderColor32;
 			}
+#endif
 		}
 
 	auto pmode4MonType = Pmode4MonType();
@@ -6380,6 +6664,9 @@ void GimeGpu::UpdateScreen32To(unsigned char *buffer, unsigned int *surface, int
 				Attributes=0;
 				for (HorzBeam=0;HorzBeam<BytesperRow*ExtendedText;HorzBeam+=ExtendedText)
 				{									
+#if USE_NEWTIMING
+					ProcessCpuLine(HorzCenter + HorzBeam * 8);
+#endif
 					Character=buffer[Start+(unsigned char)(HorzBeam+Hoffset)];
 					Pixel = GetFontRowCC3(Character, rowLine);
 
@@ -6393,7 +6680,7 @@ void GimeGpu::UpdateScreen32To(unsigned char *buffer, unsigned int *surface, int
 					}
 					TextPalette[1]=Palette32Bit[8+((Attributes & 56)>>3)];
 					TextPalette[0]=Palette32Bit[Attributes & 7];
-					szSurface32[YStride+=1]=TextPalette[Pixel >>7 ];
+					szSurface32[YStride+=1]=TextPalette[Pixel>>7];
 					szSurface32[YStride+=1]=TextPalette[(Pixel>>6)&1];
 					szSurface32[YStride+=1]=TextPalette[(Pixel>>5)&1];
 					szSurface32[YStride+=1]=TextPalette[(Pixel>>4)&1];
@@ -6424,6 +6711,9 @@ void GimeGpu::UpdateScreen32To(unsigned char *buffer, unsigned int *surface, int
 				Attributes=0;
 				for (HorzBeam=0;HorzBeam<BytesperRow*ExtendedText;HorzBeam+=ExtendedText)
 				{
+#if USE_NEWTIMING
+					ProcessCpuLine(HorzCenter + HorzBeam * 16);
+#endif
 					Character=buffer[Start+(unsigned char)(HorzBeam+Hoffset)];
 					Pixel = GetFontRowCC3(Character, rowLine);
 					if (ExtendedText==2)
@@ -6540,7 +6830,7 @@ void GimeGpu::UpdateScreen32To(unsigned char *buffer, unsigned int *surface, int
 			case 61:
 			case 62:
 			case 63:
-				return;
+				break;
 				for (HorzBeam=0;HorzBeam<BytesperRow*ExtendedText;HorzBeam+=ExtendedText)
 				{									
 					Character=buffer[Start+(unsigned char)(HorzBeam+Hoffset)];
@@ -6634,6 +6924,9 @@ void GimeGpu::UpdateScreen32To(unsigned char *buffer, unsigned int *surface, int
 				curr_gmode = "32 Col. Text";
 				for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam++)
 				{										
+#if USE_NEWTIMING
+					ProcessCpuLine(HorzCenter + HorzBeam * 16);
+#endif
 					Character=buffer[Start+(unsigned char)(HorzBeam+Hoffset)];
 					switch ((Character & 192) >> 6)
 					{
@@ -6709,6 +7002,9 @@ case 128+0: //Bpp=0 Sr=0 1BPP Stretch=1
 	curr_gmode = "HSCREEN 3";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //1bbp Stretch=1
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 8);
+#endif
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[ 1 & (WidePixel>>7)];
 		szSurface32[YStride+=1]=Palette32Bit[ 1 & (WidePixel>>6)];
@@ -6756,6 +7052,9 @@ case 128+2:	//Bpp=0 Sr=2
 	curr_gmode = "gmode5";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //1bbp Stretch=2
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 16);
+#endif
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 
 		szSurface32[YStride+=1]=Palette32Bit[ 1 & (WidePixel>>7)];
@@ -6839,6 +7138,9 @@ case 128+6: //Bpp=0 Sr=6
 	curr_gmode = "gmode6";
 for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //1bbp Stretch=4
 {
+#if USE_NEWTIMING
+	ProcessCpuLine(HorzCenter + HorzBeam * 32);
+#endif
 	WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 
 	szSurface32[YStride+=1]=Palette32Bit[ 1 & (WidePixel>>7)];
@@ -6989,6 +7291,9 @@ case 128+14: //Bpp=0 Sr=14
 	curr_gmode = "gmode7";
 for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //1bbp Stretch=8
 {
+#if USE_NEWTIMING
+	ProcessCpuLine(HorzCenter + HorzBeam * 64);
+#endif
 	WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 	szSurface32[YStride+=1]=Palette32Bit[ 1 & (WidePixel>>7)];
 	szSurface32[YStride+=1]=Palette32Bit[ 1 & (WidePixel>>7)];
@@ -7261,6 +7566,9 @@ case 128+16: //BPP=1 Sr=0  2BPP Stretch=1
 	curr_gmode = "gmode8";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //2bbp Stretch=1
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 4);
+#endif
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[ 3 & (WidePixel>>6)];
 		szSurface32[YStride+=1]=Palette32Bit[ 3 & (WidePixel>>4)];
@@ -7292,6 +7600,9 @@ case 128+18: //Bpp=1 Sr=2
 	curr_gmode = "HSCREEN 1";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //2bbp Stretch=2
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 8);
+#endif
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[ 3 & (WidePixel>>6)];
 		szSurface32[YStride+=1]=Palette32Bit[ 3 & (WidePixel>>6)];
@@ -7342,6 +7653,9 @@ case 128+22: //Bpp=1 Sr=6
 	curr_gmode = "gmode10";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //2bbp Stretch=4
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 16);
+#endif
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[ 3 & (WidePixel>>6)];
 		szSurface32[YStride+=1]=Palette32Bit[ 3 & (WidePixel>>6)];
@@ -7428,6 +7742,9 @@ case 128+30: //Bpp=1 Sr=14
 	curr_gmode = "gmode11";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //2bbp Stretch=8
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 32);
+#endif
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[ 3 & (WidePixel>>6)];
 		szSurface32[YStride+=1]=Palette32Bit[ 3 & (WidePixel>>6)];
@@ -7571,6 +7888,10 @@ case 128+31: //Bpp=1 Sr=15 2BPP Stretch=16
 	curr_gmode = "gmode12";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //2bbp Stretch=16
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 64);
+#endif
+
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[ 3 & (WidePixel>>6)];
 		szSurface32[YStride+=1]=Palette32Bit[ 3 & (WidePixel>>6)];
@@ -7842,6 +8163,10 @@ case 128+32: //Bpp=2 Sr=0 4BPP Stretch=1
 	curr_gmode = "gmode13";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //4bbp Stretch=1
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 2);
+#endif
+
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[ 15 & (WidePixel>>4)];
 		szSurface32[YStride+=1]=Palette32Bit[ 15 & WidePixel];
@@ -7865,6 +8190,10 @@ case 128+34: //Bpp=2 Sr=2
 	curr_gmode = "HSCREEN 2";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //4bbp Stretch=2
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 4);
+#endif
+
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[ 15 & (WidePixel>>4)];
 		szSurface32[YStride+=1]=Palette32Bit[ 15 & (WidePixel>>4)];
@@ -7898,6 +8227,10 @@ case 128+38: //Bpp=2 Sr=6
 	curr_gmode = "gmode15";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //4bbp Stretch=4
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 8);
+#endif
+
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[ 15 & (WidePixel>>4)];
 		szSurface32[YStride+=1]=Palette32Bit[ 15 & (WidePixel>>4)];
@@ -7952,6 +8285,10 @@ case 128+46: //Bpp=2 Sr=14
 	curr_gmode = "gmode16";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //4bbp Stretch=8
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 16);
+#endif
+
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[ 15 & (WidePixel>>4)];
 		szSurface32[YStride+=1]=Palette32Bit[ 15 & (WidePixel>>4)];
@@ -8031,6 +8368,10 @@ case 128+47: //Bpp=2 Sr=15 4BPP Stretch=16
 	curr_gmode = "gmode17";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //4bbp Stretch=16
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 32);
+#endif
+
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[ 15 & (WidePixel>>4)];
 		szSurface32[YStride+=1]=Palette32Bit[ 15 & (WidePixel>>4)];
@@ -8186,13 +8527,16 @@ case 128+61: //Bpp=3 Sr=13
 case 128+62: //Bpp=3 Sr=14 
 case 128+63: //Bpp=3 Sr=15 
 
-	return;
 	break;
 //	XXXXXXXXXXXXXXXXXXXXXX;
 case 192+0: //Bpp=0 Sr=0 1BPP Stretch=1
 	curr_gmode = "gmode18";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //1bbp Stretch=1
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 8);
+#endif
+
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 1 & (WidePixel>>7))];
 		szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 1 & (WidePixel>>6))];
@@ -8253,6 +8597,9 @@ case 192+2:	//Bpp=0 Sr=2
 	{
 		for (HorzBeam = 0; HorzBeam < BytesperRow; HorzBeam += 2) //1bbp Stretch=2
 		{
+#if USE_NEWTIMING
+			ProcessCpuLine(HorzCenter + HorzBeam * 8);
+#endif
 			WidePixel = WideBuffer[(VidMask & (Start + (unsigned char)(Hoffset + HorzBeam))) >> 1];
 			//************************************************************************************
 			if (!pmode4MonType && BoarderColor32 == 0xFFFFFF)
@@ -8431,6 +8778,9 @@ case 192+6: //Bpp=0 Sr=6
 	curr_gmode = "gmode20 (PMODE0 / PMODE2)";
 for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //1bbp Stretch=4
 {
+#if USE_NEWTIMING
+	ProcessCpuLine(HorzCenter + HorzBeam * 32);
+#endif
 	WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 
 	szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 1 & (WidePixel>>7))];
@@ -8581,6 +8931,9 @@ case 192+14: //Bpp=0 Sr=14
 	curr_gmode = "gmode21";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //1bbp Stretch=8
 {
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 64);
+#endif
 	WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 	szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 1 & (WidePixel>>7))];
 	szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 1 & (WidePixel>>7))];
@@ -8853,6 +9206,9 @@ case 192+16: //BPP=1 Sr=0  2BPP Stretch=1
 	curr_gmode = "gmode22";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //2bbp Stretch=1
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 4);
+#endif
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 3 & (WidePixel>>6))];
 		szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 3 & (WidePixel>>4))];
@@ -8884,6 +9240,9 @@ case 192+18: //Bpp=1 Sr=2
 	curr_gmode = "gmode23";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //2bbp Stretch=2
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 8);
+#endif
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 3 & (WidePixel>>6))];
 		szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 3 & (WidePixel>>6))];
@@ -8934,6 +9293,9 @@ case 192+22: //Bpp=1 Sr=6
 	curr_gmode = "gmode24 (PMODE1 / PMODE3)";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //2bbp Stretch=4
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 16);
+#endif
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 3 & (WidePixel>>6))];
 		szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 3 & (WidePixel>>6))];
@@ -9020,6 +9382,9 @@ case 192+30: //Bpp=1 Sr=14
 	curr_gmode = "gmode25";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //2bbp Stretch=8
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 32);
+#endif
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 3 & (WidePixel>>6))];
 		szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 3 & (WidePixel>>6))];
@@ -9163,6 +9528,9 @@ case 192+31: //Bpp=1 Sr=15 2BPP Stretch=16
 	curr_gmode = "gmode26";
 	for (HorzBeam=0;HorzBeam<BytesperRow;HorzBeam+=2) //2bbp Stretch=16
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 64);
+#endif
 		WidePixel=WideBuffer[(VidMask & ( Start+(unsigned char)(Hoffset+HorzBeam) ))>>1];
 		szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 3 & (WidePixel>>6))];
 		szSurface32[YStride+=1]=Palette32Bit[PaletteIndex+( 3 & (WidePixel>>6))];
@@ -9462,19 +9830,41 @@ case 192+60: //Bpp=3 Sr=12
 case 192+61: //Bpp=3 Sr=13 
 case 192+62: //Bpp=3 Sr=14 
 case 192+63: //Bpp=3 Sr=15 
-	return;
 	break;
 
-			} //END SWITCH
-	return;
+} //END SWITCH
+
+#if USE_NEWTIMING
+
+	// draw right side border:
+	if ((HorzCenter != 0) /* && (BoarderChange>0)*/)
+	{
+		for (unsigned short x = 0;x < HorzCenter;x++)
+		{
+			auto px = x + (PixelsperLine * (Stretch + 1)) + HorzCenter;
+			auto idx = px + (((y + VertCenter) * 2) * Xpitch);
+			ProcessCpuLine(x + (PixelsperLine * (Stretch + 1)) + HorzCenter);
+			if (idx < 640 * 480) // wtf?
+			{
+				szSurface32[idx] = BoarderColor32;
+				if (!ScanLines)
+					szSurface32[idx + Xpitch] = BoarderColor32;
+			}
+		}
+	}
+	Hoffset = NewHoffset;
+
+#endif
 }
 // END of 32 Bit render loop *****************************************************************************************
 
-void GimeGpu::DrawTopBoarder8(SystemState *DTState) const
+void GimeGpu::DrawTopBoarder8(SystemState *DTState)
 {
 	unsigned short x;
+#if !USE_NEWTIMING
 	if (BoarderChange==0)
 		return;
+#endif
 
 	for (x=0;x<DTState->WindowSize.w;x++)
 	{
@@ -9484,11 +9874,13 @@ void GimeGpu::DrawTopBoarder8(SystemState *DTState) const
 	}
 }
 
-void GimeGpu::DrawTopBoarder16(SystemState *DTState) const
+void GimeGpu::DrawTopBoarder16(SystemState *DTState)
 {
 	unsigned short x;
+#if !USE_NEWTIMING
 	if (BoarderChange==0)
 		return;
+#endif
 
 	for (x=0;x<DTState->WindowSize.w;x++)
 	{
@@ -9498,19 +9890,23 @@ void GimeGpu::DrawTopBoarder16(SystemState *DTState) const
 	}
 }
 
-void GimeGpu::DrawTopBoarder24(SystemState * /*DTState*/) const
+void GimeGpu::DrawTopBoarder24(SystemState * /*DTState*/)
 {
 }
 
-void GimeGpu::DrawTopBoarder32(SystemState *DTState) const
+void GimeGpu::DrawTopBoarder32(SystemState *DTState)
 {
-
 	unsigned short x;
+#if !USE_NEWTIMING
 	if (BoarderChange==0)
 		return;
+#endif
 
 	for (x=0;x<DTState->WindowSize.w;x++)
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(x);
+#endif
 		DTState->PTRsurface32[x +((DTState->LineCounter*2)*DTState->SurfacePitch)]=BoarderColor32;
 		if (!DTState->ScanLines)
 			DTState->PTRsurface32[x +((DTState->LineCounter*2+1)*DTState->SurfacePitch)]=BoarderColor32;
@@ -9523,9 +9919,11 @@ void GimeGpu::DrawTopBoarder32(SystemState *DTState) const
 //  NitrOS9. As a stop gap the surface index calculated from these values
 //  is checked before being used to draw the lines at the border.
 
-void GimeGpu::DrawBottomBoarder8(SystemState *DTState) const
+void GimeGpu::DrawBottomBoarder8(SystemState *DTState)
 {
+#if !USE_NEWTIMING
 	if (BoarderChange==0) return;
+#endif
 	int ndx = 2 * (LinesperScreen + VertCenter + DTState->LineCounter);
 	if (ndx >= DTState->WindowSize.h) return;  // Range check
 	unsigned int cnt = DTState->WindowSize.w;
@@ -9534,9 +9932,11 @@ void GimeGpu::DrawBottomBoarder8(SystemState *DTState) const
 	while(cnt--) *p++ = BoarderColor8|128;
 }
 
-void GimeGpu::DrawBottomBoarder16(SystemState *DTState) const
+void GimeGpu::DrawBottomBoarder16(SystemState *DTState)
 {
+#if !USE_NEWTIMING
 	if (BoarderChange==0) return;
+#endif
 	int ndx = 2 * (LinesperScreen + VertCenter + DTState->LineCounter);
 	if (ndx >= DTState->WindowSize.h) return;  // Range check
 	unsigned int cnt = DTState->WindowSize.w;
@@ -9545,19 +9945,33 @@ void GimeGpu::DrawBottomBoarder16(SystemState *DTState) const
 	while(cnt--) *p++ = BoarderColor16;
 }
 
-void GimeGpu::DrawBottomBoarder24(SystemState * /*DTState*/) const
+void GimeGpu::DrawBottomBoarder24(SystemState * /*DTState*/)
 {
 }
 
-void GimeGpu::DrawBottomBoarder32(SystemState *DTState) const
+void GimeGpu::DrawBottomBoarder32(SystemState *DTState)
 {
+#if !USE_NEWTIMING
 	if (BoarderChange==0) return;
+#endif
 	int ndx = 2 * (LinesperScreen + VertCenter + DTState->LineCounter);
 	if (ndx >= DTState->WindowSize.h) return;  // Range check
 	unsigned int cnt = DTState->WindowSize.w;
-	if (!DTState->ScanLines) cnt *= 2;
+	//if (!DTState->ScanLines) cnt *= 2;
 	unsigned int *p = DTState->PTRsurface32 + DTState->SurfacePitch * ndx;
-	while(cnt--) *p++ = BoarderColor32;
+	int x = 0;
+	while (cnt--)
+	{
+#if USE_NEWTIMING
+		ProcessCpuLine(x);
+#endif
+
+		*p = BoarderColor32;
+		if (!DTState->ScanLines)
+			*(p + DTState->SurfacePitch) = BoarderColor32;
+		++p;
+		++x;
+	}
 }
 
 void GimeGpu::TogBlinkState()
@@ -9581,18 +9995,48 @@ void GimeGpu::SetGimeVdgMode(unsigned char VdgMode) //3 bits from SAM Registers
 	{
 		CC2VDGMode=VdgMode;
 		SetupDisplay();
+#if !USE_NEWTIMING
 		BoarderChange=3;
+#endif
 	}
 }
 
 void GimeGpu::SetGimeVdgMode2(unsigned char Vdgmode2) //5 bits from PIA Register
 {
+#if USE_NEWTIMING
+	auto changed = CC2VDGPiaMode ^ Vdgmode2;
+	CC2VDGPiaMode = Vdgmode2;
+
+	if (changed == 1)
+	{
+		if (mImmediate)
+		{
+			SetupColorSet(Vdgmode2 & 1);
+		}
+		else PushLineUpdate([=]() 
+		{ 
+			SetupColorSet(Vdgmode2 & 1); 
+		});
+	}
+	else if (changed) // other changes
+	{
+		if (mImmediate)
+		{
+			SetupDisplay();
+		}
+		else PushLineUpdate([=]()
+		{
+			SetupDisplay();
+		});
+	}
+#else
 	if (CC2VDGPiaMode != Vdgmode2)
 	{
-		CC2VDGPiaMode=Vdgmode2;
+		CC2VDGPiaMode = Vdgmode2;
 		SetupDisplay();
-		BoarderChange=3;
+		BoarderChange = 3;
 	}
+#endif
 }
 
 //These grab the Video info for all COCO 3 modes
@@ -9629,18 +10073,40 @@ void GimeGpu::SetCompatMode(unsigned char Register)
 	{
 		CompatMode=Register;
 		SetupDisplay();
+#if !USE_NEWTIMING
 		BoarderChange=3;
+#endif
 	}
 }
 
 void GimeGpu::SetGimePalette(unsigned char palette,unsigned char color) 
 {
+#if USE_NEWTIMING
+	if (mImmediate)
+	{
+		Palette[palette] = color & 63;
+		Palette8Bit[palette] = PaletteLookup8[MonType][color & 63];
+		Palette16Bit[palette] = PaletteLookup16[MonType][color & 63];
+		Palette32Bit[palette] = PaletteLookup32[MonType][color & 63];
+	}
+	else PushLineUpdate([=]()
+	{
+		// Convert the 6bit rgbrgb value to rrrrrggggggbbbbb for the Real video hardware.
+		//	unsigned char r,g,b;
+		Palette[palette] = color & 63;
+		Palette8Bit[palette] = PaletteLookup8[MonType][color & 63];
+		Palette16Bit[palette] = PaletteLookup16[MonType][color & 63];
+		Palette32Bit[palette] = PaletteLookup32[MonType][color & 63];
+	});
+
+#else
 	// Convert the 6bit rgbrgb value to rrrrrggggggbbbbb for the Real video hardware.
 	//	unsigned char r,g,b;
 	Palette[palette]=color &63;
 	Palette8Bit[palette]=PaletteLookup8[MonType][color & 63]; 
 	Palette16Bit[palette]=PaletteLookup16[MonType][color & 63];
 	Palette32Bit[palette]=PaletteLookup32[MonType][color & 63];
+#endif
 }
 
 bool GimeGpu::CopyPalette(const GimeGpu& other)
@@ -9659,41 +10125,83 @@ void GimeGpu::SetGimeVmode(unsigned char vmode)
 	{
 		CC3Vmode=vmode;
 		SetupDisplay();
+#if !USE_NEWTIMING
 		BoarderChange=3;
-
+#endif
 	}
 }
 
 void GimeGpu::SetGimeVres(unsigned char vres)
 {
+#if USE_NEWTIMING
+	if (CC3Vres != vres)
+	{
+		CC3Vres = vres;
+		SetupDisplay();
+	}
+#else
 	if (CC3Vres != vres)
 	{
 		CC3Vres=vres;
 		SetupDisplay();
 		BoarderChange=3;
 	}
+#endif
 }
 
 void GimeGpu::SetGimeHorzOffset(unsigned char data)
 {
+#if USE_NEWTIMING
+	if (mImmediate)
+	{
+		Hoffset = (data << 1);
+		HorzOffsetReg = data;
+		SetupDisplay();
+	}
+	else
+	{
+		NewHoffset = (data << 1);
+		HorzOffsetReg = data;
+		SetupDisplay();
+	}
+#else
 	if (HorzOffsetReg != data)
 	{
 		Hoffset=(data<<1);
 		HorzOffsetReg=data;
 		SetupDisplay();
 	}
+#endif
 }
 
 void GimeGpu::SetGimeBoarderColor(unsigned char data)
 {
+#if USE_NEWTIMING
+	if (mImmediate)
+	{
+		CC3BoarderColor = data & 63;
+		BoarderColor8 = ((CC3BoarderColor & 63) | 128);
+		BoarderColor16 = PaletteLookup16[MonType][CC3BoarderColor & 63];
+		BoarderColor32 = PaletteLookup32[MonType][CC3BoarderColor & 63];
+	}
+	else PushLineUpdate([=]()
+	{
+		CC3BoarderColor = data & 63;
+		BoarderColor8 = ((CC3BoarderColor & 63) | 128);
+		BoarderColor16 = PaletteLookup16[MonType][CC3BoarderColor & 63];
+		BoarderColor32 = PaletteLookup32[MonType][CC3BoarderColor & 63];
+	});
+#else
 	if (CC3BoarderColor != (data & 63) )
 	{
 		CC3BoarderColor= data & 63;
 		SetupDisplay();
 		BoarderChange=3;
 	}
+#endif
 }
 
+#if !USE_NEWTIMING
 void GimeGpu::SetBoarderChange()
 {
 	if (BoarderChange >0)
@@ -9704,28 +10212,143 @@ void GimeGpu::InvalidateBoarder()
 {
 	BoarderChange=5;
 }
-
+#endif
 void GimeGpu::SetLinesperScreen(unsigned char Lines)
 {
 	Lines = (Lines & 3);
 	LinesperScreen = Lpf[Lines];
 	TopBoarder = VcenterTable[Lines];
+#if USE_NEWTIMING
+	BottomBoarder = (LINESPERSCREEN - 24) - (TopBoarder + LinesperScreen);
+#else
 	BottomBoarder = 239 - (TopBoarder + LinesperScreen);
+#endif
 	TopOffScreen = TopOffScreenTable[Lines];
 	BottomOffScreen = BottomOffScreenTable[Lines];
 }
 
+#if USE_NEWTIMING
+//
+// Setup color set bit
+//
+void GimeGpu::SetupColorSet(unsigned char set)
+{
+	CC2VDGPiaMode &= ~1;
+	CC2VDGPiaMode |= set;
+	auto colorSetBit = (CC2VDGPiaMode & 1);
+	if (GraphicsMode)
+	{
+		if (colorSetBit)
+			CC3BoarderColor = 63; //63 White 
+		else
+			CC3BoarderColor = 18; //18 Bright Green
+	}
+	else
+	{
+		switch ((colorSetBit << 1) | InvertAll)
+		{
+			case 0:
+				TextFGPalette = 12;
+				TextBGPalette = 13;
+				break;
+			case 1:
+				TextFGPalette = 13;
+				TextBGPalette = 12;
+				break;
+			case 2:
+				TextFGPalette = 14;
+				TextBGPalette = 15;
+				break;
+			case 3:
+				TextFGPalette = 15;
+				TextBGPalette = 14;
+				break;
+		}
+	}
+}
+
+//
+// Process changes that occurred at horizontal pixel position.
+//
+void GimeGpu::ProcessCpuLine(unsigned int pixelx)
+{
+	if (mCpuLine.Index >= mCpuLine.Data.size()) return;
+
+	//  - hsync -|-bp-|-lb-|- active area -|-rb-|- fp -|
+	//           _______________________________________
+	//  ________/                                       \  hsync
+	//                     |- active area -|               rendered
+
+	auto elsapsedPixelTime = mLeftDraw + pixelx;
+	while (mCpuLine.Index < mCpuLine.Data.size() && mCpuLine.Data[mCpuLine.Index].first < elsapsedPixelTime)
+		mCpuLine.Data[mCpuLine.Index++].second();
+}
+
+//
+// Mark the beginning of a raster and capture per line variables.
+//
+void GimeGpu::BeginCpuLine()
+{
+	// flush any remaining (end of raster for video)
+	ProcessCpuLine(912);
+
+	// erase everything last line and keep next line
+	mCpuLine.Data.erase(mCpuLine.Data.begin(), mCpuLine.Data.begin() + mCpuLine.Index);
+
+	// capture current clock before hsync
+	auto prevLineStart = mCpuLine.LineStartClock;
+	mCpuLine.LineStartClock = VCC::gEvents.GetClocks();
+	auto diff = mCpuLine.LineStartClock - prevLineStart;
+
+	// adjust time relative to next line, those changes wrap to next line
+	for (auto& e : mCpuLine.Data)
+		e.first -= diff;
+
+	// prepare for next line
+	mCpuLine.Index = 0;
+}
+
+//
+// Mark the end of a raster line (cpu not video).
+//
+void GimeGpu::EndCpuLine()
+{
+}
+
+//
+// Push raster update to queue to be applied whilst drawing raster.
+//
+void GimeGpu::PushLineUpdate(UpdateFunction func)
+{
+	auto now = VCC::gEvents.GetClocks();
+	auto elapsed = now - mCpuLine.LineStartClock;
+	mCpuLine.Data.push_back({ elapsed, func });
+}
+#endif // USE_NEWTIMING
+
 void GimeGpu::SetupDisplay()
 {
-	static unsigned char CC2Bpp[8]={1,0,1,0,1,0,1,0};
-	static unsigned char CC2LinesperRow[8]={12,3,3,2,2,1,1,1};
-	static unsigned char CC3LinesperRow[8]={1,1,2,8,9,10,11,16};
-	static unsigned char CC2BytesperRow[8]={16,16,32,16,32,16,32,32};
-	static unsigned char CC3BytesperRow[8]={16,20,32,40,64,80,128,160};
-	static unsigned char CC3BytesperTextRow[8]={32,40,32,40,64,80,64,80};
-	static unsigned char CC2PaletteSet[4]={8,0,10,4};
-	static unsigned char CCPixelsperByte[4]={8,4,2,2};
-	static unsigned char ColorSet=0,Temp1; 
+#if USE_NEWTIMING
+	static unsigned int CC2Bpp[8] = { 1,0,1,0,1,0,1,0 };
+	static unsigned int CC2LinesperRow[8] = { 12,3,3,2,2,1,1,1 };
+	static unsigned int CC3LinesperRow[8] = { 1,1,2,8,9,10,11,16 };
+	static unsigned int CC2BytesperRow[8] = { 16,16,32,16,32,16,32,32 };
+	static unsigned int CC3BytesperRow[8] = { 16,20,32,40,64,80,128,160 };
+	static unsigned int CC3BytesperTextRow[8] = { 32,40,32,40,64,80,64,80 };
+	static unsigned int CC2PaletteSet[4] = { 8,0,10,4 };
+	static unsigned int CCPixelsperByte[4] = { 8,4,2,2 };
+	static unsigned char Temp1;
+#else
+	static unsigned char CC2Bpp[8] = { 1,0,1,0,1,0,1,0 };
+	static unsigned char CC2LinesperRow[8] = { 12,3,3,2,2,1,1,1 };
+	static unsigned char CC3LinesperRow[8] = { 1,1,2,8,9,10,11,16 };
+	static unsigned char CC2BytesperRow[8] = { 16,16,32,16,32,16,32,32 };
+	static unsigned char CC3BytesperRow[8] = { 16,20,32,40,64,80,128,160 };
+	static unsigned char CC3BytesperTextRow[8] = { 32,40,32,40,64,80,64,80 };
+	static unsigned char CC2PaletteSet[4] = { 8,0,10,4 };
+	static unsigned char CCPixelsperByte[4] = { 8,4,2,2 };
+	static unsigned char ColorSet = 0, Temp1;
+#endif
 	ExtendedText=1;
 	switch (CompatMode)
 	{
@@ -9748,7 +10371,9 @@ void GimeGpu::SetupDisplay()
 
 	case 1:					//Color Computer 2 Mode
 		CC3BoarderColor=0;	//Black for text modes
+#if !USE_NEWTIMING
 		BoarderChange=3;
+#endif
 		NewStartofVidram= (512*CC2Offset)+(VerticalOffsetRegister & 0xE0FF)*8; 
 		GraphicsMode=( CC2VDGPiaMode & 16 )>>4; //PIA Set on graphics clear on text
 		VresIndex=0;
@@ -9756,12 +10381,16 @@ void GimeGpu::SetupDisplay()
 
 		if (GraphicsMode)
 		{
+#if USE_NEWTIMING
+			SetupColorSet(CC2VDGPiaMode & 1);
+#else
 			ColorSet = (CC2VDGPiaMode & 1);
 			if (ColorSet == 0)
 				CC3BoarderColor = 18; //18 Bright Green
 			else
 				CC3BoarderColor = 63; //63 White 
-			BoarderChange=3;
+			BoarderChange = 3;
+#endif
 			Bpp=CC2Bpp[ (CC2VDGPiaMode & 15) >>1 ];
 			BytesperRow=CC2BytesperRow[ (CC2VDGPiaMode & 15) >>1 ];
 			Temp1= (CC2VDGPiaMode &1) << 1 | (Bpp & 1);
@@ -9773,6 +10402,9 @@ void GimeGpu::SetupDisplay()
 			BytesperRow=32;
 			InvertAll= (CC2VDGPiaMode & 4)>>2;
 			LowerCase= (CC2VDGPiaMode & 2)>>1;
+#if USE_NEWTIMING
+			SetupColorSet(CC2VDGPiaMode & 1);
+#else
 			ColorSet = (CC2VDGPiaMode & 1);
 			Temp1= ( (ColorSet<<1) | InvertAll);
 			switch (Temp1)
@@ -9794,6 +10426,7 @@ void GimeGpu::SetupDisplay()
 				TextBGPalette=14;
 				break;
 			}
+#endif
 		}
 		break;
 }
@@ -9830,6 +10463,22 @@ void GimeGpu::SetupDisplay()
 	BoarderColor32=PaletteLookup32[MonType][CC3BoarderColor & 63];
 	NewStartofVidram =(NewStartofVidram & VidMask)+DistoOffset; //DistoOffset for 2M configuration
 	MasterMode= (GraphicsMode <<7) | (CompatMode<<6)  | ((Bpp & 3)<<4) | (Stretch & 15);
+#if USE_NEWTIMING
+	auto hres = ((CC3Vres >> 2) & 7);
+	auto hr2 = (hres >> 2) & 1;
+	auto hr0 = hres & 1;
+	if (CompatMode) hr0 = 0; // no 40/80 column in coco mode, so bit ignored.
+	static int vsync[] = { 225, 221, 161, 157, 227, 227, 163, 163 };
+	static int bp[] = { 61, 57, 63, 63 };
+	static int lb[] = { 106, 110, 44, 48, 104, 104, 42, 42 };
+	mClockVSyncFall = vsync[hr2 * 4 + hr0 * 2 + GraphicsMode];
+	auto sync_bp = 80 + bp[hr2 * 2 + GraphicsMode];
+	mLeftEdge = sync_bp + lb[hr2 * 4 + hr0 * 2 + GraphicsMode];
+	mRightEdge = mLeftEdge + (hr0 ? 640 : 512);
+	mClockHSync = mRightEdge;
+	constexpr auto offset = 16;
+	mLeftDraw = hr0 ? mLeftEdge : (mLeftEdge - 64) - offset;
+#endif
 }
 
 void GimeGpu::GimeInit()
@@ -9854,10 +10503,25 @@ void GimeGpu::GimeReset()
 	DistoOffset=0;
 	MakeRGBPalette();
 	MakeCMPpalette();
+#if !USE_NEWTIMING
 	BoarderChange=3;
+#endif
 	CC2Offset=0;
 	Hoffset=0;
 	VerticalOffsetRegister=0;
+#if USE_NEWTIMING
+	mTimerCount = 0;
+	mTimer = 0;
+	mTimerSet = false;
+	mFrameFinished = false;
+	mLineCount = 0;
+	mCpuLine.Index = 0;
+	if (mHSync || mVSync)
+	{
+		gGimeGpu.BeginCpuLine();
+		HSyncQueueEvents(0);
+	}
+#endif
 }
 
 void GimeGpu::SetVidMask(unsigned int data)
@@ -9965,31 +10629,51 @@ void GimeGpu::MakeCMPpalette()
 
 unsigned char GimeGpu::SetMonitorType(unsigned char Type)
 {
-	unsigned char PalNum=0;
-	int tmp = CC3BoarderColor;
-	SetGimeBoarderColor(0);
-	
+#if USE_NEWTIMING
 	if (Type != QUERY)
 	{
-		MonType=Type & 1;
-		for (PalNum=0;PalNum<16;PalNum++)
+		MonType = Type & 1;
+		for (auto PalNum = 0;PalNum < 16;PalNum++)
 		{
-			Palette16Bit[PalNum]=PaletteLookup16[MonType][Palette[PalNum]];
-			Palette32Bit[PalNum]=PaletteLookup32[MonType][Palette[PalNum]];
-			Palette8Bit[PalNum]= PaletteLookup8[MonType][Palette[PalNum]];
+			Palette16Bit[PalNum] = PaletteLookup16[MonType][Palette[PalNum]];
+			Palette32Bit[PalNum] = PaletteLookup32[MonType][Palette[PalNum]];
+			Palette8Bit[PalNum] = PaletteLookup8[MonType][Palette[PalNum]];
 		}
-//		CurrentConfig.MonitorType=MonType;
+	}
+#else
+	unsigned char PalNum = 0;
+	int tmp = CC3BoarderColor;
+	SetGimeBoarderColor(0);
+
+	if (Type != QUERY)
+	{
+		MonType = Type & 1;
+		for (PalNum = 0;PalNum < 16;PalNum++)
+		{
+			Palette16Bit[PalNum] = PaletteLookup16[MonType][Palette[PalNum]];
+			Palette32Bit[PalNum] = PaletteLookup32[MonType][Palette[PalNum]];
+			Palette8Bit[PalNum] = PaletteLookup8[MonType][Palette[PalNum]];
+		}
+		//		CurrentConfig.MonitorType=MonType;
 	}
 	SetGimeBoarderColor(tmp);
+#endif
 	return MonType;
 }
 
 void GimeGpu::SetPaletteType()
 {
+#if USE_NEWTIMING
 	int tmp = CC3BoarderColor;
 	SetGimeBoarderColor(0);
 	MakeCMPpalette();
 	SetGimeBoarderColor(tmp);
+#else
+	int tmp = CC3BoarderColor;
+	SetGimeBoarderColor(0);
+	MakeCMPpalette();
+	SetGimeBoarderColor(tmp);
+#endif
 }
 
 unsigned char GimeGpu::SetScanLines(unsigned char Lines)
@@ -9999,7 +10683,9 @@ unsigned char GimeGpu::SetScanLines(unsigned char Lines)
 	{
 		EmuState.ScanLines=Lines;
 		Cls(0,&EmuState);
+#if !USE_NEWTIMING
 		BoarderChange=3;
+#endif
 	}
 	return 0;
 }
@@ -10037,7 +10723,7 @@ void GimeGpu::FlipArtifacts()
 }
 
 // Render even/odd 2x2 ntsc pixels
-void GimeGpu::RenderNTSCPixel2x2(Surface32 surface32, size_t surfaceDest, int XpitchDest, char colorIndex, char scanLines) const
+void GimeGpu::RenderNTSCPixel2x2(Surface32 surface32, size_t surfaceDest, int XpitchDest, char colorIndex, char scanLines)
 {
 	colorIndex <<= 1;
 	unsigned int colorEven = ArtifactsNTSC[ColorInvert][ArtifactsNTSCIndex[colorIndex]];
@@ -10057,7 +10743,7 @@ void GimeGpu::RenderNTSCPixel2x2(Surface32 surface32, size_t surfaceDest, int Xp
 }
 
 // Render one raster line to surface 1bbp Stretch=2
-void GimeGpu::RenderPMODE4NTSC(Surface32 surface32, size_t surfaceDest, int XpitchDest, const unsigned char* cocoSrc, char scanLines) const
+void GimeGpu::RenderPMODE4NTSC(Surface32 surface32, size_t surfaceDest, int XpitchDest, const unsigned char* cocoSrc, char scanLines)
 {
 	const char cocoBorderPixel = 3; // white
 
@@ -10068,6 +10754,10 @@ void GimeGpu::RenderPMODE4NTSC(Surface32 surface32, size_t surfaceDest, int Xpit
 	// for each coco byte
 	for (; HorzBeam < BytesperRow; ++HorzBeam) 
 	{
+#if USE_NEWTIMING
+		ProcessCpuLine(HorzCenter + HorzBeam * 8);
+#endif
+
 		unsigned char cocoByte = *cocoSrc++;
 		for (int i = 0; i < 4; ++i)
 		{
@@ -10079,6 +10769,10 @@ void GimeGpu::RenderPMODE4NTSC(Surface32 surface32, size_t surfaceDest, int Xpit
 			surfaceDest += 4;
 		}
 	}
+
+#if USE_NEWTIMING
+	ProcessCpuLine(HorzCenter + BytesperRow * 8);
+#endif
 
 	// end of line pixels (ntsc bleed with border)
 	bitPattern = ((bitPattern << 2) + cocoBorderPixel) & 0x3F;

@@ -147,8 +147,8 @@ static void OnAudioSample()
 	AudioEvent();
 }
 void SetMasterTickCounter();
-void (GimeGpu::*DrawTopBoarder[4])(SystemState *)const ={ &GimeGpu::DrawTopBoarder8,&GimeGpu::DrawTopBoarder16,&GimeGpu::DrawTopBoarder24,&GimeGpu::DrawTopBoarder32 };
-void (GimeGpu::*DrawBottomBoarder[4])(SystemState *)const ={ &GimeGpu::DrawBottomBoarder8,&GimeGpu::DrawBottomBoarder16,&GimeGpu::DrawBottomBoarder24,&GimeGpu::DrawBottomBoarder32 };
+void (GimeGpu::*DrawTopBoarder[4])(SystemState *) ={ &GimeGpu::DrawTopBoarder8,&GimeGpu::DrawTopBoarder16,&GimeGpu::DrawTopBoarder24,&GimeGpu::DrawTopBoarder32 };
+void (GimeGpu::*DrawBottomBoarder[4])(SystemState *) ={ &GimeGpu::DrawBottomBoarder8,&GimeGpu::DrawBottomBoarder16,&GimeGpu::DrawBottomBoarder24,&GimeGpu::DrawBottomBoarder32 };
 void (GimeGpu::*UpdateScreen[4])(SystemState *) ={ &GimeGpu::UpdateScreen8,&GimeGpu::UpdateScreen16,&GimeGpu::UpdateScreen24,&GimeGpu::UpdateScreen32 };
 std::string GetClipboardText();
 void HLINE();
@@ -405,7 +405,9 @@ static void RunBlankLines(SystemState* st, int count)
 		HLINE();
 }
 
-float RenderFrame (SystemState *RFState)
+GimeGpu gGimeGpu;
+
+float RenderFrame (SystemState *RFState, _LARGE_INTEGER &now)
 {
 	static unsigned int FrameCounter=0;
 	// FrameCounter was never incremented, leaving it at 0 forever -
@@ -529,6 +531,8 @@ float RenderFrame (SystemState *RFState)
 
 	// Only affect frame rate if a debug window is open.
 	RFState->Debugger.Update();
+
+	QueryPerformanceCounter(&now);
 
 	static bool wasHalted = false;
 	if (EmuState.Debugger.IsHalted())

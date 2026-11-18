@@ -89,11 +89,16 @@ namespace VCC::Debugger
 		void TraceCaptureInterruptMasked(unsigned char irq, long cycleTime, const CPUState& state);
 		void TraceCaptureInterruptServicing(unsigned char irq, long cycleTime, const CPUState& state);
 		void TraceCaptureInterruptExecuting(unsigned char irq, long cycleTime, const CPUState& state);
+#if USE_NEWTIMING
+		void TraceCaptureScreenEvent(TraceEvent evt, double cycles, unsigned int n);
+		void TraceCaptureScreenEvent(TraceEvent evt, double cycles, unsigned int n, const char *s);
+#else
 		void TraceCaptureScreenEvent(TraceEvent evt, double cycles)
 		{
 			if (TraceRunning_ && TraceScreen_)
 				TraceCaptureScreenEventSlow(evt, cycles);
 		}
+#endif
 		void TraceEmulatorCycle(TraceEvent evt, int state, double lineNS, double irqNS, double soundNS, double cycles, double drift)
 		{
 			if (TraceRunning_ && TraceEmulation_)

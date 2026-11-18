@@ -599,7 +599,7 @@ int main(int argc, char** argv)
 		}
 
 		PasteTick();
-		RenderFrame(&EmuState);
+		{ LARGE_INTEGER now; RenderFrame(&EmuState, now); }
 		++frames;
 		++fps_frames;
 		if (shot_file != nullptr && frames == shot_frame)

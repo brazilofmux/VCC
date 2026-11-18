@@ -20,6 +20,7 @@ This file is part of VCC (Virtual Color Computer).
 */
 
 #include "MachineDefs.h"
+#include "BuildConfig.h"
 #include "Debugger.h"
 #include <cstdint>
 #include <atomic>
@@ -35,8 +36,12 @@ constexpr auto SAMPLESPERFRAME = 262u;
 
 
 //CPU 
+#if USE_NEWTIMING
+constexpr auto LINESPERSCREEN = 263;
+#else
 constexpr auto FRAMESPERSECORD = 59.923;	//The coco really runs at about 59.923 Frames per second
 constexpr auto LINESPERSCREEN = 262.0;
+#endif
 constexpr auto NANOSECOND = 1000000000.0;
 constexpr auto COLORBURST = 3579545.0;
 constexpr auto AUDIOBUFFERS = 12u;
@@ -131,6 +136,7 @@ namespace VCC
     {    
 		explicit VideoArray(T* p) : data(p) {}
 
+#if USE_DEBUG_VIDEO_BUFFER
         T& operator[](size_t index) 
         {
             assert(index < Size);
@@ -142,13 +148,26 @@ namespace VCC
             assert(index < Size);
             return data[index % Size]; 
         }
+#else
+        inline T& operator[](size_t index)
+        {
+            return data[index];
+        }
+
+        inline const T& operator[](size_t index) const
+        {
+            return data[index];
+        }
+
+#endif
 
     private:
         T* data;
     };
 
-
-    // delayed flip flop
+    // delayed flip flop. Upstream dropped it with its cycle-stepped timing;
+    // this fork's CPU latches interrupt lines through it (CpuCommon.h) so
+    // recognition lags assertion by one instruction, as at slice edges.
     struct DFF 
     {
         uint8_t D{}; // most recent Clock input
@@ -212,6 +231,7 @@ struct SystemState
     unsigned char	MousePointer = 0;
     unsigned char	OverclockFlag = 0;
 	char			StatusLine[256] = { 0 };
+	unsigned int	HsyncCounter = 0; 
 
 	// Debugger Package	
 	VCC::Debugger::Debugger Debugger;
