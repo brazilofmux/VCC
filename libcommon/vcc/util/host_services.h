@@ -511,4 +511,18 @@ inline void Sleep(DWORD ms)
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 }
 
+// Win32 high-resolution counter: nanosecond ticks of the steady clock.
+typedef union _LARGE_INTEGER { long long QuadPart; } LARGE_INTEGER;
+inline BOOL QueryPerformanceCounter(LARGE_INTEGER* t)
+{
+    t->QuadPart = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return TRUE;
+}
+inline BOOL QueryPerformanceFrequency(LARGE_INTEGER* f)
+{
+    f->QuadPart = 1000000000LL;
+    return TRUE;
+}
+
 #endif // _WIN32

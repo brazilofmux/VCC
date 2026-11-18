@@ -501,6 +501,45 @@ clean; IRQs 874 / 29,914 and the same screen hash as before the merge
 across all six tiers; smoke, gimetimer, becker, journal, drivewire
 pass; NitrOS-9 boot at parity, sieve ~1% lower.
 
+## Third upstream sync (2026-11-18): cycle-stepped timing, compiled out
+
+Eight commits. The SDC floppy-mode refactor and streaming fixes, the
+logger additions, and the cartridge-audio fix after DAC output merged
+cleanly. The large one is upstream's "Improve sync and display
+rendering, timer" (564cf47). It adds `USE_NEWTIMING` (BuildConfig.h):
+its own event queue (Event.cpp, a vector of std::function), a CPU that
+calls `Cycles(n)` after every micro-step to tick that queue, and a GIME
+that renders and raises interrupts against it mid-line. Timing advances
+inside instructions, which can't coexist with block JIT or scanline
+bursts. Those run whole blocks and settle timing at slice edges on the
+event heap.
+
+Upstream kept the classic path behind `#if !USE_NEWTIMING`, and our
+engine descends from it, so this fork defines `USE_NEWTIMING false`.
+Upstream's new code stays in the tree compiled out, which keeps later
+merges small. Resolution:
+
+- hd6309.cpp, mc6809.cpp, CpuCommon.h, coco3.cpp: ours. The upstream
+  changes there are the `Cycles()` rewrite, a SYNC-wait loop that
+  ticks the queue, and the new frame loop, all new-timing machinery.
+- Interrupt latch: upstream replaced the `VCC::DFF` latch with a plain
+  byte, unconditionally, and deleted the type. With per-cycle ticking
+  an IRQ raised mid-instruction is visible at its end; with
+  instruction-granular timing the one-instruction delay is what lines
+  recognition up with real hardware. DFF is restored in defines.h.
+- Adopted, applies to the classic path: writing $FF92/$FF93 clears the
+  pending flags only when the value is zero (upstream's notes 3.3/3.8;
+  previously `flags &= data`). IRQ reference counts are unchanged.
+- Adopted: `RenderFrame(SystemState*, LARGE_INTEGER& now)`; off Windows
+  host_services.h shims LARGE_INTEGER and QueryPerformanceCounter/
+  Frequency on the steady clock. SoftReset now clears turbo and the
+  CPU multiplier as upstream does, with CPUReset still after LoadRom.
+  The border-draw members lost `const`; gGimeGpu moved to coco3.cpp.
+
+Verified: lockstep clean; IRQs 874 / 29,914 across all six tiers;
+smoke, gimetimer, becker, journal, drivewire pass; interleaved A/B at
+frameskip 250 is at parity (OS-9 boot +2%, sieve -1%).
+
 ## Merging upstream VCCE/VCC (2026-10)
 
 First merge from upstream since the March 30 fork point: their 46

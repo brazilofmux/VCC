@@ -109,6 +109,9 @@
       <Filter>Source</Filter>
     </ClCompile>
     <ClCompile Include="joystickinput.cpp" />
+    <ClCompile Include="Event.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="audio.h">
@@ -261,6 +264,9 @@
       <Filter>Headers</Filter>
     </ClInclude>
     <ClInclude Include="DisplayNone.h">
+      <Filter>Source</Filter>
+    </ClInclude>
+    <ClInclude Include="Event.h">
       <Filter>Source</Filter>
     </ClInclude>
   </ItemGroup>

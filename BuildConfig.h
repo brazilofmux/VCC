@@ -26,6 +26,16 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 //
+// Upstream's cycle-stepped timing: the CPU ticks the event queue from
+// inside every instruction. This fork's block JIT and scanline bursts
+// run whole blocks and settle timing on the event heap instead
+// (coco3.cpp), so it builds the classic path. docs/porting-macos.md.
+//
+#ifndef USE_NEWTIMING
+#define USE_NEWTIMING false
+#endif
+
+//
 // Enable the use of OpenGL display driver
 //
 #ifndef USE_OPENGL
@@ -44,6 +54,20 @@
 //
 #ifndef USE_DIRECTX
 #define USE_DIRECTX true
+#endif
+
+//
+// Force directX to use 16 bit surface
+//
+#ifndef USE_DIRECTX_16BIT_SURFACE
+#define USE_DIRECTX_16BIT_SURFACE false
+#endif
+
+//
+// Force directX to use 8 bit surface
+//
+#ifndef USE_DIRECTX_8BIT_SURFACE
+#define USE_DIRECTX_8BIT_SURFACE false
 #endif
 
 //
@@ -102,6 +126,29 @@
 #define USE_DEBUG_OPTIONS false
 #endif
 
+//
+// Enable test code
+//
+#ifndef USE_DEBUG_TESTS
+#define USE_DEBUG_TESTS true
+#endif
+
+//
+// Show fps
+// Requires USE_DEBUG_LINES
+//
+#ifndef USE_FPS
+#define USE_FPS true
+#endif
+
+//
+// Enable bounds checking on video buffer.
+// Disable by default as it slows debug down.
+//
+#ifndef USE_DEBUG_VIDEO_BUFFER
+#define USE_DEBUG_VIDEO_BUFFER false
+#endif
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // 
 // Edit options above rather than these:
@@ -117,5 +164,11 @@
 #define USE_DEBUG_AUDIOTAPE false
 #undef USE_DEBUG_MOUSE
 #define USE_DEBUG_MOUSE false
+#undef USE_DEBUG_TESTS
+#define USE_DEBUG_TESTS false
+#undef USE_FPS
+#define USE_FPS false
+#undef USE_DEBUG_VIDEO_BUFFER
+#define USE_DEBUG_VIDEO_BUFFER false
 #endif
 

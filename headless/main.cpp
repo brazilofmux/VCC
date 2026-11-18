@@ -145,7 +145,7 @@ int main(int argc, char** argv)
 		if (type_text && i == 150)
 			HeadlessTypeText(type_text);
 		HeadlessKeyboardTick();
-		RenderFrame(&EmuState);
+		{ LARGE_INTEGER now; RenderFrame(&EmuState, now); }
 		if (log_pc && (i % 60) == 0 && CPUGetState)
 		{
 			const auto st = CPUGetState();
